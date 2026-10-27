@@ -251,6 +251,7 @@ pub(crate) fn fill(
         attempt: 0,
         measured: false,
         drifted: false,
+        replaces: None,
     });
 }
 

@@ -122,6 +122,10 @@ pub struct Car {
     /// edit would be dropped, and the tree check halts the queue.)
     #[serde(default)]
     pub drifted: bool,
+    /// A retry (`max_checks_retries`): the id of the attempt it replaces. Until the forge
+    /// confirms that attempt's close, the retry is not built, and the two share one slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -204,13 +208,31 @@ pub fn is_queue_branch(name: &str, prefixes: &[String]) -> bool {
     })
 }
 
-/// Cars being closed that still hold a slot of `base`.
+/// Cars being closed that still hold a slot of `base`. The close of an attempt that a pending
+/// retry replaces is the retry's slot (the retry is built only once that close is confirmed), so
+/// it is counted once, as the retry car.
 pub fn closing_count(state: &State, base: &str) -> usize {
+    let replaced: Vec<u64> = state
+        .trains
+        .get(base)
+        .map(|t| {
+            t.cars
+                .iter()
+                .filter(|c| c.status == CarStatus::Retry)
+                .filter_map(|c| c.replaces)
+                .collect()
+        })
+        .unwrap_or_default();
     state
         .closing
-        .values()
-        .filter(|c| c.base.as_deref() == Some(base))
+        .iter()
+        .filter(|(id, c)| c.base.as_deref() == Some(base) && !replaced.contains(id))
         .count()
+}
+
+/// Whether a pending retry still waits for the close of the attempt it replaces.
+pub fn retry_waits_for_close(state: &State, car: &Car) -> bool {
+    car.replaces.is_some_and(|old| state.closing.contains_key(&old))
 }
 
 /// Closes a car's draft and deletes its branch. The slot stays taken until the forge
@@ -1208,6 +1230,7 @@ fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec
         status: CarStatus::Retry,
         attempt: old.attempt + 1,
         measured: false,
+        replaces: Some(old.id),
         ..old.clone()
     };
     state.trains.get_mut(base).expect("train").cars[0] = car;
@@ -1696,8 +1719,9 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         return;
     };
     if let Some(i) = train.cars.iter().position(|c| c.status == CarStatus::Retry) {
-        // The retry is already counted among the cars.
-        if busy <= slots {
+        // The retry is already counted among the cars. It is built only once the forge confirmed
+        // the close of the attempt it replaces (I4: that draft's CI counts until then).
+        if busy <= slots && !retry_waits_for_close(state, &train.cars[i]) {
             let car = train.cars[i].clone();
             let prs: Vec<CarPr> = car
                 .prs
@@ -1709,6 +1733,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
             c.prs = prs.clone();
             c.base_sha = base_sha.clone();
             c.status = CarStatus::Building { since: now };
+            c.replaces = None;
             wake(state, now + REPLY_TIMEOUT, out);
             out.push(Decision::BuildCar {
                 car: car.id,
@@ -1809,6 +1834,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         attempt: 0,
         measured: false,
         drifted: false,
+        replaces: None,
     };
     if in_place {
         let pr = pr.expect("checked");
