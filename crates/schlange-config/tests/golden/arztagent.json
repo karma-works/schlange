@@ -7,87 +7,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:author` is not supported by Schlange yet (feature conditions-basic, P1, missing: feature not built)",
-      "feature": "conditions-basic"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:base` is not supported by Schlange yet (feature conditions-basic, P1, missing: feature not built)",
-      "feature": "conditions-basic"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:check-failure` is not supported by Schlange yet (feature conditions-checks, P1, missing: feature not built)",
-      "feature": "conditions-checks"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:check-success` is not supported by Schlange yet (feature conditions-checks, P1, missing: feature not built)",
-      "feature": "conditions-checks"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/1/conditions",
-      "line": 49,
-      "column": 5,
-      "message": "`attr:dependabot-update-type` is not supported by Schlange yet (feature conditions-dependabot, P1, missing: feature not built)",
-      "feature": "conditions-dependabot"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:draft` is not supported by Schlange yet (feature conditions-basic, P1, missing: feature not built)",
-      "feature": "conditions-basic"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/conditions",
-      "line": 32,
-      "column": 5,
-      "message": "`attr:files` is not supported by Schlange yet (feature conditions-files, P1, missing: feature not built)",
-      "feature": "conditions-files"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/queue_conditions",
-      "line": 15,
-      "column": 5,
-      "message": "`attr:label` is not supported by Schlange yet (feature conditions-basic, P1, missing: feature not built)",
-      "feature": "conditions-basic"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/commands_restrictions/queue/conditions",
-      "line": 64,
-      "column": 5,
-      "message": "`attr:sender` is not supported by Schlange yet (feature conditions-basic, P1, missing: feature not built)",
-      "feature": "conditions-basic"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/commands_restrictions",
       "line": 61,
       "column": 1,
@@ -111,42 +30,6 @@
       "column": 5,
       "message": "`config:commands_restrictions.queue.conditions` is not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
       "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules",
-      "line": 30,
-      "column": 1,
-      "message": "`config:pull_request_rules` is not supported by Schlange yet (feature pull-request-rules, P1, missing: feature not built)",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/actions",
-      "line": 43,
-      "column": 5,
-      "message": "`config:pull_request_rules.actions` is not supported by Schlange yet (feature pull-request-rules, P1, missing: feature not built)",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/conditions",
-      "line": 32,
-      "column": 5,
-      "message": "`config:pull_request_rules.conditions` is not supported by Schlange yet (feature pull-request-rules, P1, missing: feature not built)",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/name",
-      "line": 31,
-      "column": 5,
-      "message": "`config:pull_request_rules.name` is not supported by Schlange yet (feature pull-request-rules, P1, missing: feature not built)",
-      "feature": "pull-request-rules"
     },
     {
       "stage": "support",
@@ -243,27 +126,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `pull_request_rules.description` is in effect but not supported by Schlange yet (feature pull-request-rules, P1, missing: feature not built)",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.allow_inplace_checks` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.batch_pull_request` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
       "feature": "queue-branch-protection"
     },
@@ -299,13 +161,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `queue_rules.queue_branch_prefix` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.update_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing: feature not built)",
       "feature": "queue-bot-accounts"
     },
@@ -330,99 +185,72 @@
       "id": "attr:author",
       "feature": "conditions-basic",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:base",
       "feature": "conditions-basic",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:check-failure",
       "feature": "conditions-checks",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:check-success",
       "feature": "conditions-checks",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:dependabot-update-type",
       "feature": "conditions-dependabot",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/1/conditions"
     },
     {
       "id": "attr:draft",
       "feature": "conditions-basic",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:files",
       "feature": "conditions-files",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/conditions"
     },
     {
       "id": "attr:label",
       "feature": "conditions-basic",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/queue_conditions"
     },
     {
       "id": "attr:sender",
       "feature": "conditions-basic",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/commands_restrictions/queue/conditions"
     },
     {
@@ -462,22 +290,16 @@
       "id": "config:pull_request_rules",
       "feature": "pull-request-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules"
     },
     {
       "id": "config:pull_request_rules.actions",
       "feature": "pull-request-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/actions"
     },
     {
@@ -492,22 +314,16 @@
       "id": "config:pull_request_rules.conditions",
       "feature": "pull-request-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/conditions"
     },
     {
       "id": "config:pull_request_rules.name",
       "feature": "pull-request-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/name"
     },
     {
@@ -735,21 +551,15 @@
       "id": "default:pull_request_rules.description",
       "feature": "pull-request-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.allow_inplace_checks",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.allow_queue_branch_edit",
@@ -769,11 +579,8 @@
       "id": "default:queue_rules.batch_pull_request",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.branch_protection_injection_mode",
@@ -843,11 +650,8 @@
       "id": "default:queue_rules.queue_branch_prefix",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.update_bot_account",

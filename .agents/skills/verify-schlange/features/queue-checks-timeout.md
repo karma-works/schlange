@@ -28,9 +28,9 @@ retried by default.
 
 - `fixed`: built. A duration (at least 60 s, smaller values are clamped) counted from the car's start; the car fails with `CHECKS_TIMEOUT`; the reason lists the checks still running and the referenced checks that never reported (MQ-37). A batch that times out is split like a red batch.
 - `null`: built (no timeout).
-- `auto`: missing. Schlange keeps no CI history, so `auto` applies no timeout, which is what Mergify does until it has about twenty qualifying runs. After that, Mergify uses the 95th percentile of successful first-attempt runtimes with an undocumented safety margin; not built.
+- `auto`: built. No timeout until enough qualifying runs are in the history, then a timeout calibrated from the history of successful first-attempt runtimes. Mergify's safety margin is undocumented, so the exact value can differ.
 - `confirm`: built. A red or timed-out verdict is acted on only after a fresh read of the draft pull request; a lost webhook must not dequeue anything (MQ-33). Found by the property test.
-- `retries`: default 0 is the only behaviour; `max_checks_retries > 0` is parsed and ignored.
+- `retries`: built. With `max_checks_retries > 0` a red car is retried by recreating its draft pull request, up to the limit, before the failure is handled; in-place checks are then off.
 - `cancelled`: built. Cancelled runs without a hard failure give `CHECKS_INTERRUPTED`; a failure together with a cancellation gives `CHECKS_FAILED`.
 
 ## How to get to it (user POV)
@@ -49,5 +49,5 @@ Preconditions:
 ## Gotchas
 
 - Rebuild `auto` only from its public description; compare the values in shadow mode (MQ-38).
-- With `auto` and a check that never reports, the queue waits forever (as Mergify does without history). The property tests therefore generate hanging checks only with a fixed timeout; with `auto` liveness (I2) cannot hold for a hanging CI.
+- With `auto` and a check that never reports, the queue waits forever as long as the history is too short (as Mergify does). The property tests therefore generate hanging checks only with a fixed timeout; with `auto` liveness (I2) cannot hold for a hanging CI.
 - A car fails without waiting for the timeout when the merge conditions are false and either no run is pending or a referenced check already failed. A referenced check that has not started yet while others are done counts as "nothing pending" only if no run at all is pending; a CI that creates its runs late could be judged too early (not seen in the simulation, where all runs start with the draft).

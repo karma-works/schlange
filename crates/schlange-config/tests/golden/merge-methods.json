@@ -245,20 +245,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `queue_rules.allow_inplace_checks` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.batch_pull_request` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
       "feature": "queue-branch-protection"
     },
@@ -289,13 +275,6 @@
       "pointer": "",
       "message": "default `queue_rules.queue_branch_merge_method` is in effect but not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
       "feature": "queue-merge-methods-other"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.queue_branch_prefix` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing: feature not built)",
-      "feature": "queue-draft-pr"
     },
     {
       "stage": "support",
@@ -753,11 +732,8 @@
       "id": "default:queue_rules.allow_inplace_checks",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.batch_max_failure_resolution_attempts",
@@ -777,11 +753,8 @@
       "id": "default:queue_rules.batch_pull_request",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.batch_size",
@@ -858,11 +831,8 @@
       "id": "default:queue_rules.queue_branch_prefix",
       "feature": "queue-draft-pr",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.update_bot_account",

@@ -1,14 +1,8 @@
 arztagent.yml: unsupported[support] feature commands-restrictions (P1, missing): config:commands_restrictions (61:1), config:commands_restrictions.queue (63:3), config:commands_restrictions.queue.conditions (64:5), default:commands_restrictions.backport, default:commands_restrictions.copy, default:commands_restrictions.dequeue, default:commands_restrictions.rebase, default:commands_restrictions.refresh, default:commands_restrictions.requeue, default:commands_restrictions.squash, default:commands_restrictions.update
-arztagent.yml: unsupported[support] feature conditions-basic (P1, missing): attr:author (15:5), attr:base (15:5), attr:draft (15:5), attr:label (15:5), attr:sender (64:5)
-arztagent.yml: unsupported[support] feature conditions-checks (P1, missing): attr:check-failure (15:5), attr:check-success (15:5)
-arztagent.yml: unsupported[support] feature conditions-dependabot (P1, missing): attr:dependabot-update-type (49:5)
-arztagent.yml: unsupported[support] feature conditions-files (P1, missing): attr:files (32:5)
-arztagent.yml: unsupported[support] feature pull-request-rules (P1, missing): config:pull_request_rules (30:1), config:pull_request_rules.actions (43:5), config:pull_request_rules.conditions (32:5), config:pull_request_rules.name (31:5), default:pull_request_rules.description
 arztagent.yml: unsupported[support] feature queue-bot-accounts (P1, missing): default:queue_rules.draft_bot_account, default:queue_rules.merge_bot_account, default:queue_rules.update_bot_account
 arztagent.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
 arztagent.yml: unsupported[support] feature queue-commit-message (P1, missing): default:queue_rules.commit_message_template
-arztagent.yml: unsupported[support] feature queue-draft-pr (P1, missing): default:queue_rules.allow_inplace_checks, default:queue_rules.batch_pull_request, default:queue_rules.queue_branch_prefix
 arztagent.yml: unsupported[support] feature queue-labels-comments (P1, missing): default:merge_queue.checking_label, default:merge_queue.dequeued_label, default:merge_queue.queue_controls_comment, default:merge_queue.queued_label, default:merge_queue.status_comments
 arztagent.yml: unsupported[support] feature queue-merge-methods-other (P2, missing): default:queue_rules.queue_branch_merge_method
 arztagent.yml: unsupported[support] feature queue-update-method (P2, missing): default:queue_rules.update_method
-arztagent.yml: valid for Mergify; 40 entries not supported by Schlange yet (--strict makes this exit 2)
+arztagent.yml: valid for Mergify; 23 entries not supported by Schlange yet (--strict makes this exit 2)

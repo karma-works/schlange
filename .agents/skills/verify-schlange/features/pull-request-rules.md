@@ -3,7 +3,7 @@ id: pull-request-rules
 title: "Workflow rules (`pull_request_rules`)"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "config:pull_request_rules"
   - "config:pull_request_rules.name"
@@ -13,6 +13,9 @@ inventory:
   - "config:pull_request_rules.disabled"
   - "config:pull_request_rules.disabled.reason"
   - "default:pull_request_rules.description"
+unsupported:
+  - "config:pull_request_rules.disabled"
+  - "config:pull_request_rules.disabled.reason"
 problems:
   - "MQ-12"
   - "MQ-19"
@@ -27,9 +30,11 @@ action `queue`.
 
 ## Sub-features
 
-- `evaluation`: state-based, on every change of the pull request.
-- `queue-prs-excluded`: queue pull requests are ignored.
-- `disabled`: switch a rule off with a reason (P2).
+- `evaluation`: built. State-based: `name`, `conditions` and `actions` are parsed and the conditions evaluated after every event (`crates/schlange-config/src/rules.rs`).
+- `actions`: only `queue` is built; every other action is flagged through its own feature (`action-*`).
+- `description`: accepted; it has no behaviour.
+- `queue-prs-excluded`: built. Draft pull requests of the queue are never evaluated against rules.
+- `disabled`: missing (listed as `unsupported`); a rule with `disabled` would still run.
 
 ## How to get to it (user POV)
 

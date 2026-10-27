@@ -26,7 +26,7 @@ pull request leaves the queue.
 - `enqueue`: built. `queue_conditions` on the pull request.
 - `merge`: built. `merge_conditions` on the car: the pull request's own attributes with the check runs of the draft pull request's head (or of the pull request itself when checked in place). Without `merge_conditions`, the queue conditions are used (our reading of "single-step CI").
 - `dequeue`: built. `queue_conditions` are evaluated after every event and once more on a fresh read before landing.
-- `missing-check`: built with a fixed `checks_timeout` (`CHECKS_TIMEOUT` with the list of checks that never reported); with `auto` it waits forever (see `queue-checks-timeout`).
+- `missing-check`: built with a fixed `checks_timeout` (`CHECKS_TIMEOUT` with the list of checks that never reported); with `auto` it waits until the history yields a timeout (see `queue-checks-timeout`).
 - `queue-only-ci`: built in the simulated CI: a script can run only on queue draft pull requests (`runs_on: queue`), like Arztagent's full `ci-ok` on `mergify/merge-queue/*` heads.
 
 ## How to get to it (user POV)

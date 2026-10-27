@@ -8,6 +8,8 @@ inventory:
   - "config:queue_rules.merge_method"
   - "enum:merge_method:squash"
   - "default:queue_rules.merge_method"
+unsupported:
+  - "default:queue_rules.merge_method"
 problems:
   - "MQ-02"
   - "MQ-03"
@@ -25,7 +27,8 @@ pull request; each of these commits must have a tree that was tested as such (in
 - `one-commit-per-pr`: built. A batch lands as one squash commit per pull request, in queue order, each with the single parent of the commit before (`SimForge::land`).
 - `tree-equality`: built. Engine: last landed tree = car tree, else halt. Checker (I0): every landed commit's tree equals the tree the queue built for exactly that prefix of the car, and the first commit's parent has the tree the car was built on.
 - `commit-message`: missing; the simulated squash message is `<title> (#N)`, see `queue-commit-message`.
-- `other methods`: `merge_method` is parsed; any value lands as squash in the simulation (`queue-merge-methods-other` is missing).
+- `other methods`: `merge_method` is parsed; any value lands as squash in the simulation. `config validate` flags the other values through `queue-merge-methods-other` (missing).
+- `unset`: missing (listed as `unsupported`: `default:queue_rules.merge_method`). Without `merge_method`, Mergify uses the first method the repository allows; Schlange squashes regardless, so a configuration that leaves it unset is flagged.
 
 ## How to get to it (user POV)
 

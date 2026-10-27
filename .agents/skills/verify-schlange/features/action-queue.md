@@ -12,6 +12,10 @@ inventory:
   - "config:defaults.actions.queue.*"
   - "default:pull_request_rules.actions.queue.*"
   - "default:defaults.actions.queue.*"
+unsupported:
+  - "config:defaults.actions.queue"
+  - "config:defaults.actions.queue.*"
+  - "default:defaults.actions.queue.*"
 problems:
   - "MQ-09"
   - "MQ-12"
@@ -30,7 +34,7 @@ whose queue conditions match.
 - `idempotent`: built. The same event twice queues once (MQ-12).
 - `no-loop`: built. After a failure-type dequeue the action does not queue the same head again; a new push does.
 - `level`: open. Once queued, Schlange keeps the pull request while its `queue_conditions` hold, even if the rule's own conditions stop holding; see Gotchas.
-- `options`: missing (`priority`, `merge_bot_account`, … under `actions.queue.*`), and `defaults.actions.queue`.
+- `options`: the schema now has only `name` under `actions.queue` (built). `defaults.actions.queue` is missing (listed as `unsupported`; the `defaults` section is not read).
 
 ## How to get to it (user POV)
 
