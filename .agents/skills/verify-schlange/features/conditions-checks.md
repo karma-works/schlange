@@ -34,9 +34,9 @@ source.
 - `attributes`: built. All nine attributes are evaluated (`check`, `check-success`, `check-failure`, `check-neutral`, `check-skipped`, `check-cancelled`, `check-timed-out`, `check-stale`, `check-pending`; `crates/schlange-core/src/eval.rs`).
 - `success`: only `success` (built in the simulation).
 - `failure`: failure, cancelled, timed_out, action_required (built in the simulation).
-- `newest-run`: the run created last per name wins (built in the simulation, without check suites).
-- `app-prefix`: `@slug/name` (missing).
-- `stale`: results for old SHAs do not count (missing).
+- `newest-run`: built. One run counts per kind (check run or commit status), name and GitHub App on the head commit; check runs and statuses are ordered apart (their ids are never compared). When one check spans several workflow files or events, the newest run of each counts and a run that has not passed is kept even if another one passed later. The docs read checks that way only when the base branch requires them; the engine does not know which checks are required and reads every check that way (fail closed). The GitHub adapter does not fill in workflow and event yet, so there every check run of one name and app falls back to the newest run.
+- `app-prefix`: built. `@<app-slug>/<name>` matches only that app's runs on every `check-*` attribute; the bare name matches any app; `config validate` rejects a value starting with `@` of another shape.
+- `stale`: built. Only runs on the current head count (`PullRequest::current_checks`).
 
 ## How to get to it (user POV)
 

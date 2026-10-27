@@ -21,12 +21,13 @@ means valid, 1 invalid, 2 valid for Mergify but not supported by Schlange (only 
 
 ## Sub-features
 
-- `stage-yaml`: syntax, duplicate keys, anchors and aliases, position of every finding (built).
+- `stage-yaml`: syntax, duplicate keys, anchors and aliases, position of every finding (built). Plain `yes`/`no`/`on`/`off` are YAML 1.1 booleans (see `conditions-syntax`, `yaml-1.1`).
 - `stage-schema`: types, enums, allowed keys and limits against the pinned schema (built).
-- `stage-conditions`: attribute known, operator allowed for the attribute, regex compiles with Python semantics through `fancy-regex` (built).
+- `stage-conditions`: attribute known, operator allowed for the attribute, regex compiles with Python semantics through `fancy-regex`, glob valid (balanced braces, limits), `@<app>/<name>` well formed (built).
 - `stage-semantics`: unique rule names, `queue` action names an existing queue, durations readable, `checks_timeout` ≥ 60 s (built; only rules the docs state).
-- `stage-support`: every used path, attribute, action and enum value against the support matrix built from the feature files (built).
+- `stage-support`: every used path, attribute, action and enum value against the support matrix built from the feature files (built). Value level: a default or an option whose value switches a feature off (`null`, `false`, `0`, empty) is not a use, the same option switched on is; a `null` merge method stays a use (it picks the repository's method). So `{}` exits 0 under `--strict`. A plain queue configuration still exits 2: Mergify's default `branch_protection_injection_mode: queue` adds the checks that branch protection requires to the queue conditions, and Schlange does not read branch protection yet (`queue-branch-protection`, missing). Test: `cargo test -p schlange-config --test golden strict_exits_2_only_for_real_gaps`.
 - `json`: `--json` gives the same findings machine-readable (built).
+- `usage-errors`: built. A command-line usage error exits 64 (`EX_USAGE`), never 2, and is JSON on stdout with `--json` (`cargo test -p schlange --test cli usage_errors_exit_64`).
 
 ## How to get to it (user POV)
 

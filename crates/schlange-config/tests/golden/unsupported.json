@@ -97,24 +97,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/pull_request_rules/1/disabled",
-      "line": 27,
-      "column": 5,
-      "message": "`config:pull_request_rules.disabled` is not supported by Schlange yet (feature pull-request-rules, P1, partial: not built in this partial feature (`config:pull_request_rules.disabled`))",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/1/disabled/reason",
-      "line": 28,
-      "column": 7,
-      "message": "`config:pull_request_rules.disabled.reason` is not supported by Schlange yet (feature pull-request-rules, P1, partial: not built in this partial feature (`config:pull_request_rules.disabled.reason`))",
-      "feature": "pull-request-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/shared",
       "line": 3,
       "column": 1,
@@ -337,11 +319,7 @@
       "feature": "pull-request-rules",
       "priority": "P1",
       "status": "partial",
-      "supported": false,
-      "reason": {
-        "kind": "not_built",
-        "pattern": "config:pull_request_rules.disabled"
-      },
+      "supported": true,
       "pointer": "/pull_request_rules/1/disabled"
     },
     {
@@ -349,11 +327,7 @@
       "feature": "pull-request-rules",
       "priority": "P1",
       "status": "partial",
-      "supported": false,
-      "reason": {
-        "kind": "not_built",
-        "pattern": "config:pull_request_rules.disabled.reason"
-      },
+      "supported": true,
       "pointer": "/pull_request_rules/1/disabled/reason"
     },
     {

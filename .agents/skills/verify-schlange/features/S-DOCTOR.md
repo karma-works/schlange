@@ -21,7 +21,8 @@ limit; serves as the container's health check.
 
 - `version`: built.
 - `schema`: built (reports whether a schema is found).
-- `matrix`: built (support matrix embedded).
+- `matrix`: built (support matrix embedded). Counts conformant, partial and missing features apart; `partial` is not counted as supported.
+- `configuration`: built. Validates `--config <file>` or the configuration file the search finds in the working directory (`.mergify.yml` and the other names): FAIL when invalid (or more than one file), WARN when valid but using something Schlange does not support, OK otherwise, SKIP without a file; with the schema when one is found, else stages 1, 3 and 4. Test: `cargo test -p schlange --test cli doctor_validates_the_configuration_and_counts_partial_apart`.
 - `github-app`: built. With `SCHLANGE_GITHUB_APP_ID` and `SCHLANGE_GITHUB_PRIVATE_KEY` (or flags): `GET /app` with the app JWT.
 - `app-permissions`: built. The installation's permissions against the minimum (FAIL when one is missing, WARN for extra ones and for the optional `workflows: write`, W-22).
 - `ruleset`: built. Every active branch ruleset must list the app as a bypass actor (FAIL when not, WARN when the bypass list is not visible).

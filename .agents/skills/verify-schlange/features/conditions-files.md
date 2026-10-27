@@ -19,10 +19,12 @@ with a negated regex with lookahead, which needs Python-compatible regex semanti
 
 ## Sub-features
 
-- `list`: built in the simulation (the scenario's changed paths); renames come from the forge adapter later.
-- `regex`: built. Search like Python's `re.search`, lookahead through `fancy-regex`; a difference test against Python is missing.
+- `list`: built. The simulation diffs trees, so a moved file shows at both paths; the GitHub adapter reads `/pulls/{n}/files` and counts a renamed file at its `previous_filename` and its `filename` (docs: a renamed file counts at both paths), so `git mv` out of a guarded directory cannot pass a `-files` gate (security fix, critic 1abc; regression `cargo test -p schlange-github-fake --test client a_renamed_constitution_file_still_trips_arztagents_files_gate` with Arztagent's constitution gate).
+- `count`: partial. `#files` counts both paths of a rename; GitHub's own count, which the docs name for `#files`, counts it once.
+- `regex`: built. Search like Python's `re.search`, lookahead through `fancy-regex`; a pattern that fails while matching (backtrack limit) is an evaluation error and fails closed. A difference test against Python is missing.
 - `negation`: built. `-files ~= …` means "no file matches".
-- `glob`: built with open questions (`*=`; whether `*` crosses `/` like Python is not settled).
+- `glob`: built as the docs describe (`crates/schlange-config/src/glob.rs`): `**` as a whole segment matches zero or more segments (`**/*.py` matches root files), `*` and `?` stay within a segment, `[seq]`, `[!seq]`, nested `{a,b}` with `\{ \} \,` escapes, empty branches dropped, at most 128 alternatives and 32 levels; an invalid glob is a configuration error.
+- `added-files`, `removed-files`, `modified-files`: missing (see `conditions-files-other`).
 
 ## How to get to it (user POV)
 

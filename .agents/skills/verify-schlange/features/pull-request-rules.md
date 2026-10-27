@@ -13,9 +13,6 @@ inventory:
   - "config:pull_request_rules.disabled"
   - "config:pull_request_rules.disabled.reason"
   - "default:pull_request_rules.description"
-unsupported:
-  - "config:pull_request_rules.disabled"
-  - "config:pull_request_rules.disabled.reason"
 problems:
   - "MQ-12"
   - "MQ-19"
@@ -31,10 +28,11 @@ action `queue`.
 ## Sub-features
 
 - `evaluation`: built. State-based: `name`, `conditions` and `actions` are parsed and the conditions evaluated after every event (`crates/schlange-config/src/rules.rs`).
+- `conditions-required`: built. `conditions` is required (docs: rule syntax): an empty list or `true` matches every pull request; a rule without the key or without a value is a configuration error in `Rules` too, so `serve`, which reads rules without the schema stage, no longer treats it as "match every pull request" (critic 1abc; `cargo test -p schlange-config pull_request_rule_conditions_are_required`).
 - `actions`: only `queue` is built; every other action is flagged through its own feature (`action-*`).
 - `description`: accepted; it has no behaviour.
 - `queue-prs-excluded`: built. Draft pull requests of the queue are never evaluated against rules.
-- `disabled`: missing (listed as `unsupported`); a rule with `disabled` would still run.
+- `disabled`: built. A rule with `disabled` (and its `reason`) does not run. The docs only say the key holds the reason; that a disabled rule does not run is our reading of the name.
 
 ## How to get to it (user POV)
 

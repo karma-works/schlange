@@ -3,7 +3,7 @@ id: direct-merge
 title: "Direct merge without queue CI"
 priority: P2
 arztagent: false
-status: missing
+status: partial
 inventory: []
 problems:
   - "MQ-28"
@@ -22,9 +22,9 @@ in effect for Arztagent.
 
 ## Sub-features
 
-- `up-to-date`: the head contains the base tip → merge directly; also the one case where `fast-forward` qualifies.
-- `disjoint-scopes`: behind only by recorded queue merges in other scopes → merge directly (not with `fast-forward`).
-- `exclusions`: not with in-place checks, two-step CI or `merge-batch`; not for barrier pull requests.
+- `up-to-date`: built (`crates/schlange-core/src/queue.rs`, `fill`). A pull request alone at the front (no car, batch of one) whose head contains the base tip and whose own CI already meets the merge conditions is checked where it is and lands, without a queue branch, a draft or a queue CI run (log: `car N: merge #n directly`). `fast-forward` is not built, so that variant is not either.
+- `disjoint-scopes`: missing (scopes are not built); such a pull request takes the normal path with a draft.
+- `exclusions`: built. Not when the queue checks in place, with two-step CI, or with `merge-batch`; barrier pull requests need scopes (not built).
 
 ## How to get to it (user POV)
 
@@ -36,7 +36,7 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned scenario: single-step queue, an up-to-date pull request, expected merge without a queue branch; plus the same with two-step CI, expected batch pull request.
+- **Scenario.** `target/release/schlange sim run scenarios/p2-direct-merge.yaml`: #1 is up to date with green CI and merges directly (`car 2: merge #1 directly`); #2 is behind main after a direct push and goes through a draft (`+ #2 (checks #2)`). Arztagent's two-step CI keeps drafts in every Arztagent scenario (`p1-arztagent-two-step`).
 
 ## Gotchas
 
