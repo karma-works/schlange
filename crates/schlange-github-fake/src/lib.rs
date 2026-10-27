@@ -820,6 +820,27 @@ impl FakeGithub {
         })
     }
 
+    /// `git mv from to` on the pull request's branch, as a new commit by its author.
+    pub fn move_in_pr(&self, n: u64, from: &str, to: &str) -> Sha {
+        self.with(|s| {
+            let pr = s.prs.get(&n).cloned().expect("pr");
+            let mut tree = s.repo.tree(&pr.head_sha).clone();
+            let content = tree.remove(from).expect("file to move");
+            tree.insert(to.to_string(), content);
+            let head = s
+                .repo
+                .commit(tree, vec![pr.head_sha.clone()], &format!("move in #{n}"));
+            s.commit_authors.insert(head.clone(), pr.user.clone());
+            s.repo
+                .update_ref(&pr.head_ref, &pr.head_sha, &head)
+                .expect("cas");
+            s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            s.emit_pr("synchronize", n, json!({}));
+            s.run_ci(n);
+            head
+        })
+    }
+
     pub fn label(&self, n: u64, label: &str, add: bool) {
         self.with(|s| {
             if let Some(p) = s.prs.get_mut(&n) {

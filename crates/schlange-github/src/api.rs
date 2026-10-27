@@ -126,6 +126,9 @@ pub struct Pull {
 #[derive(Clone, Debug, Deserialize)]
 pub struct PullFile {
     pub filename: String,
+    /// Set on a renamed file: its path before the rename.
+    #[serde(default)]
+    pub previous_filename: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -409,7 +412,12 @@ impl RepoApi {
 
     pub fn pull_files(&self, n: u64, prio: Priority) -> Result<Vec<String>, Error> {
         let files: Vec<PullFile> = self.list(&format!("/pulls/{n}/files"), prio, None)?;
-        Ok(files.into_iter().map(|f| f.filename).collect())
+        // A renamed file counts at both of its paths (docs: conditions, renamed files), so a
+        // `git mv` out of a guarded path cannot pass a `files` gate.
+        Ok(files
+            .into_iter()
+            .flat_map(|f| f.previous_filename.into_iter().chain([f.filename]))
+            .collect())
     }
 
     pub fn pull_commits(&self, n: u64, prio: Priority) -> Result<Vec<RepoCommit>, Error> {

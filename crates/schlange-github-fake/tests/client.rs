@@ -460,3 +460,51 @@ fn the_invariant_checker_catches_untested_landings_and_leftover_branches() {
     assert!(v.iter().any(|v| v.starts_with("I3")), "{v:?}");
     gh.shutdown();
 }
+
+/// Security (critic 1abc, conditions-files): `git mv` of a constitution file to an ordinary path
+/// must not slip through Arztagent's files gate. GitHub lists a rename once, with
+/// `previous_filename`; the docs count a renamed file at both of its paths.
+#[test]
+fn a_renamed_constitution_file_still_trips_arztagents_files_gate() {
+    let mut cfg = FakeConfig::default();
+    cfg.base_files.insert(
+        ".github/workflows/ci.yml".into(),
+        "on: [pull_request]\n".into(),
+    );
+    let gh = FakeGithub::start(cfg);
+    let c = client(&gh, roomy());
+    let a = api(&gh, &c);
+    let n = gh.open_pr(
+        "arztagent-bot",
+        "t",
+        &[("b.txt".into(), "b\n".into())],
+        false,
+        &[],
+    );
+    gh.move_in_pr(n, ".github/workflows/ci.yml", "docs/ci.yml");
+    let files = a.pull_files(n, Priority::Normal).unwrap();
+    for path in [".github/workflows/ci.yml", "docs/ci.yml", "b.txt"] {
+        assert!(files.iter().any(|f| f == path), "{path} missing: {files:?}");
+    }
+    let yaml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../schlange-config/tests/golden/arztagent.yml"
+    ))
+    .unwrap();
+    let rules = schlange_config::rules::Rules::from_yaml(&yaml).unwrap();
+    let mut pr = schlange_core::model::PullRequest::new(n, "arztagent-bot", "main", "pr", "h");
+    pr.files = files;
+    let rule = &rules.pull_request_rules[0];
+    let (matches, _) = schlange_core::eval::eval_list(
+        &rule.conditions,
+        &pr,
+        &schlange_core::eval::Context::default(),
+        &mut vec![],
+    );
+    assert!(
+        !matches,
+        "`{}` must not queue a moved constitution file",
+        rule.name
+    );
+    gh.shutdown();
+}

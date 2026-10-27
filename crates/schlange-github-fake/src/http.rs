@@ -421,14 +421,41 @@ fn repo_route(
                 return err(404, "Not Found");
             };
             let tip = st.tip(&pr.base).unwrap_or_default();
-            let files = match st.repo.merge_base(&tip, &pr.head_sha) {
-                Some(mb) => st.repo.changed_paths(&mb, &pr.head_sha),
-                None => vec![],
+            let (files, before, after) = match st.repo.merge_base(&tip, &pr.head_sha) {
+                Some(mb) => (
+                    st.repo.changed_paths(&mb, &pr.head_sha),
+                    st.repo.tree(&mb).clone(),
+                    st.repo.tree(&pr.head_sha).clone(),
+                ),
+                None => (vec![], Default::default(), Default::default()),
             };
-            let items = files
-                .into_iter()
-                .map(|f| json!({ "filename": f, "status": "modified" }))
-                .collect();
+            // GitHub's rename detection: a removed path whose content an added path has is one
+            // `renamed` entry with `previous_filename`.
+            let removed: Vec<&String> = files.iter().filter(|f| !after.contains_key(*f)).collect();
+            let mut renamed_from: Vec<String> = Vec::new();
+            let mut items = Vec::new();
+            for f in &files {
+                if !after.contains_key(f) {
+                    continue;
+                }
+                let added = !before.contains_key(f);
+                let source = removed
+                    .iter()
+                    .find(|r| added && before.get(**r) == after.get(f) && !renamed_from.contains(r))
+                    .map(|r| r.to_string());
+                match source {
+                    Some(from) => {
+                        items.push(json!({ "filename": f, "previous_filename": from, "status": "renamed" }));
+                        renamed_from.push(from);
+                    }
+                    None => items.push(json!({ "filename": f, "status": if added { "added" } else { "modified" } })),
+                }
+            }
+            for r in removed {
+                if !renamed_from.contains(r) {
+                    items.push(json!({ "filename": r, "status": "removed" }));
+                }
+            }
             paginate(base_url, path, query, items, None)
         }
         ("GET", ["pulls", n, "commits"]) => {
