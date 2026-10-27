@@ -225,3 +225,27 @@ fn every_scenario_also_holds_without_webhooks_but_with_reconciliation() {
     assert!(d.dropped > 0);
     assert_eq!(d.end_state.merged.len(), 2);
 }
+
+#[test]
+fn bisection_with_one_check_and_a_held_pull_request_settles() {
+    // Found by the property test: one parallel check, batch of 3, #1 held behind #4 (same
+    // file), #3 breaks the suite.
+    let cfg = "merge_queue:\n  max_parallel_checks: 1\nqueue_rules:\n  - name: default\n    batch_size: 3\n    batch_max_wait_time: 1 min\n    checks_timeout: 20 min\n    queue_conditions:\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\n\
+pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n";
+    let (q, f) = checks();
+    let r = Sim::new("held-bisect", cfg)
+        .check(q)
+        .check(f)
+        .pr(1, &[("a.rs", "#1\n")])
+        .pr(2, &[("b.rs", "#2\n")])
+        .pr(3, &[("c.rs", "#3 BUG\n")])
+        .pr(4, &[("a.rs", "#4\n")])
+        .open("986s", 4)
+        .open("1045s", 1)
+        .open("1045s", 2)
+        .open("1045s", 3)
+        .faults(None)
+        .run();
+    r.assert_invariants();
+    assert_eq!(r.outcome(3), "dequeued CHECKS_FAILED");
+}

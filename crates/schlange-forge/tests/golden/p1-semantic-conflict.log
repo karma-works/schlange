@@ -25,17 +25,18 @@
 +0:11:00  decision  #1 merged as e076f41
 +0:11:10  ci        #1001 check `full` completed on b1e01c3: failure
 +0:11:10  webhook   #1001 check `full` completed on b1e01c3: failure
++0:11:10  decision  read #2 #1001 mergify/merge-queue/34fd968ed0 before acting
 +0:11:10  decision  close car 6, delete mergify/merge-queue/744dfff868, close #1002
 +0:11:10  decision  checks of #3 ended, stays queued: BATCH_AHEAD_FAILED: the batch ahead failed: merge conditions are false on #1001; failed: full
 +0:11:10  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
 +0:11:10  decision  dequeue #2 from `default`: CHECKS_FAILED: merge conditions are false on #1001; failed: full
-+0:11:10  decision  build car 8 on mergify/merge-queue/0fe36e3333: base e076f41 + #3 (checks #3)
-+0:11:10  reply     car 8 built at 15fd6ce, draft #1003
++0:11:10  decision  build car 9 on mergify/merge-queue/8cd12edb01: base e076f41 + #3 (checks #3)
++0:11:10  reply     car 9 built at 15fd6ce, draft #1003
 +0:11:20  ci        #1002 check `full` completed on 37c7601: failure
 +0:21:10  ci        #1003 check `full` completed on 15fd6ce: success
 +0:21:10  webhook   #1003 check `full` completed on 15fd6ce: success
-+0:21:10  decision  read #3 #1003 main mergify/merge-queue/0fe36e3333 before acting
-+0:21:10  decision  land car 8: squash #3 onto main if it is still e076f41
-+0:21:10  reply     car 8 landed #3 as 703d659
-+0:21:10  decision  close car 8, delete mergify/merge-queue/0fe36e3333, close #1003
++0:21:10  decision  read #3 #1003 main mergify/merge-queue/8cd12edb01 before acting
++0:21:10  decision  land car 9: squash #3 onto main if it is still e076f41
++0:21:10  reply     car 9 landed #3 as 703d659
++0:21:10  decision  close car 9, delete mergify/merge-queue/8cd12edb01, close #1003
 +0:21:10  decision  #3 merged as 703d659

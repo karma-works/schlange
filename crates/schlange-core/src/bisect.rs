@@ -339,13 +339,50 @@ pub(crate) fn resolve(
         return false;
     }
     let test = |i: usize| train.cars.iter().find(|c| c.test == Some(i)).cloned();
+    let slots = rules.merge_queue.max_parallel_checks as usize;
     let mut first_fail = None;
+    let mut green = 0;
     for i in 0..b.tests {
         match test(i).map(|c| c.status) {
-            Some(CarStatus::Green) => {}
+            Some(CarStatus::Green) => green += 1,
             Some(CarStatus::Failed { .. }) => {
                 first_fail = Some(i);
                 break;
+            }
+            None if green > 0 && train.cars.len() >= slots => {
+                // Fewer slots than tests: the green prefix holds the slot the next test needs.
+                // Land it; the rest (still red on top of it) is split again in this round.
+                let keep = test(green - 1).map(|c| c.id).expect("green test");
+                let landed: Vec<u64> = b.parts[..green].concat();
+                let rest: Vec<u64> = b
+                    .batch
+                    .iter()
+                    .copied()
+                    .filter(|n| !landed.contains(n))
+                    .collect();
+                close_tests(state, base, Some(keep), out);
+                let next = (rest.len() > 1).then(|| (rest.clone(), b.round));
+                land_test(state, base, keep, next);
+                if rest.len() == 1 {
+                    if let Some(b) = state
+                        .trains
+                        .get_mut(base)
+                        .and_then(|t| t.bisection.as_mut())
+                    {
+                        b.batch.retain(|n| landed.contains(n));
+                    }
+                    dequeue(
+                        state,
+                        rules,
+                        rest[0],
+                        DequeueReason::new(
+                            b.code,
+                            format!("every split without it passed: {}", b.text),
+                        ),
+                        out,
+                    );
+                }
+                return true;
             }
             _ => return false,
         }

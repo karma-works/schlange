@@ -332,6 +332,18 @@ impl SimForge {
 
     /// The next item in time order, advancing the clock to it.
     pub fn next_item(&mut self) -> Option<(Time, Item)> {
+        // Keep the periodic reconciliation alive while there is work (the work may have been
+        // created after the last pass, by the engine's own decisions).
+        if self.faults.reconcile_every > 0
+            && self.has_work()
+            && !self
+                .pending
+                .values()
+                .any(|p| matches!(p, Pending::Reconcile))
+        {
+            let at = self.now() + self.faults.reconcile_every;
+            self.push_pending(at, Pending::Reconcile);
+        }
         loop {
             let (&key, _) = self.pending.iter().next()?;
             let pending = self.pending.remove(&key)?;
@@ -351,12 +363,7 @@ impl SimForge {
                 }
                 Pending::Deliver { hint, text } => return Some((t, Item::Webhook { hint, text })),
                 Pending::Tick => return Some((t, Item::Tick)),
-                Pending::Reconcile => {
-                    if self.has_work() && self.faults.reconcile_every > 0 {
-                        self.push_pending(t + self.faults.reconcile_every, Pending::Reconcile);
-                    }
-                    return Some((t, Item::Reconcile));
-                }
+                Pending::Reconcile => return Some((t, Item::Reconcile)),
             }
         }
     }

@@ -35,6 +35,11 @@ pub enum CarStatus {
     Verifying {
         token: u64,
     },
+    /// The checks looked red or timed out; a fresh read was requested before acting on it
+    /// (a lost webhook must not dequeue anything, MQ-33).
+    Confirming {
+        token: u64,
+    },
     Landing,
 }
 
@@ -579,17 +584,38 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, now: Time) -> Ver
     Verdict::Pending
 }
 
-/// Re-evaluates running cars; returns whether anything changed.
-fn evaluate_cars(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<Decision>) {
+/// Re-evaluates running cars. A red or timed-out verdict is only believed after a fresh read.
+fn evaluate_cars(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    now: Time,
+    token: Option<u64>,
+    out: &mut Vec<Decision>,
+) {
     let cars = state.trains[base].cars.clone();
     for (i, car) in cars.iter().enumerate() {
-        if car.status != CarStatus::Running {
-            continue;
-        }
+        let confirmed = match car.status {
+            CarStatus::Running => false,
+            CarStatus::Confirming { token: t } if token == Some(t) => true,
+            _ => continue,
+        };
         let v = verdict(state, rules, car, now);
         let status = match v {
             Verdict::Green => CarStatus::Green,
-            Verdict::Failed(code, text) => CarStatus::Failed { code, text },
+            Verdict::Failed(code, text) if confirmed => CarStatus::Failed { code, text },
+            Verdict::Failed(..) => {
+                let t = state.next_id();
+                let mut numbers = car.own.clone();
+                numbers.extend(car.draft.filter(|_| !car.in_place));
+                out.push(Decision::Refresh {
+                    token: t,
+                    numbers,
+                    branches: car.branch.iter().cloned().collect(),
+                });
+                CarStatus::Confirming { token: t }
+            }
+            Verdict::Pending if confirmed => CarStatus::Running,
             Verdict::Pending => {
                 if let Some(ChecksTimeout::Fixed(t)) =
                     rule(rules, &car.queue).map(|r| r.checks_timeout)
@@ -800,7 +826,7 @@ pub fn process_trains(
         }
         release_held(state, &base);
         for _ in 0..64 {
-            evaluate_cars(state, rules, &base, now, out);
+            evaluate_cars(state, rules, &base, now, token, out);
             let mut changed = bisect::resolve(state, rules, &base, out);
             changed |= front(state, rules, &base, now, token, out);
             if !changed {
