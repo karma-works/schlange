@@ -4,8 +4,18 @@
 //! model operations. It sends **signed webhooks over HTTP** to Schlange's real webhook router.
 //!
 //! Faults: API responses with 5xx, 404 storms, rate limits with `Retry-After`, secondary
-//! limits, and "lying" responses (the effect happened, an error is returned); webhooks that
-//! are lost, duplicated, delayed and therefore reordered.
+//! limits, transient 405/409 answers, and "lying" responses (the effect happened, an error is
+//! returned); a fault can trigger a side action when it fires (a push to the base, a label), so
+//! races are deterministic. Webhooks are lost, duplicated, delayed and therefore reordered.
+//!
+//! Fidelity beyond the happy path (each off by default, switched on per test):
+//! - `mergeable: null` for a number of reads after a push (GitHub computes it lazily);
+//! - read-after-write lag: reads of a pull request or a ref return the state before an API
+//!   write for a number of reads;
+//! - a 403 for merges that change `.github/workflows/` when the token lacks `workflows: write`;
+//! - paginated combined statuses (30 per page, `Link` header);
+//! - repository renames (301 for reads, 307 for writes to the old name);
+//! - installation tokens scoped to repositories and permissions on request.
 //!
 //! Test actions (opening pull requests, pushing, labelling, reporting check runs) happen
 //! directly on the state, as a user or CI would do them on github.com, and emit the webhooks
@@ -139,6 +149,28 @@ pub struct Squash {
     pub message: String,
     /// Who merged: the caller (the app's bot).
     pub merged_by: String,
+    /// The pull request's head when it landed.
+    pub head: Sha,
+    /// That head was merged into a queue branch (`POST /merges`) whose draft was still open:
+    /// the head that landed is a head the queue tested (I1).
+    pub head_tested: bool,
+    /// What the merge guard said at landing time (`None`: the conditions held).
+    pub guard: Option<String>,
+}
+
+/// Decides whether a pull request may land right now (I1 at landing time): `Some(why)` when
+/// its conditions are false. Tests set it from the configuration they use.
+pub type MergeGuard = Arc<dyn Fn(&FakePr) -> Option<String> + Send + Sync>;
+
+/// A merge guard that refuses pull requests carrying any of these labels.
+pub fn guard_labels(labels: &[&str]) -> MergeGuard {
+    let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+    Arc::new(move |p: &FakePr| {
+        labels
+            .iter()
+            .find(|l| p.labels.contains(*l))
+            .map(|l| format!("label `{l}` is set"))
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +183,18 @@ pub enum FaultKind {
     SecondaryLimit { retry_after: u64 },
     /// Do the request, then answer with this status anyway (MQ-35).
     Lie(u16),
+    /// Answer with this status and GitHub's message, do nothing (transient 405/409, 403, 422).
+    StatusMessage(u16, String),
+}
+
+/// Something that happens on the fake right when a fault fires (on its first hit), before the
+/// faulty answer goes out: a race made deterministic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Then {
+    /// A direct push to the default branch with these files.
+    PushBase(Vec<(String, String)>),
+    /// A label is added to a pull request.
+    Label(u64, String),
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +206,10 @@ pub struct FaultRule {
     pub kind: FaultKind,
     /// How many requests it hits.
     pub times: u32,
+    /// Side actions on the first hit.
+    pub then: Vec<Then>,
+    /// Whether it has fired.
+    pub fired: bool,
 }
 
 impl FaultRule {
@@ -171,8 +219,26 @@ impl FaultRule {
             path: path.into(),
             kind,
             times,
+            then: vec![],
+            fired: false,
         }
     }
+
+    /// Adds a side action that happens when the fault first fires.
+    pub fn then(mut self, t: Then) -> Self {
+        self.then.push(t);
+        self
+    }
+}
+
+/// An installation token and what it may do.
+#[derive(Clone, Debug)]
+pub struct FakeToken {
+    pub expires: u64,
+    /// Repository names it is limited to (`None`: all of the installation's).
+    pub repositories: Option<Vec<String>>,
+    /// Its permissions (the installation's, or the subset requested).
+    pub permissions: BTreeMap<String, String>,
 }
 
 /// Webhook delivery faults (probabilities per delivery).
@@ -271,7 +337,11 @@ pub(crate) struct St {
     pub commit_authors: BTreeMap<Sha, String>,
     /// The repository's squash body setting (`COMMIT_MESSAGES`, `PR_BODY`, `BLANK`).
     pub squash_message_setting: String,
-    pub tokens: BTreeMap<String, u64>,
+    pub tokens: BTreeMap<String, FakeToken>,
+    /// Bodies of `POST /app/installations/{id}/access_tokens`, in order.
+    pub token_requests: Vec<Value>,
+    /// The token of the request being handled.
+    pub caller_token: Option<String>,
     pub ci: Vec<CiRule>,
     pub faults: Vec<FaultRule>,
     pub hook_faults: HookFaults,
@@ -288,6 +358,18 @@ pub(crate) struct St {
     pub external: BTreeSet<Sha>,
     /// Commits made by `POST /merges`, with their branch.
     pub queue_commits: BTreeMap<Sha, String>,
+    /// Pull request heads merged into queue branches, with the queue branches.
+    pub queue_heads: BTreeMap<Sha, BTreeSet<String>>,
+    pub merge_guard: Option<MergeGuard>,
+    /// Reads of `mergeable` that answer `null` after a push (0: never).
+    pub mergeable_lag: u32,
+    pub mergeable_unknown: BTreeMap<u64, u32>,
+    /// Reads that return the state before an API write (0: none).
+    pub read_lag: u32,
+    /// Stale answers: key (`pull:N`, `ref:BRANCH`) → (body, reads left).
+    pub stale: BTreeMap<String, (Value, u32)>,
+    /// Former repository names (renames answer with redirects).
+    pub old_names: Vec<String>,
     pub rulesets: Vec<Value>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
@@ -309,6 +391,147 @@ impl St {
 
     pub fn tip(&self, branch: &str) -> Option<Sha> {
         self.repo.ref_sha(branch).cloned()
+    }
+
+    /// A push to a branch: pull requests on it get `mergeable: null` for a while.
+    pub fn touched(&mut self, branch: &str) {
+        if self.mergeable_lag == 0 {
+            return;
+        }
+        let lag = self.mergeable_lag;
+        let affected: Vec<u64> = self
+            .prs
+            .values()
+            .filter(|p| p.open && (p.base == branch || p.head_ref == branch))
+            .map(|p| p.number)
+            .collect();
+        for n in affected {
+            self.mergeable_unknown.insert(n, lag);
+        }
+    }
+
+    /// Remembers the current answer for `key` before an API write changes it (read lag).
+    pub fn before_write(&mut self, key: &str, current: Option<Value>) {
+        if self.read_lag == 0 {
+            return;
+        }
+        if let Some(v) = current {
+            let lag = self.read_lag;
+            self.stale.entry(key.to_string()).or_insert((v, lag));
+        }
+    }
+
+    pub fn ref_json(&self, branch: &str) -> Option<Value> {
+        self.tip(branch).map(|s| {
+            json!({ "ref": format!("refs/heads/{branch}"), "object": { "sha": s, "type": "commit" } })
+        })
+    }
+
+    /// A stale answer for `key`, while one is due.
+    pub fn stale_read(&mut self, key: &str) -> Option<Value> {
+        let (v, left) = self.stale.get_mut(key)?;
+        *left = left.saturating_sub(1);
+        let (v, done) = (v.clone(), *left == 0);
+        if done {
+            self.stale.remove(key);
+        }
+        Some(v)
+    }
+
+    /// The permissions of the token of the request being handled.
+    pub fn caller_permissions(&self) -> BTreeMap<String, String> {
+        self.caller_token
+            .as_ref()
+            .and_then(|t| self.tokens.get(t))
+            .map(|t| t.permissions.clone())
+            .unwrap_or_else(|| self.cfg.permissions.clone())
+    }
+
+    /// GitHub refuses commits that change workflow files from an app without
+    /// `workflows: write`: the message for the first such path, if any.
+    pub fn workflow_refusal(&self, paths: &[String]) -> Option<String> {
+        let ok = self
+            .caller_permissions()
+            .get("workflows")
+            .is_some_and(|l| l == "write");
+        if ok {
+            return None;
+        }
+        paths
+            .iter()
+            .find(|p| p.starts_with(".github/workflows/"))
+            .map(|p| {
+                format!(
+                    "refusing to allow a GitHub App to create or update workflow `{p}` without `workflows` permission"
+                )
+            })
+    }
+
+    /// A direct push to the default branch (outside the queue).
+    pub fn push_base(&mut self, files: &[(String, String)]) -> Sha {
+        let base = self.cfg.default_branch.clone();
+        let tip = self.tip(&base).expect("base");
+        let mut tree = self.repo.tree(&tip).clone();
+        for (p, c) in files {
+            tree.insert(p.clone(), c.clone());
+        }
+        let c = self.repo.commit(tree, vec![tip.clone()], "direct push");
+        self.repo.update_ref(&base, &tip, &c).expect("cas");
+        self.external.insert(c.clone());
+        self.touched(&base);
+        self.emit_push(&base, &tip, Some(&c));
+        c
+    }
+
+    pub fn set_label(&mut self, n: u64, label: &str, add: bool) {
+        if let Some(p) = self.prs.get_mut(&n) {
+            if add {
+                p.labels.insert(label.into());
+            } else {
+                p.labels.remove(label);
+            }
+        }
+        self.emit_pr(
+            if add { "labeled" } else { "unlabeled" },
+            n,
+            json!({ "label": { "name": label } }),
+        );
+    }
+
+    pub fn run_then(&mut self, then: &[Then]) {
+        for t in then {
+            match t {
+                Then::PushBase(files) => {
+                    self.push_base(files);
+                }
+                Then::Label(n, l) => self.set_label(*n, l, true),
+            }
+        }
+    }
+
+    /// I1 at landing time: was `head` merged into a queue branch whose draft is still open?
+    pub fn head_tested(&self, head: &str) -> bool {
+        let bot = format!("{}[bot]", self.cfg.app_slug);
+        self.queue_heads.get(head).is_some_and(|branches| {
+            branches.iter().any(|b| {
+                self.prs
+                    .values()
+                    .any(|p| p.open && p.user == bot && p.head_ref == *b)
+            })
+        })
+    }
+
+    /// Whether `head` was checked in place: it already contains the base tip `tip` and its own
+    /// checks (not the queue's) are all green, so it is exactly what lands (in-place checks and
+    /// direct merge of an up-to-date pull request; KONZEPT I0 "or in place").
+    pub fn checked_in_place(&self, head: &str, tip: &str) -> bool {
+        self.repo.is_ancestor(tip, head) && {
+            let runs = self.latest_runs(head);
+            !runs.is_empty()
+                && runs
+                    .values()
+                    .all(|r| r.conclusion.as_deref() == Some("success"))
+        }
     }
 
     pub fn repo_json(&self) -> Value {
@@ -631,6 +854,8 @@ impl FakeGithub {
             comments: Vec::new(),
             reactions: Vec::new(),
             tokens: BTreeMap::new(),
+            token_requests: Vec::new(),
+            caller_token: None,
             ci: Vec::new(),
             faults: Vec::new(),
             hook_faults: HookFaults::default(),
@@ -646,6 +871,13 @@ impl FakeGithub {
             squashes: Vec::new(),
             external: BTreeSet::new(),
             queue_commits: BTreeMap::new(),
+            queue_heads: BTreeMap::new(),
+            merge_guard: None,
+            mergeable_lag: 0,
+            mergeable_unknown: BTreeMap::new(),
+            read_lag: 0,
+            stale: BTreeMap::new(),
+            old_names: Vec::new(),
             rulesets: Vec::new(),
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
@@ -728,6 +960,34 @@ impl FakeGithub {
             s.rng = f.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
             s.hook_faults = f;
         });
+    }
+
+    /// The merge guard (I1 at landing time), e.g. [`guard_labels`].
+    pub fn set_merge_guard(&self, g: Option<MergeGuard>) {
+        self.with(|s| s.merge_guard = g);
+    }
+
+    /// `mergeable` reads `null` this many times after each push to a pull request or its base.
+    pub fn set_mergeable_lag(&self, reads: u32) {
+        self.with(|s| s.mergeable_lag = reads);
+    }
+
+    /// Reads of a pull request or ref return the state before an API write this many times.
+    pub fn set_read_lag(&self, reads: u32) {
+        self.with(|s| s.read_lag = reads);
+    }
+
+    /// Renames the repository: the old name answers with redirects.
+    pub fn rename_repo(&self, new_name: &str) {
+        self.with(|s| {
+            let old = std::mem::replace(&mut s.cfg.name, new_name.to_string());
+            s.old_names.push(old);
+        });
+    }
+
+    /// Bodies of the installation token requests, in order.
+    pub fn token_requests(&self) -> Vec<Value> {
+        self.with(|s| s.token_requests.clone())
     }
 
     pub fn set_permissions(&self, p: BTreeMap<String, String>) {
@@ -829,6 +1089,7 @@ impl FakeGithub {
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
             s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            s.touched(&pr.head_ref);
             s.emit_pr("synchronize", n, json!({}));
             s.run_ci(n);
             head
@@ -857,20 +1118,7 @@ impl FakeGithub {
     }
 
     pub fn label(&self, n: u64, label: &str, add: bool) {
-        self.with(|s| {
-            if let Some(p) = s.prs.get_mut(&n) {
-                if add {
-                    p.labels.insert(label.into());
-                } else {
-                    p.labels.remove(label);
-                }
-            }
-            s.emit_pr(
-                if add { "labeled" } else { "unlabeled" },
-                n,
-                json!({ "label": { "name": label } }),
-            );
-        });
+        self.with(|s| s.set_label(n, label, add));
     }
 
     pub fn set_draft(&self, n: u64, draft: bool) {
@@ -893,6 +1141,22 @@ impl FakeGithub {
     /// `user` comments `body` on pull request `n`; returns the comment id.
     pub fn comment(&self, n: u64, user: &str, body: &str) -> u64 {
         self.with(|s| s.add_comment(n, user, body))
+    }
+
+    /// Sends the `issue_comment.created` webhook of comment `id` again, with a new delivery
+    /// id (a webhook redelivered by hand, or a second delivery GitHub does not deduplicate).
+    pub fn resend_comment(&self, id: u64) {
+        self.with(|s| {
+            let Some(c) = s.comments.iter().find(|c| c.id == id).cloned() else {
+                return;
+            };
+            let j = s.comment_json(&c);
+            s.emit(
+                "issue_comment",
+                json!({ "action": "created", "issue": { "number": c.number, "pull_request": {} },
+                        "comment": j, "sender": { "login": c.user } }),
+            );
+        });
     }
 
     /// `user` ticks the first open checkbox in the queue's comment carrying `marker`; false
@@ -1010,19 +1274,7 @@ impl FakeGithub {
 
     /// A commit pushed straight to the default branch (outside the queue).
     pub fn push_base(&self, files: &[(String, String)]) -> Sha {
-        self.with(|s| {
-            let base = s.cfg.default_branch.clone();
-            let tip = s.tip(&base).expect("base");
-            let mut tree = s.repo.tree(&tip).clone();
-            for (p, c) in files {
-                tree.insert(p.clone(), c.clone());
-            }
-            let c = s.repo.commit(tree, vec![tip.clone()], "direct push");
-            s.repo.update_ref(&base, &tip, &c).expect("cas");
-            s.external.insert(c.clone());
-            s.emit_push(&base, &tip, Some(&c));
-            c
-        })
+        self.with(|s| s.push_base(files))
     }
 
     // ---- observations ------------------------------------------------------------------
@@ -1119,11 +1371,29 @@ impl FakeGithub {
     /// Invariant violations on the fake's git state:
     /// - I0: every commit on the default branch is the initial commit, a direct push, or a
     ///   squash landing whose tree the queue built and saw green on a draft;
+    /// - I1: every landing happened at a head the queue merged into a queue branch whose draft
+    ///   was still open (not after its car was closed, not at another head), or at a head checked
+    ///   in place (it contains the base tip and its own checks are green), with the merge
+    ///   guard's conditions true at that moment; nothing landed twice;
     /// - MQ-35: no pull request was squashed twice; no change landed twice on the base;
     /// - I3 (call at quiescence with `quiescent`): no queue branch and no open queue draft.
     pub fn invariant_violations(&self, quiescent: bool) -> Vec<String> {
         self.with(|s| {
             let mut v = s.violations.clone();
+            for q in &s.squashes {
+                if !q.head_tested {
+                    v.push(format!(
+                        "I1: #{} landed at head {} that no open queue draft tested",
+                        q.pr, q.head
+                    ));
+                }
+                if let Some(why) = &q.guard {
+                    v.push(format!(
+                        "I1: #{} landed while its conditions were false ({why})",
+                        q.pr
+                    ));
+                }
+            }
             let tip = s.tip(&s.cfg.default_branch).expect("base");
             let mut seen_prs = BTreeMap::new();
             for c in s.repo.first_parent_history(&tip) {

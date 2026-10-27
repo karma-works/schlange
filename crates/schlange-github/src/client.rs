@@ -9,8 +9,21 @@
 //!
 //! **Rate limits.** A 429, or a 403 that says "rate limit", blocks the whole client until
 //! `Retry-After` (or `x-ratelimit-reset` when `x-ratelimit-remaining` is 0; one minute for a
-//! secondary limit without a header). GitHub did not execute a rate-limited request, so it is
-//! repeated after the wait, writes included.
+//! secondary limit without a header). A rate-limited read is repeated after the wait. A
+//! rate-limited **write is never repeated here**: the world may have changed during the wait
+//! (a push to the base, a label), so the write comes back as [`Error::RateLimited`] and the
+//! caller re-validates from fresh reads before it writes again (for landing: the engine's
+//! verification read, KONZEPT.md section 6).
+//!
+//! **Where requests go.** Only to the configured API base: an absolute URL (a `Link` header,
+//! a redirect) on another host is refused, so the token never leaves for another host. Plain
+//! `http://` is refused unless the configuration allows it explicitly (the fake GitHub in
+//! tests). A renamed repository answers with a redirect (301 for reads, 307 for writes) to the
+//! new location on the same host; the client follows it.
+//!
+//! **Tokens.** Installation tokens can be downscoped per installation
+//! ([`Client::set_token_scope`]): only the served repositories and only the permissions
+//! Schlange needs (W-22).
 //!
 //! **Retries.** Reads (`GET`) and `DELETE` are repeated on 5xx, transport errors and, a few
 //! times, on 404 (W-24: GitHub has had storms of false 404s). A write that fails with 5xx or
@@ -79,6 +92,9 @@ pub enum Error {
     /// GitHub asked us to wait longer than the client may block.
     #[error("{path}: rate limited for {wait_secs} s")]
     RateLimited { path: String, wait_secs: u64 },
+    /// Refused before sending: the request would leave the API host or use plain HTTP.
+    #[error("{0}")]
+    Refused(String),
     /// A cosmetic request was not sent because the budget is low.
     #[error("{path}: deferred, the request budget is reserved for landing")]
     Deferred { path: String },
@@ -248,6 +264,10 @@ pub struct Stats {
     pub not_modified: u64,
     pub deferred: u64,
     pub ambiguous: u64,
+    /// Redirects followed (renamed repositories).
+    pub redirects: u64,
+    /// Writes answered with a rate limit and handed back to the caller unsent.
+    pub writes_rate_limited: u64,
     pub tokens_issued: u64,
     /// Last `x-ratelimit-remaining` / `x-ratelimit-limit` GitHub reported.
     pub remaining: Option<u64>,
@@ -304,6 +324,8 @@ pub struct ClientConfig {
     pub retry: RetryPolicy,
     pub budget: BudgetConfig,
     pub timeout: Duration,
+    /// Allow a plain `http://` API base (tests against the fake GitHub only).
+    pub allow_insecure_http: bool,
 }
 
 struct Inner {
@@ -311,6 +333,8 @@ struct Inner {
     agent: ureq::Agent,
     budget: Mutex<Budget>,
     tokens: Mutex<HashMap<u64, (String, u64)>>,
+    /// Body of the token request per installation (repositories, permissions).
+    scopes: Mutex<HashMap<u64, serde_json::Value>>,
     etags: Mutex<HashMap<String, (String, Response)>>,
     stats: Mutex<Stats>,
     rng: Mutex<u64>,
@@ -390,6 +414,7 @@ impl Client {
                 agent: ureq::Agent::new_with_config(config.build()),
                 budget: Mutex::new(Budget::new(cfg.budget.clone())),
                 tokens: Mutex::new(HashMap::new()),
+                scopes: Mutex::new(HashMap::new()),
                 etags: Mutex::new(HashMap::new()),
                 stats: Mutex::new(Stats::default()),
                 rng: Mutex::new(seed),
@@ -419,6 +444,25 @@ impl Client {
             .map_err(|e| Error::Auth(e.to_string()))
     }
 
+    /// Limits the tokens of an installation to these repositories (names without owner) and
+    /// permissions. A cached token of another scope is dropped.
+    pub fn set_token_scope(
+        &self,
+        installation: u64,
+        repositories: &[String],
+        permissions: &std::collections::BTreeMap<String, String>,
+    ) {
+        let body = serde_json::json!({
+            "repositories": repositories,
+            "permissions": permissions,
+        });
+        let mut scopes = self.inner.scopes.lock().expect("scopes");
+        if scopes.get(&installation) != Some(&body) {
+            scopes.insert(installation, body);
+            self.forget_token(installation);
+        }
+    }
+
     /// An installation token, from the cache while it has more than five minutes left.
     pub fn installation_token(&self, installation: u64) -> Result<String, Error> {
         let now = unix_now();
@@ -433,13 +477,21 @@ impl Client {
             token: String,
             expires_at: String,
         }
+        let body = self
+            .inner
+            .scopes
+            .lock()
+            .expect("scopes")
+            .get(&installation)
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "{}".into());
         // Creating a token has no side effect worth guarding; repeat it like a read.
         let resp = self.send_inner(
             "POST",
             &path,
             Auth::App,
             Priority::Landing,
-            Some(b"{}".to_vec()),
+            Some(body.into_bytes()),
             true,
         )?;
         let tok: Token = resp.json(&path)?;
@@ -476,12 +528,38 @@ impl Client {
         exp.mul_f64(f)
     }
 
-    fn url(&self, path: &str) -> String {
-        if path.starts_with("http://") || path.starts_with("https://") {
+    fn base(&self) -> &str {
+        self.inner.cfg.api_base.trim_end_matches('/')
+    }
+
+    /// Whether an absolute URL is on the API host (same scheme, host and port, below the
+    /// base path).
+    pub fn on_api_host(&self, url: &str) -> bool {
+        let base = self.base();
+        url.strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with('?'))
+    }
+
+    /// The full URL of a path, or an absolute URL if it is on the API host.
+    fn url(&self, path: &str) -> Result<String, Error> {
+        let url = if path.starts_with("http://") || path.starts_with("https://") {
+            if !self.on_api_host(path) {
+                return Err(Error::Refused(format!(
+                    "refusing to send a request (and the token) to {path}: not on the API host {}",
+                    self.base()
+                )));
+            }
             path.to_string()
         } else {
-            format!("{}{}", self.inner.cfg.api_base.trim_end_matches('/'), path)
+            format!("{}{}", self.base(), path)
+        };
+        if url.starts_with("http://") && !self.inner.cfg.allow_insecure_http {
+            return Err(Error::Refused(format!(
+                "refusing to send credentials over plain HTTP to {}; use https (tests only: allow_insecure_http)",
+                self.base()
+            )));
         }
+        Ok(url)
     }
 
     fn admit(&self, prio: Priority, path: &str) -> Result<(), Error> {
@@ -614,13 +692,14 @@ impl Client {
         body: Option<Vec<u8>>,
         retry_errors: bool,
     ) -> Result<Response, Error> {
-        let url = self.url(path);
+        let mut url = self.url(path)?;
         let policy = self.inner.cfg.retry.clone();
-        let cache_key = format!("{auth:?} {url}");
+        let mut cache_key = format!("{auth:?} {url}");
         let mut attempt = 0u32;
         let mut not_found = 0u32;
         let mut auth_retry = true;
         let mut rate_waited = Duration::ZERO;
+        let mut redirects = 0u32;
         loop {
             self.admit(prio, path)?;
             let mut headers = vec![
@@ -704,6 +783,15 @@ impl Client {
                 if prio == Priority::Cosmetic {
                     return Err(Error::Deferred { path: path.into() });
                 }
+                if !retry_errors {
+                    // A write: GitHub did not carry it out, but the world may change while we
+                    // wait. The caller decides again from fresh reads.
+                    self.bump(|s| s.writes_rate_limited += 1);
+                    return Err(Error::RateLimited {
+                        path: path.into(),
+                        wait_secs: wait.as_secs(),
+                    });
+                }
                 if rate_waited + wait > policy.max_rate_limit_wait {
                     return Err(Error::RateLimited {
                         path: path.into(),
@@ -720,6 +808,35 @@ impl Client {
                 self.bump(|s| s.not_modified += 1);
                 r.cached = true;
                 return Ok(r);
+            }
+            if matches!(resp.status, 301 | 302 | 307 | 308) {
+                // A renamed repository. Reads follow any of these; a write only follows 307
+                // and 308, which keep the method and body.
+                let follow = method == "GET" || matches!(resp.status, 307 | 308);
+                if let Some(loc) = resp.header("location").map(str::to_string)
+                    && follow
+                    && redirects < 3
+                {
+                    let next = if loc.starts_with('/') {
+                        format!("{}{loc}", self.base())
+                    } else {
+                        loc
+                    };
+                    url = self.url(&next)?;
+                    cache_key = format!("{auth:?} {url}");
+                    redirects += 1;
+                    self.bump(|s| s.redirects += 1);
+                    continue;
+                }
+                return Err(Error::Status {
+                    method: method.into(),
+                    path: path.into(),
+                    status: resp.status,
+                    message: format!(
+                        "redirect not followed (to {})",
+                        resp.header("location").unwrap_or("?")
+                    ),
+                });
             }
             if resp.status == 401 && auth_retry {
                 if let Auth::Installation(id) = auth {
@@ -830,6 +947,13 @@ impl Client {
             pages += 1;
             if pages < max_pages {
                 next = resp.next_link();
+                if let Some(n) = &next
+                    && !self.on_api_host(n)
+                {
+                    return Err(Error::Refused(format!(
+                        "{path}: the next page {n} is not on the API host; not following it"
+                    )));
+                }
             }
         }
         Ok(out)

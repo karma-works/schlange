@@ -1,0 +1,6 @@
+{"type":"enqueue","number":1,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":["queued"],"remove":[]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn."}}
+{"type":"dequeue","number":1,"queue":"default","reason":{"code":"PR_DEQUEUED","text":"queue_conditions no longer hold (condition 3 is false)","assumed":true}}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":["dequeued"],"remove":["queued"]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · left the queue\n\nReason: PR_DEQUEUED (code assumed): queue_conditions no longer hold (condition 3 is false)\n\n- [ ] Put this pull request back into the queue <!-- schlange:box:requeue -->"}}

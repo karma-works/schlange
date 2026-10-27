@@ -1,16 +1,38 @@
 //! The REST calls the queue needs, with small hand-written response types (only the fields
 //! Schlange reads, not GitHub's whole schema).
 //!
-//! **No compare-and-swap on GitHub.** `PATCH /git/refs/{ref}` takes a new SHA and `force`,
-//! but no expected old SHA. With `force: false` GitHub only refuses non-fast-forward
-//! updates. [`RepoApi::update_ref_cas`] therefore reads the ref, compares it with the expected
-//! SHA and then patches with `force: false`; a racing writer between the read and the patch is
-//! not detected by GitHub when its commit is an ancestor of ours. The merge endpoint
-//! (`PUT /pulls/{n}/merge`) guards only the pull request's head (`sha`), not the base. Schlange
-//! mitigates as KONZEPT.md (section 6) says: one writer per repository and branch, a read of
-//! the base right before each squash, and after it a check that the landed commit's parent is
-//! the expected base and that its tree is the tree the queue tested. A mismatch stops the
-//! queue (MQ-02).
+//! **No compare-and-swap on GitHub's merge.** The merge endpoint (`PUT /pulls/{n}/merge`)
+//! guards only the pull request's head (`sha`), not the base: GitHub squashes onto whatever the
+//! base is when it executes the call.
+//!
+//! A real compare-and-swap exists for refs: build the squash commit with the Git Data API
+//! (`POST /git/commits`, the tested tree, the expected base as parent) and move the base with
+//! `PATCH /git/refs/heads/<base>` and `force: false`, which GitHub refuses unless it is a
+//! fast-forward, so it fails when anyone pushed in between. That path has two costs, which is
+//! why Schlange does not take it (yet):
+//!
+//! - GitHub does not mark the pull request as **merged**: its head is not in the base after a
+//!   squash. The queue would have to close it with a comment. Workflows on
+//!   `pull_request: closed` with `merged == true`, Dependabot's bookkeeping, release notes and
+//!   the PR timeline would all see "closed", not "merged". Arztagent's flows may rely on it.
+//! - A direct ref update on a protected base needs the app on the bypass list of every
+//!   ruleset (or classic protection) that requires pull requests; the merge API also needs
+//!   that for batches, but a bypassing ref update skips **all** rules for that push, required
+//!   checks included, so a bug in the queue would not be stopped by GitHub.
+//!
+//! So landing keeps the merge API with the guards in [`crate::forge`]: one writer per
+//! repository, the base read immediately before every merge call (never a call after a wait
+//! without that read; the client hands rate-limited writes back instead of repeating them),
+//! the head guarded by `sha`, and afterwards a check that the landed commit's parent is the
+//! expected base and its tree the tested tree; a mismatch halts the queue (MQ-02). The window
+//! left is one request long: a push that lands between the base read and GitHub executing the
+//! merge call is detected afterwards, not prevented. Only a sandbox on github.com can measure
+//! how often that happens and confirm GitHub's exact answers (the list is in the
+//! `github-integration` feature file, Gotchas).
+//!
+//! [`RepoApi::update_ref_cas`] reads the ref, compares it with the expected SHA and then
+//! patches with `force: false`; a racing writer between the read and the patch is not
+//! detected by GitHub when its commit is an ancestor of ours.
 
 use std::collections::BTreeMap;
 
@@ -480,8 +502,20 @@ impl RepoApi {
         )
     }
 
+    /// The combined status with every page of its statuses (GitHub pages them: 30 by
+    /// default, 100 at most).
     pub fn combined_status(&self, sha: &str, prio: Priority) -> Result<CombinedStatus, Error> {
-        self.get(&format!("/commits/{}/status", enc_path(sha)), prio)
+        let path = self.p(&format!("/commits/{}/status?per_page=100", enc_path(sha)));
+        let auth = auth_inst(self.installation);
+        let first = self.client.send("GET", &path, auth, prio, None)?;
+        let mut cs: CombinedStatus = first.json(&path)?;
+        if let Some(next) = first.next_link() {
+            let more: Vec<StatusJson> = self
+                .client
+                .get_paginated(&next, auth, prio, 30, |v| v.get("statuses").cloned())?;
+            cs.statuses.extend(more);
+        }
+        Ok(cs)
     }
 
     /// The SHA a branch points to.

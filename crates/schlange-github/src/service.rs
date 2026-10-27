@@ -1,20 +1,31 @@
-//! `schlange serve`: the webhook endpoint, one engine worker per repository, reconciliation.
+//! `schlange serve`: the webhook endpoint, one engine worker per repository, reconciliation,
+//! persistence.
 //!
-//! - The HTTP listener (`tiny_http`, blocking, one thread) verifies the signature, drops
-//!   repeated delivery ids, parses the payload and hands the hints to the repository's worker.
-//!   It answers 202 at once; work happens in the worker. A blocking server is enough: GitHub
-//!   sends a few deliveries per second at most, and it keeps the binary small (no async
-//!   runtime).
-//! - Each worker is the single writer for its repository (KONZEPT.md, section 6): it owns the
-//!   engine state and the [`GithubForge`], turns hints into reads, feeds the reads to the
+//! - **Listener** ([`crate::http`]): a small thread pool with read timeouts and deadlines, so a
+//!   slow client never stalls webhooks or `/healthz`. `POST /webhook` verifies the signature
+//!   (the secret must be at least [`MIN_SECRET_LEN`] bytes), drops delivery ids it already
+//!   handled, parses the payload and hands the hints to the repository's worker; it answers
+//!   202 at once. A delivery id is recorded only once the delivery was accepted: a delivery
+//!   answered 400 or 503 is redelivered by GitHub and handled then. `GET /healthz` answers
+//!   `ok` (503 when a worker stopped). `GET /status` needs `Authorization: Bearer <admin
+//!   token>` and is off without one: it shows pull request data.
+//! - **Workers.** Each is the single writer for its repository (KONZEPT.md, section 6): it owns
+//!   the engine state and the [`GithubForge`], turns hints into reads, feeds them to the
 //!   engine, carries out the decisions, fires the engine's timers, retries deferred
 //!   decisions, and runs a full reconciliation at start and every `reconcile_every` seconds
 //!   (progress without webhooks, MQ-30), followed by the orphan sweep.
-//! - `GET /healthz` answers `ok`; `GET /status` returns each worker's state as JSON.
+//! - **Journal** ([`crate::store`]): with a data directory, every engine step is checkpointed
+//!   before its side effects and every side effect is journaled as an intent before it is
+//!   sent. After a crash the worker restarts from the checkpoint, feeds `Event::Restarted`
+//!   (every outstanding request is in doubt) and a full read of GitHub (MQ-31). A journal that
+//!   cannot be written stops the worker before any further side effect.
+//! - **Configuration** ([`crate::config`]): read from the default branch only and validated by
+//!   the same pipeline as `config validate`; an invalid one is not applied, the last valid one
+//!   stays in force and the error shows in the log, in `/status` and in the doctor.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Read;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -22,14 +33,25 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use schlange_config::rules::Rules;
+use schlange_core::journal::{Journal, is_side_effect};
 use schlange_core::model::Time;
 use schlange_core::{Decision, Event, State, step};
 
 use crate::api::{RepoApi, RepoName};
 use crate::client::{Client, Priority};
+use crate::config::{ConfigCheck, Found, read_from_default_branch};
 use crate::forge::{ForgeOptions, GithubForge};
+use crate::http::{Handler, Limits, Request, Response, Server};
+use crate::store::{SqliteJournal, Store};
 use crate::time::Clock;
 use crate::webhook::{CommentHint, Dedup, Hint, Parsed, parse, verify_signature};
+
+/// Shorter webhook secrets are refused (GitHub recommends a long random string).
+pub const MIN_SECRET_LEN: usize = 16;
+/// `/status` shows at most this many outcomes.
+pub const STATUS_OUTCOMES: usize = 200;
+const DECISION_LOG_MAX: usize = 10_000;
+const DELIVERIES_KEPT: u64 = 50_000;
 
 /// Where the configuration comes from.
 #[derive(Clone, Debug)]
@@ -38,8 +60,16 @@ pub enum ConfigSource {
     /// (`schlange_config::config_file::NAMES`), read again at every reconciliation. Two files
     /// are an error; the last good configuration stays in use.
     Repository,
-    /// A fixed configuration text (from `--config`).
+    /// A fixed configuration text (from `--config`), validated the same way.
     Text(String),
+}
+
+/// A crash injected for tests: the worker stops dead at this point (no reply, no journal
+/// entry after it), as a killed process would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrashPoint {
+    /// Right after the merge calls of a landing returned, before the reply reaches the engine.
+    AfterLand,
 }
 
 #[derive(Clone)]
@@ -53,6 +83,8 @@ pub struct ServeConfig {
     /// Seconds between full reconciliations.
     pub reconcile_every: Time,
     pub config: ConfigSource,
+    /// The validator for the configuration (schema, feature map).
+    pub check: Arc<ConfigCheck>,
     /// How often the worker wakes when nothing arrives.
     pub poll: Duration,
     /// Name of the queue's own check run.
@@ -60,6 +92,13 @@ pub struct ServeConfig {
     /// First and longest delay for retrying deferred decisions.
     pub retry_base: Duration,
     pub retry_max: Duration,
+    /// Data directory for the SQLite database; `None` keeps everything in memory (tests).
+    pub data_dir: Option<PathBuf>,
+    /// Bearer token for `GET /status`; `None` turns `/status` off.
+    pub admin_token: Option<String>,
+    pub http: Limits,
+    /// Tests only.
+    pub crash: Option<CrashPoint>,
 }
 
 pub enum Msg {
@@ -74,6 +113,7 @@ pub enum Msg {
 pub struct WorkerStatus {
     pub repo: String,
     pub queued: Vec<u64>,
+    /// The newest merged pull requests (at most [`STATUS_OUTCOMES`]).
     pub merged: Vec<u64>,
     pub halted: BTreeMap<String, String>,
     pub cars: usize,
@@ -82,14 +122,23 @@ pub struct WorkerStatus {
     pub webhooks: u64,
     pub pending: Vec<String>,
     pub cosmetics_waiting: usize,
+    /// The configuration was rejected (the last valid one, if any, stays in force).
     pub config_error: Option<String>,
+    /// Stage 5: features of the configuration Schlange does not support yet.
+    pub config_warnings: Vec<String>,
+    /// Restarted from the journal (with the side effects that were in doubt).
+    pub recovered: Option<Vec<String>>,
+    pub persistent: bool,
     pub log_tail: Vec<String>,
-    /// The engine state.
+    /// The engine state (outcomes cut to the newest [`STATUS_OUTCOMES`]).
     pub state: serde_json::Value,
 }
 
 struct Shared {
     statuses: Mutex<BTreeMap<String, WorkerStatus>>,
+    decisions: Mutex<BTreeMap<String, VecDeque<String>>>,
+    /// Workers that stopped, with the reason (health check).
+    dead: Mutex<BTreeMap<String, String>>,
     /// Messages handed to workers and not yet handled (tests wait for 0).
     inflight: AtomicUsize,
     stop: AtomicBool,
@@ -99,12 +148,29 @@ struct Shared {
 pub struct Router {
     secret: Vec<u8>,
     dedup: Mutex<Dedup>,
+    store: Option<Store>,
     sinks: HashMap<String, Sender<Msg>>,
     shared: Arc<Shared>,
 }
 
 impl Router {
-    /// Handles one delivery; returns the HTTP status and a short text.
+    fn seen(&self, id: &str) -> bool {
+        self.dedup.lock().expect("dedup").seen(id)
+            || self
+                .store
+                .as_ref()
+                .is_some_and(|s| s.delivery_seen(id).unwrap_or(false))
+    }
+
+    fn record(&self, id: &str) {
+        self.dedup.lock().expect("dedup").record(id);
+        if let Some(s) = &self.store {
+            let _ = s.record_delivery(id, crate::time::unix_now(), DELIVERIES_KEPT);
+        }
+    }
+
+    /// Handles one delivery; returns the HTTP status and a short text. The delivery id is
+    /// recorded only when the delivery was handled (2xx).
     pub fn handle(&self, header: &dyn Fn(&str) -> Option<String>, body: &[u8]) -> (u16, String) {
         if !verify_signature(&self.secret, body, header("x-hub-signature-256").as_deref()) {
             return (401, "bad signature".into());
@@ -115,7 +181,7 @@ impl Router {
         let Some(id) = header("x-github-delivery") else {
             return (400, "no X-GitHub-Delivery".into());
         };
-        if self.dedup.lock().expect("dedup").check(&id) {
+        if self.seen(&id) {
             return (200, "duplicate delivery".into());
         }
         let parsed = match parse(&event, body) {
@@ -123,9 +189,11 @@ impl Router {
             Err(e) => return (400, e),
         };
         if parsed.hints.is_empty() {
+            self.record(&id);
             return (200, "ignored".into());
         }
         let Some(sink) = parsed.repo.as_ref().and_then(|r| self.sinks.get(r)) else {
+            self.record(&id);
             return (200, "repository not served".into());
         };
         self.shared.inflight.fetch_add(1, Ordering::SeqCst);
@@ -133,8 +201,17 @@ impl Router {
             self.shared.inflight.fetch_sub(1, Ordering::SeqCst);
             return (503, "worker stopped".into());
         }
+        self.record(&id);
         (202, "accepted".into())
     }
+}
+
+/// Constant-time comparison (the admin token).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 pub struct Service {
@@ -142,12 +219,38 @@ pub struct Service {
     shared: Arc<Shared>,
     sinks: Vec<Sender<Msg>>,
     threads: Vec<JoinHandle<()>>,
-    server: Arc<tiny_http::Server>,
+    server: Option<Server>,
+    pub store: Option<Store>,
+}
+
+/// The token scope for one installation: these repositories, and of Schlange's permissions
+/// the ones the installation grants (asking for more fails).
+fn token_permissions(granted: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let rank = |l: &str| match l {
+        "admin" => 3,
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    };
+    crate::permissions::PERMISSIONS
+        .iter()
+        .filter(|(name, level, _)| {
+            granted
+                .get(*name)
+                .is_some_and(|have| rank(have) >= rank(level))
+        })
+        .map(|(n, l, _)| (n.to_string(), l.to_string()))
+        .collect()
 }
 
 impl Service {
     /// Starts the listener and one worker per repository.
     pub fn start(cfg: ServeConfig, clock: Arc<dyn Clock>) -> Result<Service, String> {
+        if cfg.webhook_secret.len() < MIN_SECRET_LEN {
+            return Err(format!(
+                "the webhook secret is empty or shorter than {MIN_SECRET_LEN} bytes; use a long random string"
+            ));
+        }
         let app = cfg
             .client
             .app()
@@ -157,40 +260,44 @@ impl Service {
             app_slug: app.slug.clone(),
             check_name: cfg.check_name.clone(),
         };
-        // The schema for the "configuration changed" check, when it is at hand
-        // (`SCHLANGE_SCHEMA` or `.research/` above the working directory).
-        let schema = std::env::current_dir()
-            .ok()
-            .and_then(|d| schlange_config::schema::locate(None, &d))
-            .and_then(|p| schlange_config::Schema::load(&p).ok())
-            .map(Arc::new);
-        let features = schlange_config::FeatureMap::embedded().ok().map(Arc::new);
-        let server = Arc::new(
-            tiny_http::Server::http(cfg.listen)
-                .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?,
-        );
-        let addr = server
-            .server_addr()
-            .to_ip()
-            .ok_or("listener has no IP address")?;
+        let store = match &cfg.data_dir {
+            Some(d) => Some(Store::open(d).map_err(|e| e.to_string())?),
+            None => None,
+        };
         let shared = Arc::new(Shared {
             statuses: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(BTreeMap::new()),
+            dead: Mutex::new(BTreeMap::new()),
             inflight: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
         });
+        // Installations and their downscoped tokens (W-22).
+        let mut installs: BTreeMap<u64, (Vec<String>, BTreeMap<String, String>)> = BTreeMap::new();
+        let mut repo_inst = Vec::new();
+        for repo in &cfg.repos {
+            let inst = match cfg.installation {
+                Some(i) => cfg
+                    .client
+                    .installation(i)
+                    .map_err(|e| format!("installation {i}: {e}"))?,
+                None => cfg
+                    .client
+                    .repo_installation(repo)
+                    .map_err(|e| format!("{}: no installation: {e}", repo.full()))?,
+            };
+            let e = installs
+                .entry(inst.id)
+                .or_insert_with(|| (Vec::new(), token_permissions(&inst.permissions)));
+            e.0.push(repo.name.clone());
+            repo_inst.push((repo.clone(), inst.id));
+        }
+        for (id, (names, perms)) in &installs {
+            cfg.client.set_token_scope(*id, names, perms);
+        }
         let mut sinks = HashMap::new();
         let mut threads = Vec::new();
         let mut senders = Vec::new();
-        for repo in &cfg.repos {
-            let installation = match cfg.installation {
-                Some(i) => i,
-                None => {
-                    cfg.client
-                        .repo_installation(repo)
-                        .map_err(|e| format!("{}: no installation: {e}", repo.full()))?
-                        .id
-                }
-            };
+        for (repo, installation) in repo_inst {
             let api = RepoApi {
                 client: cfg.client.clone(),
                 repo: repo.clone(),
@@ -199,8 +306,9 @@ impl Service {
             let mut forge = GithubForge::new(api, clock.clone(), opts.clone());
             forge.retry_base = cfg.retry_base;
             forge.retry_max = cfg.retry_max;
-            forge.schema = schema.clone();
-            forge.features = features.clone();
+            forge.store = store.clone();
+            forge.check = Some(cfg.check.clone());
+            let journal = store.as_ref().map(|s| s.journal(&repo.full()));
             let state = State {
                 host: schlange_core::engine::Host {
                     epoch: 0,
@@ -212,15 +320,17 @@ impl Service {
             let (tx, rx) = channel();
             sinks.insert(repo.full(), tx.clone());
             senders.push(tx);
-            let worker = Worker {
+            let mut worker = Worker {
                 forge,
                 clock: clock.clone(),
                 state,
                 rules: None,
+                config_key: None,
                 comments_waiting: Vec::new(),
-                rules_text: None,
                 config_error: None,
+                config_warnings: Vec::new(),
                 config: cfg.config.clone(),
+                check: cfg.check.clone(),
                 timers: BTreeSet::new(),
                 rx,
                 every: cfg.reconcile_every.max(1),
@@ -230,7 +340,14 @@ impl Service {
                 webhooks: 0,
                 shared: shared.clone(),
                 poll: cfg.poll,
+                journal,
+                seq: 0,
+                restart_pending: false,
+                recovered: None,
+                crash: cfg.crash,
+                dead: false,
             };
+            worker.recover()?;
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("worker {}", repo.full()))
@@ -238,26 +355,26 @@ impl Service {
                     .map_err(|e| e.to_string())?,
             );
         }
-        let router = Router {
+        let router = Arc::new(Router {
             secret: cfg.webhook_secret.clone(),
             dedup: Mutex::new(Dedup::new(10_000)),
+            store: store.clone(),
             sinks,
             shared: shared.clone(),
-        };
-        let srv = server.clone();
+        });
         let sh = shared.clone();
-        threads.push(
-            std::thread::Builder::new()
-                .name("webhooks".into())
-                .spawn(move || serve_http(&srv, &router, &sh))
-                .map_err(|e| e.to_string())?,
-        );
+        let admin = cfg.admin_token.clone();
+        let handler: Handler =
+            Arc::new(move |req: &Request| route(req, &router, &sh, admin.as_deref()));
+        let server = Server::start(cfg.listen, cfg.http.clone(), handler)
+            .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
         Ok(Service {
-            addr,
+            addr: server.addr,
             shared,
             sinks: senders,
             threads,
-            server,
+            server: Some(server),
+            store,
         })
     }
 
@@ -274,6 +391,22 @@ impl Service {
         self.shared.statuses.lock().expect("status").clone()
     }
 
+    /// The decisions of a repository's engine, oldest first (JSON lines, bounded).
+    pub fn decision_log(&self, repo: &str) -> Vec<String> {
+        self.shared
+            .decisions
+            .lock()
+            .expect("decisions")
+            .get(repo)
+            .map(|d| d.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Workers that stopped, with the reason.
+    pub fn dead_workers(&self) -> BTreeMap<String, String> {
+        self.shared.dead.lock().expect("dead").clone()
+    }
+
     /// Asks every worker for a full reconciliation now.
     pub fn reconcile_now(&self) {
         for s in &self.sinks {
@@ -284,18 +417,20 @@ impl Service {
         }
     }
 
-    pub fn shutdown(self) {
+    pub fn shutdown(mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         for s in &self.sinks {
             let _ = s.send(Msg::Shutdown);
         }
-        self.server.unblock();
+        if let Some(srv) = self.server.take() {
+            srv.shutdown();
+        }
         for t in self.threads {
             let _ = t.join();
         }
     }
 
-    /// Blocks until the service stops (for the binary).
+    /// Blocks until the workers stop (for the binary).
     pub fn wait(self) {
         for t in self.threads {
             let _ = t.join();
@@ -303,65 +438,43 @@ impl Service {
     }
 }
 
-fn serve_http(server: &tiny_http::Server, router: &Router, shared: &Shared) {
-    loop {
-        if shared.stop.load(Ordering::SeqCst) {
-            return;
+fn route(req: &Request, router: &Router, shared: &Shared, admin: Option<&str>) -> Response {
+    let path = req.url.split('?').next().unwrap_or("");
+    match (req.method.as_str(), path) {
+        ("POST", "/webhook") | ("POST", "/") => {
+            let get = |name: &str| req.header(name).map(str::to_string);
+            let (s, t) = router.handle(&get, &req.body);
+            Response::text(s, t)
         }
-        let mut req = match server.recv() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        let url = req.url().to_string();
-        let method = req.method().to_string();
-        let (status, text, json) = match (method.as_str(), url.as_str()) {
-            ("POST", "/webhook") | ("POST", "/") => {
-                let mut body = Vec::new();
-                // GitHub caps payloads at 25 MB.
-                let ok = req
-                    .as_reader()
-                    .take(25 * 1024 * 1024 + 1)
-                    .read_to_end(&mut body)
-                    .is_ok();
-                if !ok || body.len() > 25 * 1024 * 1024 {
-                    (413, "payload too large".to_string(), false)
-                } else {
-                    let headers: Vec<(String, String)> = req
-                        .headers()
-                        .iter()
-                        .map(|h| {
-                            (
-                                h.field.as_str().as_str().to_ascii_lowercase(),
-                                h.value.as_str().to_string(),
-                            )
-                        })
-                        .collect();
-                    let get = |name: &str| {
-                        headers
-                            .iter()
-                            .find(|(k, _)| k == name)
-                            .map(|(_, v)| v.clone())
-                    };
-                    let (s, t) = router.handle(&get, &body);
-                    (s, t, false)
-                }
-            }
-            ("GET", "/healthz") => (200, "ok".into(), false),
-            ("GET", "/status") => {
-                let s = shared.statuses.lock().expect("status").clone();
-                (
-                    200,
-                    serde_json::to_string_pretty(&s).unwrap_or_default(),
-                    true,
+        ("GET", "/healthz") => {
+            let dead = shared.dead.lock().expect("dead").clone();
+            if dead.is_empty() {
+                Response::text(200, "ok")
+            } else {
+                Response::text(
+                    503,
+                    dead.iter()
+                        .map(|(r, why)| format!("worker {r} stopped: {why}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 )
             }
-            _ => (404, "not found".into(), false),
-        };
-        let mut resp = tiny_http::Response::from_string(text).with_status_code(status);
-        if json && let Ok(h) = tiny_http::Header::from_bytes("content-type", "application/json") {
-            resp = resp.with_header(h);
         }
-        let _ = req.respond(resp);
+        ("GET", "/status") => {
+            let Some(token) = admin else {
+                return Response::text(404, "status is off (no admin token configured)");
+            };
+            let given = req
+                .header("authorization")
+                .and_then(|a| a.strip_prefix("Bearer "))
+                .unwrap_or("");
+            if !ct_eq(given.as_bytes(), token.as_bytes()) {
+                return Response::text(401, "needs Authorization: Bearer <admin token>");
+            }
+            let s = shared.statuses.lock().expect("status").clone();
+            Response::json(200, serde_json::to_string_pretty(&s).unwrap_or_default())
+        }
+        _ => Response::text(404, "not found"),
     }
 }
 
@@ -370,9 +483,12 @@ struct Worker {
     clock: Arc<dyn Clock>,
     state: State,
     rules: Option<Rules>,
-    rules_text: Option<String>,
+    /// The configuration text last looked at (valid or not), to validate only on change.
+    config_key: Option<String>,
     config_error: Option<String>,
+    config_warnings: Vec<String>,
     config: ConfigSource,
+    check: Arc<ConfigCheck>,
     timers: BTreeSet<Time>,
     rx: Receiver<Msg>,
     every: Time,
@@ -382,11 +498,61 @@ struct Worker {
     webhooks: u64,
     shared: Arc<Shared>,
     poll: Duration,
+    journal: Option<SqliteJournal>,
+    seq: u64,
+    /// `Event::Restarted` is fed once the configuration is loaded.
+    restart_pending: bool,
+    recovered: Option<Vec<String>>,
+    crash: Option<CrashPoint>,
+    dead: bool,
     /// Comments whose sender's permission could not be read yet (retried each round).
     comments_waiting: Vec<CommentHint>,
 }
 
 impl Worker {
+    /// Restores the state from the journal, if there is one.
+    fn recover(&mut self) -> Result<(), String> {
+        let Some(j) = &self.journal else {
+            return Ok(());
+        };
+        let repo = self.forge.api.repo.full();
+        let r = j
+            .recover()
+            .map_err(|e| format!("{repo}: journal unreadable: {e}"))?;
+        self.seq = j.max_seq().map_err(|e| e.to_string())?;
+        if let Some(r) = r {
+            let doubt: Vec<String> = r
+                .in_doubt
+                .iter()
+                .map(|(seq, d)| format!("#{seq} {}", describe(d)))
+                .collect();
+            self.forge.note(format!(
+                "restarted from the journal: {} queued, {} side effect(s) in doubt{}",
+                r.state.queued.len(),
+                doubt.len(),
+                if doubt.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", doubt.join("; "))
+                }
+            ));
+            self.state = r.state;
+            self.restart_pending = true;
+            self.recovered = Some(doubt);
+        }
+        Ok(())
+    }
+
+    fn die(&mut self, why: String) {
+        self.forge.note(format!("worker stops: {why}"));
+        self.shared
+            .dead
+            .lock()
+            .expect("dead")
+            .insert(self.forge.api.repo.full(), why);
+        self.dead = true;
+    }
+
     fn run(mut self) {
         loop {
             let mut hints = BTreeSet::new();
@@ -455,6 +621,10 @@ impl Worker {
             for ev in self.forge.retry_pending() {
                 self.feed(ev);
             }
+            if self.dead {
+                self.publish();
+                return;
+            }
             self.forge.flush_cosmetics();
             self.publish();
             self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
@@ -462,58 +632,58 @@ impl Worker {
     }
 
     fn load_config(&mut self) {
-        let text = match &self.config {
-            ConfigSource::Text(t) => Some(t.clone()),
+        let keep = |has: bool| {
+            if has {
+                "the last valid configuration stays in force"
+            } else {
+                "nothing is queued until a valid one is on the default branch"
+            }
+        };
+        let (path, text) = match &self.config {
+            ConfigSource::Text(t) => ("--config".to_string(), t.clone()),
             ConfigSource::Repository => {
-                let api = &self.forge.api;
-                let branch = match api.repository(Priority::Normal) {
-                    Ok(r) => r.default_branch,
+                match read_from_default_branch(&self.forge.api, Priority::Normal) {
+                    Ok(Found::One(path, text)) => (path, text),
+                    Ok(Found::None) => {
+                        self.config_error = Some(format!(
+                            "no configuration file on the default branch (searched {}); {}",
+                            schlange_config::config_file::NAMES.join(", "),
+                            keep(self.rules.is_some())
+                        ));
+                        return;
+                    }
+                    Ok(Found::Ambiguous(e)) => {
+                        // Two files: an error; keep the last valid configuration.
+                        let msg = format!(
+                            "configuration not applied ({}): {e}",
+                            keep(self.rules.is_some())
+                        );
+                        if self.config_error.as_deref() != Some(msg.as_str()) {
+                            self.forge.note(msg.clone());
+                        }
+                        self.config_error = Some(msg);
+                        self.config_key = None;
+                        return;
+                    }
                     Err(e) => {
                         self.forge.note(format!("configuration not read: {e}"));
                         return;
                     }
-                };
-                let mut found = BTreeMap::new();
-                for path in schlange_config::config_file::NAMES {
-                    match api.file_content(path, &branch, Priority::Normal) {
-                        Ok(Some(t)) => {
-                            found.insert(path, t);
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            self.forge.note(format!("configuration not read: {e}"));
-                            return;
-                        }
-                    }
-                }
-                let located = schlange_config::config_file::locate(|p| found.contains_key(p));
-                if let Some(e) = located.error() {
-                    // Two files: an error; keep the last good configuration.
-                    if self.config_error.as_deref() != Some(e.as_str()) {
-                        self.forge.note(format!("configuration not applied: {e}"));
-                    }
-                    self.config_error = Some(e);
-                    return;
-                }
-                match located {
-                    schlange_config::config_file::Located::One(p) => found.remove(p),
-                    _ => None,
                 }
             }
         };
-        let Some(text) = text else {
-            self.config_error = Some(format!(
-                "no configuration file on the default branch (searched {})",
-                schlange_config::config_file::NAMES.join(", ")
-            ));
-            return;
-        };
-        if self.rules_text.as_deref() == Some(text.as_str()) {
+        let key = format!("{path}\n{text}");
+        if self.config_key.as_deref() == Some(key.as_str()) {
             return;
         }
-        match Rules::from_yaml(&text) {
-            Ok(r) => {
+        self.config_key = Some(key);
+        match self.check.check(&path, &text) {
+            Ok(loaded) => {
                 let changed = self.rules.is_some();
+                for w in &loaded.warnings {
+                    self.forge.note(format!("configuration warning: {w}"));
+                }
+                let r = loaded.rules;
                 self.forge.read_reviews = r.queue_rules.iter().any(|q| {
                     q.commit_message_format.as_ref().is_some_and(|f| {
                         f.trailers
@@ -521,17 +691,20 @@ impl Worker {
                     })
                 });
                 self.rules = Some(r);
-                self.rules_text = Some(text);
+                self.config_warnings = loaded.warnings;
                 self.config_error = None;
                 if changed {
                     // MQ-19: every pull request is evaluated again under the new rules.
-                    self.forge.note("configuration changed; using the new one");
+                    self.forge
+                        .note(format!("configuration changed ({path}); using the new one"));
                     self.feed(Event::ConfigurationChanged);
                 }
             }
             Err(e) => {
-                // Keep the last good configuration.
-                self.config_error = Some(format!("configuration invalid, not applied: {e}"));
+                let keep = keep(self.rules.is_some());
+                self.config_error = Some(format!(
+                    "configuration {path} invalid, not applied ({keep}): {e}"
+                ));
                 self.forge
                     .note(self.config_error.clone().unwrap_or_default());
             }
@@ -545,9 +718,16 @@ impl Worker {
         let Some(rules) = self.rules.clone() else {
             return;
         };
+        if self.restart_pending {
+            self.restart_pending = false;
+            self.feed(Event::Restarted);
+        }
         match self.forge.reconcile(&self.state, &rules) {
             Ok((ev, sweep)) => {
                 self.feed(ev);
+                if self.dead {
+                    return;
+                }
                 self.forge.sweep(&sweep, &self.state);
                 self.forge.hurry_pending();
                 self.last_reconcile = Some(now);
@@ -660,39 +840,88 @@ impl Worker {
         }
     }
 
-    /// One event into the engine, its decisions to GitHub, the replies back.
+    fn log_decision(&self, d: &Decision) {
+        let mut all = self.shared.decisions.lock().expect("decisions");
+        let log = all.entry(self.forge.api.repo.full()).or_default();
+        if log.len() >= DECISION_LOG_MAX {
+            log.pop_front();
+        }
+        log.push_back(describe(d));
+    }
+
+    /// One event into the engine, its decisions to GitHub, the replies back. The state is
+    /// checkpointed before the side effects, each side effect journaled before it is sent.
     fn feed(&mut self, event: Event) {
         let Some(rules) = self.rules.clone() else {
             return;
         };
-        let mut queue = vec![event];
-        while !queue.is_empty() {
-            let ev = queue.remove(0);
+        let mut queue = VecDeque::from([event]);
+        while let Some(ev) = queue.pop_front() {
+            if self.dead {
+                return;
+            }
             let now = self.clock.now();
             let (next, decisions) = step(&self.state, &rules, &ev, now);
             self.state = next;
+            if let Some(j) = &mut self.journal
+                && let Err(e) = j.checkpoint(&self.state)
+            {
+                self.die(format!("journal checkpoint failed: {e}"));
+                return;
+            }
             for d in &decisions {
                 if let Decision::WakeAt { at } = d {
                     self.timers.insert(*at);
                     continue;
                 }
                 self.forge.note(format!("decision: {}", describe(d)));
-                queue.extend(self.forge.execute(d));
+                self.log_decision(d);
+                let side = is_side_effect(d);
+                let mut seq = None;
+                if side && let Some(j) = &mut self.journal {
+                    self.seq += 1;
+                    if let Err(e) = j.intent(self.seq, d) {
+                        self.die(format!("journal intent failed: {e}"));
+                        return;
+                    }
+                    seq = Some(self.seq);
+                }
+                let replies = self.forge.execute(d);
+                if self.crash == Some(CrashPoint::AfterLand) && matches!(d, Decision::Land { .. }) {
+                    self.die("injected crash after a landing (test)".into());
+                    return;
+                }
+                if let (Some(seq), Some(j)) = (seq, &mut self.journal)
+                    && let Err(e) = j.done(seq)
+                {
+                    self.die(format!("journal failed: {e}"));
+                    return;
+                }
+                queue.extend(replies);
             }
         }
     }
 
     fn publish(&self) {
+        let mut state = serde_json::to_value(&self.state).unwrap_or_default();
+        if let Some(o) = state.get_mut("outcomes").and_then(|o| o.as_object_mut()) {
+            let extra = o.len().saturating_sub(STATUS_OUTCOMES);
+            let old: Vec<String> = o.keys().take(extra).cloned().collect();
+            for k in old {
+                o.remove(&k);
+            }
+        }
+        let merged: Vec<u64> = self
+            .state
+            .outcomes
+            .iter()
+            .filter(|(_, o)| matches!(o, schlange_core::engine::Outcome::Merged { .. }))
+            .map(|(n, _)| *n)
+            .collect();
         let st = WorkerStatus {
             repo: self.forge.api.repo.full(),
             queued: self.state.queued.keys().copied().collect(),
-            merged: self
-                .state
-                .outcomes
-                .iter()
-                .filter(|(_, o)| matches!(o, schlange_core::engine::Outcome::Merged { .. }))
-                .map(|(n, _)| *n)
-                .collect(),
+            merged: merged[merged.len().saturating_sub(STATUS_OUTCOMES)..].to_vec(),
             halted: self
                 .state
                 .trains
@@ -706,6 +935,9 @@ impl Worker {
             pending: self.forge.pending_summary(),
             cosmetics_waiting: self.forge.cosmetic_count(),
             config_error: self.config_error.clone(),
+            config_warnings: self.config_warnings.clone(),
+            recovered: self.recovered.clone(),
+            persistent: self.journal.is_some(),
             log_tail: self
                 .forge
                 .log
@@ -715,7 +947,7 @@ impl Worker {
                 .rev()
                 .cloned()
                 .collect(),
-            state: serde_json::to_value(&self.state).unwrap_or_default(),
+            state,
         };
         self.shared
             .statuses
@@ -727,4 +959,29 @@ impl Worker {
 
 fn describe(d: &Decision) -> String {
     serde_json::to_string(d).unwrap_or_else(|_| format!("{d:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_scope_asks_only_for_granted_needed_permissions() {
+        let granted: BTreeMap<String, String> = [
+            ("metadata", "read"),
+            ("contents", "write"),
+            ("pull_requests", "write"),
+            ("checks", "write"),
+            ("statuses", "read"),
+            ("administration", "read"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let p = token_permissions(&granted);
+        assert!(!p.contains_key("administration"));
+        assert!(!p.contains_key("workflows"));
+        assert_eq!(p.get("contents").map(String::as_str), Some("write"));
+        assert!(ct_eq(b"abc", b"abc") && !ct_eq(b"abc", b"abd") && !ct_eq(b"a", b"ab"));
+    }
 }

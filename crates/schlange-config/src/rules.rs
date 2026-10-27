@@ -356,6 +356,14 @@ impl Rules {
         }
         for (i, r) in array(value, "pull_request_rules")?.iter().enumerate() {
             let p = format!("/pull_request_rules/{i}");
+            // The schema requires `conditions`. Without them a rule must never match every
+            // pull request (`serve` validates first; this is the second line).
+            if r.get("conditions").is_none_or(Value::is_null) {
+                return Err(RulesError::Shape {
+                    pointer: format!("{p}/conditions"),
+                    message: "a pull request rule needs `conditions` (use `[]` to match every pull request)".into(),
+                });
+            }
             let queue = r
                 .get("actions")
                 .and_then(|a| a.as_object())

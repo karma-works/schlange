@@ -43,7 +43,13 @@ fn holds(t: &Running, n: u64) -> String {
 
 #[test]
 fn arztagent_constitution_pull_request_waits_for_a_listed_human() {
-    let t = arztagent_ci(Tester::new(ARZTAGENT)).start();
+    // The pull request changes a workflow file: GitHub refuses such merges from an app without
+    // `workflows: write` (the fake does too), so this installation grants it.
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .fake(|c| {
+            c.permissions.insert("workflows".into(), "write".into());
+        })
+        .start();
     t.permission(BOT, "write");
     t.permission("karma-works", "admin");
     let pr = t

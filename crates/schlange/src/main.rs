@@ -67,7 +67,9 @@ enum Command {
     Serve {
         #[command(flatten)]
         github: GithubArgs,
-        /// Webhook secret.
+        /// Webhook secret (at least 16 bytes). Prefer the environment or
+        /// `--webhook-secret-file`: a value on the command line is visible to every user of
+        /// the machine (`ps`), so it draws a warning.
         #[arg(long, env = "SCHLANGE_WEBHOOK_SECRET", hide_env_values = true)]
         webhook_secret: Option<String>,
         /// File holding the webhook secret.
@@ -76,6 +78,17 @@ enum Command {
         /// Address of the endpoint (`POST /webhook`, `GET /healthz`, `GET /status`).
         #[arg(long, env = "SCHLANGE_LISTEN", default_value = "0.0.0.0:8080")]
         listen: std::net::SocketAddr,
+        /// Data directory: the SQLite database (journal, snapshots, webhook dedup, audit).
+        #[arg(long, env = "SCHLANGE_DATA_DIR", default_value = "/data")]
+        data_dir: PathBuf,
+        /// Mergify JSON schema for validating the configuration (default: $SCHLANGE_SCHEMA or
+        /// .research/mergify/schema.json). `serve` does not start without it.
+        #[arg(long)]
+        schema: Option<PathBuf>,
+        /// File holding the admin token for `GET /status` (or SCHLANGE_ADMIN_TOKEN). Without
+        /// one, `/status` is off.
+        #[arg(long, env = "SCHLANGE_ADMIN_TOKEN_FILE")]
+        admin_token_file: Option<PathBuf>,
         /// Seconds between full reconciliations.
         #[arg(long, env = "SCHLANGE_RECONCILE_EVERY", default_value_t = 300)]
         reconcile_every: u64,
@@ -106,13 +119,18 @@ struct GithubArgs {
     /// Repositories (`owner/name`), comma-separated.
     #[arg(long = "repo", env = "SCHLANGE_REPOS", value_delimiter = ',')]
     repos: Vec<String>,
-    /// API base URL (tests point it at a fake GitHub).
+    /// API base URL (tests point it at a fake GitHub). Must be `https://` unless
+    /// `--insecure-test-api` is given.
     #[arg(
         long,
         env = "SCHLANGE_GITHUB_API_URL",
         default_value = "https://api.github.com"
     )]
     api_url: String,
+    /// Allow a plain `http://` API URL. Only for tests against a fake GitHub: the app's JWT and
+    /// installation tokens would travel unencrypted.
+    #[arg(long, env = "SCHLANGE_INSECURE_TEST_API")]
+    insecure_test_api: bool,
 }
 
 impl GithubArgs {
@@ -124,6 +142,18 @@ impl GithubArgs {
         let (Some(app_id), Some(key_path)) = (&self.app_id, &self.private_key) else {
             return Err("needs --app-id and --private-key (or SCHLANGE_GITHUB_APP_ID and SCHLANGE_GITHUB_PRIVATE_KEY)".into());
         };
+        if !self.api_url.starts_with("https://") {
+            if !self.insecure_test_api {
+                return Err(format!(
+                    "the API URL {} is not https://; refusing to send credentials over it (for tests against a fake GitHub only: --insecure-test-api)",
+                    self.api_url
+                ));
+            }
+            eprintln!(
+                "schlange: WARNING: --insecure-test-api: credentials go unencrypted to {}",
+                self.api_url
+            );
+        }
         let pem = std::fs::read(key_path)
             .map_err(|e| format!("cannot read {}: {e}", key_path.display()))?;
         let key = schlange_github::jwt::AppKey::from_pem(&pem).map_err(|e| e.to_string())?;
@@ -135,6 +165,7 @@ impl GithubArgs {
                 retry: Default::default(),
                 budget: Default::default(),
                 timeout: std::time::Duration::from_secs(30),
+                allow_insecure_http: self.insecure_test_api,
             },
         ))
     }
@@ -320,92 +351,110 @@ fn support_matrix(json_out: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Check {
     name: &'static str,
     status: &'static str,
     detail: String,
 }
 
-/// The doctor's check of the repository's configuration: the file given, or the one the
-/// configuration search finds in the working directory; validated with the schema when one is
-/// found (stages 1 to 5), without it otherwise (stages 1, 3 and 4).
-fn config_check(explicit: Option<&Path>, cwd: &Path, schema: Option<&Schema>) -> Check {
+/// The doctor's check of a local configuration: `--config <file>`, or the file the
+/// configuration search finds in the working directory. `None` when neither exists (then only
+/// the default branch on GitHub is checked, when an app is configured). Validated by the same
+/// validator `serve` uses (stages 1 to 4, stage 5 as warnings) when the schema is found,
+/// without the schema otherwise (stages 1, 3 and 4).
+fn local_config_check(
+    explicit: Option<&Path>,
+    cwd: &Path,
+    validator: Option<&schlange_github::config::ConfigCheck>,
+) -> Option<Check> {
+    let fail = |detail: String| Check {
+        name: "configuration",
+        status: "FAIL",
+        detail,
+    };
     let path = match explicit {
         Some(p) => p.to_path_buf(),
         None => {
             let located = schlange_config::config_file::locate(|n| cwd.join(n).is_file());
             if let Some(e) = located.error() {
-                return Check {
-                    name: "configuration",
-                    status: "FAIL",
-                    detail: e,
-                };
+                return Some(fail(format!("{}: {e}", cwd.display())));
             }
             match located {
                 schlange_config::config_file::Located::One(n) => cwd.join(n),
-                _ => {
-                    return Check {
-                        name: "configuration",
-                        status: "SKIP",
-                        detail: format!("no configuration file in {}", cwd.display()),
-                    };
-                }
+                _ => return None,
             }
         }
     };
     let shown = path.display().to_string();
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
-        Err(e) => {
-            return Check {
+        Err(e) => return Some(fail(format!("cannot read {shown}: {e}"))),
+    };
+    let check = match validator {
+        Some(v) => match v.check(&shown, &text) {
+            Err(e) => fail(format!("{shown} is invalid: {e}")),
+            Ok(l) if l.warnings.is_empty() => Check {
                 name: "configuration",
-                status: "FAIL",
-                detail: format!("cannot read {shown}: {e}"),
-            };
+                status: "OK",
+                detail: format!("{shown} is valid"),
+            },
+            Ok(l) => Check {
+                name: "configuration",
+                status: "WARN",
+                detail: format!(
+                    "{shown} is valid; {} findings not supported by Schlange yet \
+                     (`schlange config validate {shown}` lists them)",
+                    l.warnings.len()
+                ),
+            },
+        },
+        None => {
+            use schlange_config::validate::Severity;
+            let errors: Vec<String> =
+                schlange_config::config_file::validate_without_schema(&shown, &text)
+                    .into_iter()
+                    .filter(|f| f.severity == Severity::Error)
+                    .map(|f| f.message)
+                    .collect();
+            if errors.is_empty() {
+                Check {
+                    name: "configuration",
+                    status: "WARN",
+                    detail: format!(
+                        "{shown} is valid without the Mergify schema (stages 1, 3, 4); no schema \
+                         found for the full check"
+                    ),
+                }
+            } else {
+                fail(format!(
+                    "{shown} is invalid (without the Mergify schema): {}",
+                    errors.join("; ")
+                ))
+            }
         }
     };
-    use schlange_config::validate::Severity;
-    let (findings, how) = match (schema, features()) {
-        (Some(s), Ok(map)) => (
-            schlange_config::validate(&shown, &text, s, &map, false).findings,
-            "",
-        ),
-        _ => (
-            schlange_config::config_file::validate_without_schema(&shown, &text),
-            " (without the Mergify schema)",
-        ),
+    Some(check)
+}
+
+/// One `configuration` check from the local file and the default branch on GitHub: the worse
+/// status, both details.
+fn merge_config_checks(local: Check, github: Check) -> Check {
+    let rank = |s: &str| match s {
+        "FAIL" => 3,
+        "WARN" => 2,
+        "OK" => 1,
+        _ => 0,
     };
-    let errors: Vec<&str> = findings
-        .iter()
-        .filter(|f| f.severity == Severity::Error)
-        .map(|f| f.message.as_str())
-        .collect();
-    let unsupported = findings
-        .iter()
-        .filter(|f| f.severity == Severity::Unsupported)
-        .count();
-    if !errors.is_empty() {
-        Check {
-            name: "configuration",
-            status: "FAIL",
-            detail: format!("{shown} is invalid{how}: {}", errors.join("; ")),
-        }
-    } else if unsupported > 0 {
-        Check {
-            name: "configuration",
-            status: "WARN",
-            detail: format!(
-                "{shown} is valid{how}; {unsupported} findings not supported by Schlange yet \
-                 (`schlange config validate {shown}` lists them)"
-            ),
-        }
+    let status = if rank(local.status) >= rank(github.status) {
+        local.status
     } else {
-        Check {
-            name: "configuration",
-            status: "OK",
-            detail: format!("{shown} is valid{how}"),
-        }
+        github.status
+    };
+    Check {
+        name: "configuration",
+        status,
+        detail: format!("local: {}; default branch: {}", local.detail, github.detail),
     }
 }
 
@@ -433,24 +482,24 @@ fn doctor(
             for f in &map.features {
                 *by_prio.entry(format!("{:?}", f.priority)).or_default() += 1;
             }
-            // `partial` is not "supported": only part of such a feature is built.
             let count = |s: Status| map.features.iter().filter(|f| f.status == s).count();
+            let (conformant, partial, missing) = (
+                count(Status::Conformant),
+                count(Status::Partial),
+                count(Status::Missing),
+            );
             checks.push(Check {
                 name: "support-matrix",
                 status: if problems.is_empty() { "OK" } else { "FAIL" },
                 detail: if problems.is_empty() {
                     format!(
-                        "{} features ({}): {} conformant, {} partial, {} missing; {} inventory \
-                         entries",
+                        "{} features ({}): {conformant} conformant, {partial} partial (some sub-features missing), {missing} not built; {} inventory entries",
                         map.features.len(),
                         by_prio
                             .iter()
                             .map(|(k, v)| format!("{k} {v}"))
                             .collect::<Vec<_>>()
                             .join(", "),
-                        count(Status::Conformant),
-                        count(Status::Partial),
-                        count(Status::Missing),
                         map.inventory.total
                     )
                 } else {
@@ -465,7 +514,6 @@ fn doctor(
         }),
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut loaded = None;
     checks.push(match schema::locate(schema_path, &cwd) {
         None => Check {
             name: "schema",
@@ -473,14 +521,11 @@ fn doctor(
             detail: "no Mergify schema found; `config validate` needs --schema (not embedded until its licence is cleared)".into(),
         },
         Some(p) => match Schema::load(&p) {
-            Ok(s) => {
-                loaded = Some(s);
-                Check {
-                    name: "schema",
-                    status: "OK",
-                    detail: p.display().to_string(),
-                }
-            }
+            Ok(_) => Check {
+                name: "schema",
+                status: "OK",
+                detail: p.display().to_string(),
+            },
             Err(e) => Check {
                 name: "schema",
                 status: "FAIL",
@@ -488,14 +533,16 @@ fn doctor(
             },
         },
     });
-    checks.push(config_check(config, &cwd, loaded.as_ref()));
-    const GITHUB_CHECKS: [&str; 5] = [
+    const GITHUB_CHECKS: [&str; 6] = [
         "github-app",
         "app-permissions",
         "ruleset-exception",
+        "configuration",
         "webhooks",
         "rate-limit",
     ];
+    let config_check = schlange_github::config::ConfigCheck::locate(schema_path, &cwd).ok();
+    let local = local_config_check(config, &cwd, config_check.as_ref());
     if offline || !github.configured() {
         let why = if offline {
             "--offline"
@@ -503,6 +550,12 @@ fn doctor(
             "no GitHub app configured (SCHLANGE_GITHUB_APP_ID, SCHLANGE_GITHUB_PRIVATE_KEY)"
         };
         for name in GITHUB_CHECKS {
+            if name == "configuration"
+                && let Some(c) = local.clone()
+            {
+                checks.push(c);
+                continue;
+            }
             checks.push(Check {
                 name,
                 status: "SKIP",
@@ -517,19 +570,29 @@ fn doctor(
                     &repos,
                     github.installation_id,
                     24 * 3600,
+                    config_check.as_ref(),
                 ) {
-                    checks.push(Check {
+                    let c = Check {
                         name: c.name,
                         status: c.status,
                         detail: c.detail,
-                    });
+                    };
+                    match (&local, c.name) {
+                        (Some(l), "configuration") => {
+                            checks.push(merge_config_checks(l.clone(), c))
+                        }
+                        _ => checks.push(c),
+                    }
                 }
             }
-            Err(e) => checks.push(Check {
-                name: "github-app",
-                status: "FAIL",
-                detail: e,
-            }),
+            Err(e) => {
+                checks.push(Check {
+                    name: "github-app",
+                    status: "FAIL",
+                    detail: e,
+                });
+                checks.extend(local);
+            }
         }
     }
     let failed = checks.iter().any(|c| c.status == "FAIL");
@@ -555,6 +618,15 @@ struct ServeArgs {
     reconcile_every: u64,
     config: Option<PathBuf>,
     check_name: String,
+    data_dir: PathBuf,
+    schema: Option<PathBuf>,
+    admin_token_file: Option<PathBuf>,
+}
+
+fn read_secret_file(p: &Path) -> Result<String, String> {
+    std::fs::read_to_string(p)
+        .map(|s| s.trim_end().to_string())
+        .map_err(|e| format!("cannot read {}: {e}", p.display()))
 }
 
 fn serve(a: ServeArgs) -> ExitCode {
@@ -571,17 +643,46 @@ fn serve(a: ServeArgs) -> ExitCode {
         Ok(_) => return fail("needs at least one --repo owner/name (or SCHLANGE_REPOS)".into()),
         Err(e) => return fail(e),
     };
+    if std::env::args().any(|x| x == "--webhook-secret" || x.starts_with("--webhook-secret=")) {
+        eprintln!(
+            "schlange serve: WARNING: --webhook-secret on the command line is visible to other users (ps); use SCHLANGE_WEBHOOK_SECRET or --webhook-secret-file"
+        );
+    }
     let secret = match (a.secret, a.secret_file) {
         (Some(s), _) => s.into_bytes(),
-        (None, Some(p)) => match std::fs::read_to_string(&p) {
-            Ok(s) => s.trim_end().as_bytes().to_vec(),
-            Err(e) => return fail(format!("cannot read {}: {e}", p.display())),
+        (None, Some(p)) => match read_secret_file(&p) {
+            Ok(s) => s.into_bytes(),
+            Err(e) => return fail(e),
         },
         (None, None) => {
             return fail(
                 "needs a webhook secret (SCHLANGE_WEBHOOK_SECRET or --webhook-secret-file)".into(),
             );
         }
+    };
+    if secret.len() < schlange_github::service::MIN_SECRET_LEN {
+        return fail(format!(
+            "the webhook secret is empty or shorter than {} bytes",
+            schlange_github::service::MIN_SECRET_LEN
+        ));
+    }
+    let admin_token = match (
+        &a.admin_token_file,
+        std::env::var("SCHLANGE_ADMIN_TOKEN").ok(),
+    ) {
+        (Some(p), _) => match read_secret_file(p) {
+            Ok(s) => Some(s),
+            Err(e) => return fail(e),
+        },
+        (None, t) => t.filter(|t| !t.is_empty()),
+    };
+    if admin_token.as_ref().is_some_and(|t| t.len() < 16) {
+        return fail("the admin token is shorter than 16 bytes".into());
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let check = match schlange_github::config::ConfigCheck::locate(a.schema.as_deref(), &cwd) {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => return fail(format!("the configuration cannot be validated: {e}")),
     };
     let config = match a.config {
         None => schlange_github::ConfigSource::Repository,
@@ -602,6 +703,11 @@ fn serve(a: ServeArgs) -> ExitCode {
         check_name: a.check_name,
         retry_base: std::time::Duration::from_secs(2),
         retry_max: std::time::Duration::from_secs(60),
+        check,
+        data_dir: Some(a.data_dir),
+        admin_token,
+        http: Default::default(),
+        crash: None,
     };
     let clock = std::sync::Arc::new(schlange_github::time::SystemClock);
     match schlange_github::Service::start(cfg, clock) {
@@ -670,6 +776,9 @@ fn main() -> ExitCode {
             reconcile_every,
             config,
             check_name,
+            data_dir,
+            schema,
+            admin_token_file,
         } => serve(ServeArgs {
             github,
             secret: webhook_secret,
@@ -678,6 +787,9 @@ fn main() -> ExitCode {
             reconcile_every,
             config,
             check_name,
+            data_dir,
+            schema,
+            admin_token_file,
         }),
     }
 }

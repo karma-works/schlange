@@ -7,6 +7,7 @@ RUN apk add --no-cache musl-dev ca-certificates
 WORKDIR /src
 # Dependencies first, for layer caching.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo .cargo
 COPY crates crates
 COPY tools/inventory tools/inventory
 # build.rs of schlange-config embeds the feature map.
@@ -26,6 +27,11 @@ COPY --from=build /schlange /usr/local/bin/schlange
 USER 65532:65532
 WORKDIR /data
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+# `serve` keeps its SQLite database (journal, snapshots, webhook dedup, audit) here; mount a
+# volume so a restart resumes from it. The Mergify schema is not in the image: mount it and
+# set SCHLANGE_SCHEMA, `serve` does not start without it.
+ENV SCHLANGE_DATA_DIR=/data
+VOLUME ["/data"]
 # --offline: the health check must not spend GitHub rate limit every 30 seconds.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/schlange", "doctor", "--offline"]
 ENTRYPOINT ["/usr/local/bin/schlange"]
