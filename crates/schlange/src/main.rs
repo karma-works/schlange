@@ -1,5 +1,5 @@
-//! `schlange`: one static binary for the merge queue. Phase 0 offers configuration validation,
-//! scenarios in the simulated forge, the support matrix and a minimal doctor.
+//! `schlange`: one static binary for the merge queue: configuration validation, scenarios in
+//! the simulated forge, the support matrix, the doctor, and `serve` (the GitHub App).
 //!
 //! Exit codes: 0 ok, 1 invalid or failed, 2 valid for Mergify but not supported (`--strict`),
 //! 3 environment problem (missing schema, unreadable file).
@@ -45,13 +45,106 @@ enum Command {
         json: bool,
     },
     /// Checks the installation. Exit 0 without FAIL; serves as the container health check.
+    /// With GitHub credentials (flags or environment) it also checks the app, its permissions,
+    /// the ruleset exception, webhook deliveries and the rate limit.
     Doctor {
         #[arg(long)]
         json: bool,
         /// Mergify JSON schema (default: $SCHLANGE_SCHEMA or .research/mergify/schema.json).
         #[arg(long)]
         schema: Option<PathBuf>,
+        /// Skip the checks that call GitHub (the container health check uses this).
+        #[arg(long)]
+        offline: bool,
+        #[command(flatten)]
+        github: GithubArgs,
     },
+    /// Runs the merge queue as a GitHub App: webhook endpoint, reconciliation, landing.
+    Serve {
+        #[command(flatten)]
+        github: GithubArgs,
+        /// Webhook secret.
+        #[arg(long, env = "SCHLANGE_WEBHOOK_SECRET", hide_env_values = true)]
+        webhook_secret: Option<String>,
+        /// File holding the webhook secret.
+        #[arg(long, env = "SCHLANGE_WEBHOOK_SECRET_FILE")]
+        webhook_secret_file: Option<PathBuf>,
+        /// Address of the endpoint (`POST /webhook`, `GET /healthz`, `GET /status`).
+        #[arg(long, env = "SCHLANGE_LISTEN", default_value = "0.0.0.0:8080")]
+        listen: std::net::SocketAddr,
+        /// Seconds between full reconciliations.
+        #[arg(long, env = "SCHLANGE_RECONCILE_EVERY", default_value_t = 300)]
+        reconcile_every: u64,
+        /// A local configuration instead of `.mergify.yml` from each repository.
+        #[arg(long, env = "SCHLANGE_CONFIG")]
+        config: Option<PathBuf>,
+        /// Name of the queue's own check run on queued pull requests.
+        #[arg(
+            long,
+            env = "SCHLANGE_CHECK_NAME",
+            default_value = "Schlange merge queue"
+        )]
+        check_name: String,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct GithubArgs {
+    /// GitHub App id (or client id).
+    #[arg(long, env = "SCHLANGE_GITHUB_APP_ID")]
+    app_id: Option<String>,
+    /// Path of the app's private key (PEM).
+    #[arg(long, env = "SCHLANGE_GITHUB_PRIVATE_KEY")]
+    private_key: Option<PathBuf>,
+    /// Installation id; looked up per repository when absent.
+    #[arg(long, env = "SCHLANGE_GITHUB_INSTALLATION_ID")]
+    installation_id: Option<u64>,
+    /// Repositories (`owner/name`), comma-separated.
+    #[arg(long = "repo", env = "SCHLANGE_REPOS", value_delimiter = ',')]
+    repos: Vec<String>,
+    /// API base URL (tests point it at a fake GitHub).
+    #[arg(
+        long,
+        env = "SCHLANGE_GITHUB_API_URL",
+        default_value = "https://api.github.com"
+    )]
+    api_url: String,
+}
+
+impl GithubArgs {
+    fn configured(&self) -> bool {
+        self.app_id.is_some() && self.private_key.is_some()
+    }
+
+    fn client(&self) -> Result<schlange_github::Client, String> {
+        let (Some(app_id), Some(key_path)) = (&self.app_id, &self.private_key) else {
+            return Err("needs --app-id and --private-key (or SCHLANGE_GITHUB_APP_ID and SCHLANGE_GITHUB_PRIVATE_KEY)".into());
+        };
+        let pem = std::fs::read(key_path)
+            .map_err(|e| format!("cannot read {}: {e}", key_path.display()))?;
+        let key = schlange_github::jwt::AppKey::from_pem(&pem).map_err(|e| e.to_string())?;
+        Ok(schlange_github::Client::new(
+            schlange_github::ClientConfig {
+                api_base: self.api_url.clone(),
+                app_id: app_id.clone(),
+                key: std::sync::Arc::new(key),
+                retry: Default::default(),
+                budget: Default::default(),
+                timeout: std::time::Duration::from_secs(30),
+            },
+        ))
+    }
+
+    fn repos(&self) -> Result<Vec<schlange_github::RepoName>, String> {
+        self.repos
+            .iter()
+            .filter(|r| !r.trim().is_empty())
+            .map(|r| {
+                schlange_github::RepoName::parse(r.trim())
+                    .ok_or_else(|| format!("`{r}` is not owner/name"))
+            })
+            .collect()
+    }
 }
 
 #[derive(Subcommand)]
@@ -230,7 +323,12 @@ struct Check {
     detail: String,
 }
 
-fn doctor(json_out: bool, schema_path: Option<&Path>) -> ExitCode {
+fn doctor(
+    json_out: bool,
+    schema_path: Option<&Path>,
+    offline: bool,
+    github: &GithubArgs,
+) -> ExitCode {
     let mut checks = vec![Check {
         name: "version",
         status: "OK",
@@ -299,12 +397,48 @@ fn doctor(json_out: bool, schema_path: Option<&Path>) -> ExitCode {
             },
         },
     });
-    for name in ["github-app", "ruleset-exception", "webhooks", "rate-limit"] {
-        checks.push(Check {
-            name,
-            status: "SKIP",
-            detail: "not built yet (needs the github adapter)".into(),
-        });
+    const GITHUB_CHECKS: [&str; 5] = [
+        "github-app",
+        "app-permissions",
+        "ruleset-exception",
+        "webhooks",
+        "rate-limit",
+    ];
+    if offline || !github.configured() {
+        let why = if offline {
+            "--offline"
+        } else {
+            "no GitHub app configured (SCHLANGE_GITHUB_APP_ID, SCHLANGE_GITHUB_PRIVATE_KEY)"
+        };
+        for name in GITHUB_CHECKS {
+            checks.push(Check {
+                name,
+                status: "SKIP",
+                detail: why.into(),
+            });
+        }
+    } else {
+        match github.client().and_then(|c| github.repos().map(|r| (c, r))) {
+            Ok((client, repos)) => {
+                for c in schlange_github::doctor::github_checks(
+                    &client,
+                    &repos,
+                    github.installation_id,
+                    24 * 3600,
+                ) {
+                    checks.push(Check {
+                        name: c.name,
+                        status: c.status,
+                        detail: c.detail,
+                    });
+                }
+            }
+            Err(e) => checks.push(Check {
+                name: "github-app",
+                status: "FAIL",
+                detail: e,
+            }),
+        }
     }
     let failed = checks.iter().any(|c| c.status == "FAIL");
     if json_out {
@@ -318,6 +452,73 @@ fn doctor(json_out: bool, schema_path: Option<&Path>) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+struct ServeArgs {
+    github: GithubArgs,
+    secret: Option<String>,
+    secret_file: Option<PathBuf>,
+    listen: std::net::SocketAddr,
+    reconcile_every: u64,
+    config: Option<PathBuf>,
+    check_name: String,
+}
+
+fn serve(a: ServeArgs) -> ExitCode {
+    let fail = |m: String| {
+        eprintln!("schlange serve: {m}");
+        ExitCode::from(exit::ENVIRONMENT)
+    };
+    let client = match a.github.client() {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    let repos = match a.github.repos() {
+        Ok(r) if !r.is_empty() => r,
+        Ok(_) => return fail("needs at least one --repo owner/name (or SCHLANGE_REPOS)".into()),
+        Err(e) => return fail(e),
+    };
+    let secret = match (a.secret, a.secret_file) {
+        (Some(s), _) => s.into_bytes(),
+        (None, Some(p)) => match std::fs::read_to_string(&p) {
+            Ok(s) => s.trim_end().as_bytes().to_vec(),
+            Err(e) => return fail(format!("cannot read {}: {e}", p.display())),
+        },
+        (None, None) => {
+            return fail(
+                "needs a webhook secret (SCHLANGE_WEBHOOK_SECRET or --webhook-secret-file)".into(),
+            );
+        }
+    };
+    let config = match a.config {
+        None => schlange_github::ConfigSource::Repository,
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(t) => schlange_github::ConfigSource::Text(t),
+            Err(e) => return fail(format!("cannot read {}: {e}", p.display())),
+        },
+    };
+    let cfg = schlange_github::ServeConfig {
+        client,
+        repos,
+        installation: a.github.installation_id,
+        webhook_secret: secret,
+        listen: a.listen,
+        reconcile_every: a.reconcile_every,
+        config,
+        poll: std::time::Duration::from_millis(500),
+        check_name: a.check_name,
+        retry_base: std::time::Duration::from_secs(2),
+        retry_max: std::time::Duration::from_secs(60),
+    };
+    let clock = std::sync::Arc::new(schlange_github::time::SystemClock);
+    match schlange_github::Service::start(cfg, clock) {
+        Ok(s) => {
+            eprintln!("schlange serve: webhooks on {}", s.webhook_url());
+            s.wait();
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(e),
     }
 }
 
@@ -337,6 +538,28 @@ fn main() -> ExitCode {
             command: SimCommand::Run { file, json, forge },
         } => sim_run(&file, json, forge),
         Command::SupportMatrix { json } => support_matrix(json),
-        Command::Doctor { json, schema } => doctor(json, schema.as_deref()),
+        Command::Doctor {
+            json,
+            schema,
+            offline,
+            github,
+        } => doctor(json, schema.as_deref(), offline, &github),
+        Command::Serve {
+            github,
+            webhook_secret,
+            webhook_secret_file,
+            listen,
+            reconcile_every,
+            config,
+            check_name,
+        } => serve(ServeArgs {
+            github,
+            secret: webhook_secret,
+            secret_file: webhook_secret_file,
+            listen,
+            reconcile_every,
+            config,
+            check_name,
+        }),
     }
 }

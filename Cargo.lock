@@ -939,8 +939,11 @@ dependencies = [
  "schlange-config",
  "schlange-core",
  "schlange-forge",
+ "schlange-github",
+ "schlange-github-fake",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]
