@@ -428,6 +428,14 @@ impl Worker {
             }
             if !hints.is_empty() {
                 if !reconcile {
+                    // A push to the default branch may change the configuration (MQ-19).
+                    let default = self.forge.default_branch(Priority::Normal).ok();
+                    if hints
+                        .iter()
+                        .any(|h| matches!(h, Hint::Branch(b) if Some(b) == default.as_ref()))
+                    {
+                        self.load_config();
+                    }
                     self.read_hints(&hints);
                 }
                 for h in &hints {

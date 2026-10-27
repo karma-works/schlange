@@ -234,7 +234,7 @@ impl GithubForge {
 
     // ---- reads -------------------------------------------------------------------------
 
-    fn default_branch(&self, prio: Priority) -> Result<String, Error> {
+    pub fn default_branch(&self, prio: Priority) -> Result<String, Error> {
         if let Some(b) = self.default_branch.borrow().clone() {
             return Ok(b);
         }

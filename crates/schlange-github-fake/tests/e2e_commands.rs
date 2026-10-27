@@ -281,10 +281,16 @@ fn a_changed_configuration_is_checked_and_applies_only_once_merged() {
     t.pr(pr3).check("quick").succeed();
     t.pr(pr3).wait_queued();
     t.pr(pr3).wait_merged();
-    // After the merge the new configuration applies at the next reconciliation (MQ-19): a
-    // bot pull request without any quick check is queued now.
+    // The merge's push to the default branch loads the new configuration (MQ-19), without a
+    // reconciliation: a bot pull request without any quick check is queued now.
+    t.wait_until("configuration reloaded", |t| {
+        t.status().is_some_and(|s| {
+            s.log_tail
+                .iter()
+                .any(|l| l.contains("configuration changed"))
+        })
+    });
     let free = t.open_pr("bot").file("free.txt", "f\n").create();
-    t.service.as_ref().unwrap().reconcile_now();
     t.pr(free).wait_queued();
     t.pr(free).wait_merged();
     assert!(
@@ -301,7 +307,6 @@ fn a_changed_configuration_is_checked_and_applies_only_once_merged() {
 fn two_configuration_files_are_an_error_and_the_last_good_one_stays() {
     let t = simple_ci(Tester::new(SIMPLE)).start();
     t.gh.push_base(&[(".github/mergify.yml".into(), "queue_rules: []\n".into())]);
-    t.service.as_ref().unwrap().reconcile_now();
     t.wait_until("configuration error", |t| {
         t.status()
             .and_then(|s| s.config_error)

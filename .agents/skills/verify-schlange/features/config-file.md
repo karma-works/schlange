@@ -28,8 +28,8 @@ A configuration change inside a pull request takes effect only once it is merged
   good configuration stays in use. In a pull request it fails the configuration check.
 - `re-evaluate`: built. A changed configuration is loaded and `ConfigurationChanged` makes the
   engine evaluate every pull request again (attribute blocks and reported errors are dropped).
-  On GitHub the change is seen at the next reconciliation (or a `reconcile_now`), not at the
-  push webhook.
+  On GitHub the configuration is read again on a push to the default branch and at every
+  reconciliation (a lost push webhook delays the change until the next pass).
 - `invalid`: a configuration that does not load keeps the last good one and is reported.
 - `extends`: missing (feature `config-extends`).
 
