@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use schlange_github::time::unix_now;
 
-use crate::{FakePr, FaultKind, Inner, Squash, St, ts};
+use crate::{FakePr, FakeToken, FaultKind, Inner, Squash, St, ts};
 
 pub(crate) struct Reply {
     pub status: u16,
@@ -102,7 +102,8 @@ enum Caller {
     Installation,
 }
 
-fn authenticate(st: &St, inner: &Inner, auth: Option<&str>) -> Option<Caller> {
+fn authenticate(st: &mut St, inner: &Inner, auth: Option<&str>) -> Option<Caller> {
+    st.caller_token = None;
     let a = auth?;
     let tok = a
         .strip_prefix("Bearer ")
@@ -114,10 +115,20 @@ fn authenticate(st: &St, inner: &Inner, auth: Option<&str>) -> Option<Caller> {
         let exp_ok = claims["exp"].as_u64().is_some_and(|e| e > unix_now());
         return (iss_ok && exp_ok).then_some(Caller::App);
     }
-    st.tokens
-        .get(tok)
-        .is_some_and(|exp| *exp > unix_now())
-        .then_some(Caller::Installation)
+    let ok = st.tokens.get(tok).is_some_and(|t| t.expires > unix_now());
+    if ok {
+        st.caller_token = Some(tok.to_string());
+    }
+    ok.then_some(Caller::Installation)
+}
+
+fn rank(level: &str) -> u8 {
+    match level {
+        "admin" => 3,
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    }
 }
 
 pub(crate) fn serve(server: &tiny_http::Server, inner: &Inner) {
@@ -208,6 +219,27 @@ fn handle(
 ) -> Reply {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let path = decode(path);
+    // A renamed repository: GitHub redirects the old name (301 for reads, 307 otherwise).
+    let seg: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    if seg.len() >= 3
+        && seg[0] == "repos"
+        && seg[1] == st.cfg.owner
+        && st.old_names.iter().any(|o| o == seg[2])
+    {
+        let mut rest = seg.clone();
+        rest[2] = &st.cfg.name;
+        let q = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        let mut r = err(if method == "GET" { 301 } else { 307 }, "Moved Permanently");
+        r.headers.push((
+            "location".into(),
+            format!("{base_url}/{}{q}", rest.join("/")),
+        ));
+        return r;
+    }
     // Injected faults first.
     let mut lie = None;
     if let Some(i) = st.faults.iter().position(|f| {
@@ -215,11 +247,19 @@ fn handle(
     }) {
         st.faults[i].times -= 1;
         let kind = st.faults[i].kind.clone();
+        let then = if st.faults[i].fired {
+            vec![]
+        } else {
+            st.faults[i].fired = true;
+            st.faults[i].then.clone()
+        };
         if st.faults[i].times == 0 {
             st.faults.remove(i);
         }
+        st.run_then(&then);
         match kind {
             FaultKind::Status(s) => return err(s, "injected fault"),
+            FaultKind::StatusMessage(s, m) => return err(s, &m),
             FaultKind::RateLimit { retry_after } => {
                 let mut r = err(429, "API rate limit exceeded");
                 r.headers
@@ -274,10 +314,46 @@ fn route(
             ("POST", ["installations", id, "access_tokens"])
                 if id.parse() == Ok(st.cfg.installation_id) =>
             {
+                st.token_requests.push(body.clone());
+                let repositories = body["repositories"].as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                });
+                if let Some(r) = &repositories
+                    && r.iter().any(|n| *n != st.cfg.name)
+                {
+                    return err(
+                        422,
+                        "There is at least one repository that does not exist or is not accessible to the parent installation.",
+                    );
+                }
+                let mut permissions = st.cfg.permissions.clone();
+                if let Some(req) = body["permissions"].as_object() {
+                    permissions.clear();
+                    for (k, v) in req {
+                        let want = v.as_str().unwrap_or("");
+                        let have = st.cfg.permissions.get(k).map(String::as_str).unwrap_or("");
+                        if rank(want) > rank(have) {
+                            return err(
+                                422,
+                                "The permissions requested are not granted to this installation.",
+                            );
+                        }
+                        permissions.insert(k.clone(), want.to_string());
+                    }
+                }
                 let n = st.id();
                 let token = format!("ghs_fake_{n}");
                 let exp = unix_now() + 3600;
-                st.tokens.insert(token.clone(), exp);
+                st.tokens.insert(
+                    token.clone(),
+                    FakeToken {
+                        expires: exp,
+                        repositories,
+                        permissions,
+                    },
+                );
                 reply(201, json!({ "token": token, "expires_at": ts(exp) }))
             }
             ("GET", ["hook", "deliveries"]) => {
@@ -316,6 +392,14 @@ fn route(
     }
     if !matches!(caller, Caller::Installation) {
         return err(401, "needs an installation token");
+    }
+    let limited = st
+        .caller_token
+        .as_ref()
+        .and_then(|t| st.tokens.get(t))
+        .and_then(|t| t.repositories.clone());
+    if limited.is_some_and(|r| !r.contains(&st.cfg.name)) {
+        return err(404, "Not Found");
     }
     let rest = &seg[3..];
     repo_route(st, base_url, method, path, query, rest, body)
@@ -394,14 +478,33 @@ fn repo_route(
             st.run_ci(n);
             reply(201, st.pr_json(n).unwrap_or_default())
         }
-        ("GET", ["pulls", n]) => match num(n).and_then(|n| st.pr_json(n)) {
-            Some(j) => reply(200, j),
-            None => err(404, "Not Found"),
-        },
+        ("GET", ["pulls", n]) => {
+            let Some(n) = num(n) else {
+                return err(404, "Not Found");
+            };
+            if let Some(stale) = st.stale_read(&format!("pull:{n}")) {
+                return reply(200, stale);
+            }
+            match st.pr_json(n) {
+                Some(mut j) => {
+                    if let Some(left) = st.mergeable_unknown.get_mut(&n) {
+                        *left = left.saturating_sub(1);
+                        if *left == 0 {
+                            st.mergeable_unknown.remove(&n);
+                        }
+                        j["mergeable"] = Value::Null;
+                    }
+                    reply(200, j)
+                }
+                None => err(404, "Not Found"),
+            }
+        }
         ("PATCH", ["pulls", n]) => {
             let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
                 return err(404, "Not Found");
             };
+            let before = st.pr_json(n);
+            st.before_write(&format!("pull:{n}"), before);
             if body["state"] == "closed" {
                 let was_open = st.prs.get(&n).is_some_and(|p| p.open);
                 st.prs.get_mut(&n).expect("pr").open = false;
@@ -471,8 +574,17 @@ fn repo_route(
             let Ok(c) = st.repo.squash(&tip, &pr.head_sha, &title) else {
                 return err(405, "Pull Request is not mergeable");
             };
+            if let Some(m) = st.workflow_refusal(&st.repo.changed_paths(&tip, &c)) {
+                return err(403, &m);
+            }
             let tree = st.repo.tree_id_of(&c);
             let tested_green = st.tree_tested_green(&tree);
+            let head_tested = st.head_tested(&pr.head_sha);
+            let guard = st.merge_guard.clone().and_then(|g| g(&pr));
+            let before = st.pr_json(n);
+            st.before_write(&format!("pull:{n}"), before);
+            let before = st.ref_json(&pr.base);
+            st.before_write(&format!("ref:{}", pr.base), before);
             st.repo.update_ref(&pr.base, &tip, &c).expect("cas");
             let p = st.prs.get_mut(&n).expect("pr");
             p.merged = true;
@@ -484,7 +596,11 @@ fn repo_route(
                 parent: tip.clone(),
                 tree,
                 tested_green,
+                head: pr.head_sha.clone(),
+                head_tested,
+                guard,
             });
+            st.touched(&pr.base);
             st.emit_push(&pr.base, &tip, Some(&c));
             st.emit_pr("closed", n, json!({}));
             reply(
@@ -492,13 +608,16 @@ fn repo_route(
                 json!({ "sha": c, "merged": true, "message": "Pull Request successfully merged" }),
             )
         }
-        ("GET", ["git", "ref", "heads", b @ ..]) => match st.tip(&b.join("/")) {
-            Some(s) => reply(
-                200,
-                json!({ "ref": format!("refs/heads/{}", b.join("/")), "object": { "sha": s, "type": "commit" } }),
-            ),
-            None => err(404, "Not Found"),
-        },
+        ("GET", ["git", "ref", "heads", b @ ..]) => {
+            let name = b.join("/");
+            if let Some(stale) = st.stale_read(&format!("ref:{name}")) {
+                return reply(200, stale);
+            }
+            match st.ref_json(&name) {
+                Some(j) => reply(200, j),
+                None => err(404, "Not Found"),
+            }
+        }
         ("GET", ["git", "matching-refs", "heads", p @ ..]) => {
             let prefix = p.join("/");
             let items = st
@@ -543,7 +662,10 @@ fn repo_route(
             if !force && !st.repo.is_ancestor(&old, &new) {
                 return err(422, "Update is not a fast forward");
             }
+            let before = st.ref_json(&name);
+            st.before_write(&format!("ref:{name}"), before);
             st.repo.update_ref(&name, &old, &new).expect("cas");
+            st.touched(&name);
             st.emit_push(&name, &old, Some(&new));
             reply(
                 200,
@@ -586,8 +708,15 @@ fn repo_route(
                 .to_string();
             match st.repo.merge(&tip, &head_sha, &msg) {
                 Ok(c) => {
+                    if let Some(m) = st.workflow_refusal(&st.repo.changed_paths(&tip, &c)) {
+                        return err(403, &m);
+                    }
                     st.repo.update_ref(&base, &tip, &c).expect("cas");
                     st.queue_commits.insert(c.clone(), base.clone());
+                    st.queue_heads
+                        .entry(head_sha.clone())
+                        .or_default()
+                        .insert(base.clone());
                     st.emit_push(&base, &tip, Some(&c));
                     let tree = st.repo.tree_id_of(&c);
                     reply(
@@ -674,11 +803,15 @@ fn repo_route(
             } else {
                 "pending"
             };
-            reply(
-                200,
-                json!({ "state": state, "sha": sha,
-                        "statuses": latest.iter().map(|s| json!({ "id": s.id, "context": s.context, "state": s.state })).collect::<Vec<_>>() }),
-            )
+            // Paginated like GitHub: 30 per page unless `per_page` says otherwise.
+            let items: Vec<Value> = latest
+                .iter()
+                .map(|s| json!({ "id": s.id, "context": s.context, "state": s.state }))
+                .collect();
+            let mut r = paginate(base_url, path, query, items, Some("statuses"));
+            r.body["state"] = json!(state);
+            r.body["sha"] = json!(sha);
+            r
         }
         ("POST", ["check-runs"]) => {
             let sha = body["head_sha"].as_str().unwrap_or("").to_string();

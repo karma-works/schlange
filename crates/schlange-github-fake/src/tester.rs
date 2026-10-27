@@ -25,7 +25,9 @@ use schlange_github::jwt::AppKey;
 use schlange_github::service::{ConfigSource, ServeConfig, Service};
 use schlange_github::time::ManualClock;
 
-use crate::{CiRule, FakeConfig, FakeGithub, FakePr, FaultRule, HookFaults, TEST_APP_KEY};
+use crate::{
+    CiRule, FakeConfig, FakeGithub, FakePr, FaultRule, HookFaults, MergeGuard, TEST_APP_KEY,
+};
 
 /// The default timeout of `wait_*`.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -41,6 +43,7 @@ pub struct Tester {
     /// Serve the configuration from the repository (`.mergify.yml` in the base) instead of
     /// handing it over directly.
     from_repo: bool,
+    merge_guard: Option<MergeGuard>,
 }
 
 pub struct Running {
@@ -77,7 +80,20 @@ impl Tester {
                 cosmetic_reserve: 10.0,
             },
             from_repo: true,
+            merge_guard: None,
         }
+    }
+
+    /// The fake's merge guard: the conditions a pull request must meet when it lands (I1).
+    pub fn merge_guard(mut self, g: MergeGuard) -> Self {
+        self.merge_guard = Some(g);
+        self
+    }
+
+    /// Changes the fake GitHub's configuration (permissions, base files, …).
+    pub fn fake(mut self, f: impl FnOnce(&mut FakeConfig)) -> Self {
+        f(&mut self.fake_cfg);
+        self
     }
 
     pub fn base_file(mut self, path: &str, content: &str) -> Self {
@@ -127,6 +143,7 @@ impl Tester {
         }
         let gh = FakeGithub::start(self.fake_cfg.clone());
         gh.set_ci(self.ci.clone());
+        gh.set_merge_guard(self.merge_guard.clone());
         gh.set_hook_faults(self.hook_faults.clone());
         for f in &self.faults {
             gh.add_fault(f.clone());
@@ -396,11 +413,39 @@ impl Running {
         });
     }
 
-    /// I0, MQ-35 and (at quiescence) I3 on the fake's git state.
+    /// I0, I1, MQ-35 and (at quiescence) I3 on the fake's git state, and I1 against the
+    /// engine: no pull request the queue dequeued (its last outcome) was landed by the queue.
     pub fn assert_invariants(&self) {
         self.settle();
-        let v = self.gh.invariant_violations(true);
+        let mut v = self.gh.invariant_violations(true);
+        v.extend(self.dequeued_but_landed());
         assert!(v.is_empty(), "invariant violations:\n{}", v.join("\n"));
+    }
+
+    /// I1 against the engine's outcomes: squashed by the queue, but dequeued.
+    pub fn dequeued_but_landed(&self) -> Vec<String> {
+        let Some(s) = self.status() else {
+            return vec![];
+        };
+        self.gh
+            .squashes()
+            .iter()
+            .filter(|q| s.state["outcomes"][q.pr.to_string()]["outcome"] == "dequeued")
+            .map(|q| {
+                format!(
+                    "I1: #{} landed after the queue dequeued it ({})",
+                    q.pr,
+                    s.state["outcomes"][q.pr.to_string()]["reason"]
+                )
+            })
+            .collect()
+    }
+
+    /// The code of a pull request's last dequeue, if its last outcome is a dequeue.
+    pub fn dequeue_code(&self, n: u64) -> Option<String> {
+        let s = self.status()?;
+        let o = &s.state["outcomes"][n.to_string()];
+        (o["outcome"] == "dequeued").then(|| o["reason"]["code"].as_str().unwrap_or("").to_string())
     }
 
     /// The base branch's tree (path → content).
