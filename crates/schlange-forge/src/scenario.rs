@@ -36,10 +36,17 @@
 //!   - { at: 12m, push_base: { files: { hotfix.txt: "x\n" } } }
 //!   - { at: 13m, merge_manually: 2 }
 //!   - { at: 14m, push_queue_branch: 3 }
+//!   - { at: 15m, comment: { pr: 1, by: alice, body: "@mergifyio queue" } }
+//!   - { at: 16m, tick: { pr: 1, by: alice, checkbox: queue } }   # queue | requeue
+//!   - { at: 17m, edit_body: { pr: 1, body: "Depends-On: #2" } }
+//!   - { at: 18m, push: { pr: 1, by: mallory } }       # a push by someone else
+//! permissions: { alice: write, mallory: read }      # sender-permission; others: none
+//! config_in_repo: true                  # the configuration is .mergify.yml on the base
 //! expect:
 //!   - { pr: 1, state: merged }          # merged | dequeued | queued | open | closed
 //!   - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
 //!   - { pr: 3, queued: false }          # phase-0 form: in the queue at the end?
+//!   - { pr: 4, state: open, held: depends-on }  # held at the end (kind or text)
 //! expect_merged_order: [1, 3]
 //! expect_base: { src/lib.rs: "v2\n" }
 //! expect_log: ["build car"]
@@ -190,6 +197,35 @@ struct PrSpec {
     dependabot_update_type: Option<String>,
     #[serde(default)]
     checks: BTreeMap<String, Outcome>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    fork: bool,
+    #[serde(default)]
+    approvals: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommentSpec {
+    pr: u64,
+    by: String,
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TickSpec {
+    pr: u64,
+    by: String,
+    checkbox: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditBodySpec {
+    pr: u64,
+    body: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +241,8 @@ struct PushSpec {
     pr: u64,
     #[serde(default)]
     files: Option<FilesSpec>,
+    #[serde(default)]
+    by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +266,9 @@ enum StepAction {
     PushBase(PushBaseSpec),
     MergeManually(u64),
     PushQueueBranch(u64),
+    Comment(CommentSpec),
+    Tick(TickSpec),
+    EditBody(EditBodySpec),
 }
 
 #[derive(Debug, Deserialize)]
@@ -299,6 +340,10 @@ struct ScenarioSpec {
     expect_base: BTreeMap<String, String>,
     #[serde(default)]
     expect_log: Vec<String>,
+    #[serde(default)]
+    permissions: BTreeMap<String, String>,
+    #[serde(default)]
+    config_in_repo: bool,
 }
 
 /// Content a pull request writes to a path given only by name.
@@ -396,12 +441,26 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             files,
             dependabot_update_types: p.dependabot_update_type.iter().cloned().collect(),
             scripts: pr_scripts,
+            body: p.body.clone(),
+            fork: p.fork,
+            approvals: p.approvals.clone(),
         });
     }
-    let (base, base_files) = match &spec.repo {
+    let (base, mut base_files) = match &spec.repo {
         Some(r) if !r.files.is_empty() => (r.base.clone(), r.files.clone()),
         Some(r) => (r.base.clone(), default_base_files()),
         None => ("main".to_string(), default_base_files()),
+    };
+    if spec.config_in_repo
+        && !base_files
+            .keys()
+            .any(|p| schlange_config::config_file::is_config_path(p))
+    {
+        base_files.insert(".mergify.yml".into(), config_text.clone());
+    }
+    let setup = crate::runner::Setup {
+        permissions: spec.permissions.clone(),
+        config_in_repo: spec.config_in_repo,
     };
 
     let mut steps = Vec::new();
@@ -418,15 +477,38 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             StepAction::Open(n) => Action::Open(known(*n)?),
             StepAction::Push(p) => {
                 let n = known(p.pr)?;
-                Action::Push {
-                    number: n,
-                    files: p
-                        .files
-                        .as_ref()
-                        .map(|f| f.resolve(|path| format!("{path} pushed at {} by #{n}\n", s.at)))
-                        .unwrap_or_default(),
+                let files = p
+                    .files
+                    .as_ref()
+                    .map(|f| f.resolve(|path| format!("{path} pushed at {} by #{n}\n", s.at)))
+                    .unwrap_or_default();
+                match &p.by {
+                    None => Action::Push { number: n, files },
+                    Some(by) => Action::PushAs {
+                        number: n,
+                        by: by.clone(),
+                        files,
+                    },
                 }
             }
+            StepAction::Comment(c) => Action::Comment {
+                number: known(c.pr)?,
+                by: c.by.clone(),
+                body: c.body.clone(),
+            },
+            StepAction::Tick(t) => Action::Tick {
+                number: known(t.pr)?,
+                by: t.by.clone(),
+                checkbox: match t.checkbox.as_str() {
+                    "queue" => crate::sim::CheckBox::Queue,
+                    "requeue" => crate::sim::CheckBox::Requeue,
+                    o => return Err(fmt(format!("unknown checkbox `{o}` (queue or requeue)"))),
+                },
+            },
+            StepAction::EditBody(e) => Action::EditBody {
+                number: known(e.pr)?,
+                body: e.body.clone(),
+            },
             StepAction::Label(l) => Action::Label {
                 number: known(l.pr)?,
                 label: l.name.clone(),
@@ -508,6 +590,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         forge_faults,
         flake_seed: spec.seed,
         max_time,
+        setup,
     })
 }
 

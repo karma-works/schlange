@@ -1,0 +1,56 @@
++0:00:00  action    #1 opened by bot on main, files: impl.txt
++0:00:00  action    #2 opened by human on main, files: schema.txt
++0:00:00  action    #3 opened by bot on main, files: c.txt
++0:00:00  action    #4 opened by human on main, files: d.txt
++0:00:00  action    #5 opened by bot on main, files: e.txt
++0:00:00  action    #6 opened by bot on main, files: f.txt
++0:00:00  action    #7 opened by bot on main, files: g.txt
++0:00:00  action    #8 opened by bot on main, files: h.txt
++0:01:00  action    #4 closed
++0:01:00  ci        #1 check `quick` completed on 155e8e8: success
++0:01:00  ci        #2 check `quick` completed on 63c13ea: success
++0:01:00  ci        #3 check `quick` completed on ffa0eec: success
++0:01:00  ci        #4 check `quick` completed on 0c551c0: success
++0:01:00  ci        #5 check `quick` completed on a22c6f7: success
++0:01:00  ci        #6 check `quick` completed on db5c7c7: success
++0:01:00  ci        #7 check `quick` completed on 05ebbb9: success
++0:01:00  ci        #8 check `quick` completed on cc4545f: success
++0:01:00  webhook   #2 check `quick` completed on 63c13ea: success
++0:01:00  decision  controls comment #2: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
++0:02:00  action    #9 opened by bot on main, files: i.txt
++0:03:00  ci        #9 check `quick` completed on 6a37cfe: success
++0:03:00  webhook   #9 check `quick` completed on 6a37cfe: success
++0:03:00  decision  enqueue #9 into `default` (rule `queue bot pull requests`)
++0:03:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #9 (checks #9)
++0:03:00  reply     car 2 built at 3d738b3, draft #1000
++0:03:00  decision  labels #9 +queued
++0:03:00  decision  status comment #9: **Merge queue** · queue `default` — Being checked.
++0:03:00  decision  status comment #9: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:13:00  ci        #1000 check `full` completed on 3d738b3: success
++0:13:00  webhook   #1000 check `full` completed on 3d738b3: success
++0:13:00  decision  read #9 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:13:00  decision  land car 2: squash #9 onto main if it is still 5a8b940
++0:13:00  message   #9: Pull request 9 (#9)
++0:13:00  reply     car 2 landed #9 as 6a37cfe
++0:13:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:13:00  decision  #9 merged as 6a37cfe
++0:13:00  decision  labels #9 -queued
++0:13:00  decision  status comment #9: **Merge queue** · merged — Merged by the queue as 6a37cfe.
++0:30:00  action    #2 merged by hand onto main: afcd0f3
++0:30:00  webhook   #2 closed (merged)
++0:30:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:30:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base afcd0f3 + #1 (checks #1)
++0:30:00  reply     car 5 built at 833d1c9, draft #1001
++0:30:00  decision  labels #1 +queued
++0:30:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:30:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:40:00  ci        #1001 check `full` completed on 833d1c9: success
++0:40:00  webhook   #1001 check `full` completed on 833d1c9: success
++0:40:00  decision  read #1 #1001 main mergify/merge-queue/f2f5067500 before acting
++0:40:00  decision  land car 5: squash #1 onto main if it is still afcd0f3
++0:40:00  message   #1: Pull request 1 (#1)
++0:40:00  reply     car 5 landed #1 as 09d561d
++0:40:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1001
++0:40:00  decision  #1 merged as 09d561d
++0:40:00  decision  labels #1 -queued
++0:40:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 09d561d.

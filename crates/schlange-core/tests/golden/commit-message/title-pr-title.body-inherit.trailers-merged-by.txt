@@ -1,0 +1,5 @@
+Fix the login redirect (#42)
+
+<inherited body>
+
+Merged-by: frank

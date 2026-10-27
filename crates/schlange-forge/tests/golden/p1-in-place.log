@@ -5,18 +5,30 @@
 +0:02:00  webhook   #1 check `ci` completed on 84886d8: success
 +0:02:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
 +0:02:00  decision  car 2: check #1 in place
++0:02:00  decision  labels #1 +queued
++0:02:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
 +0:02:00  webhook   #2 check `ci` completed on bba8845: success
 +0:02:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
 +0:02:00  decision  read #1 main before acting
++0:02:00  decision  labels #2 +queued
++0:02:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
 +0:02:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:02:00  message   #1: Pull request 1 (#1)
 +0:02:00  reply     car 2 landed #1 as 84886d8
 +0:02:00  decision  #1 merged as 84886d8
 +0:02:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 84886d8 + #2 (checks #2)
 +0:02:00  reply     car 5 built at b963f19, draft #1000
++0:02:00  decision  labels #1 -queued
++0:02:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 84886d8.
++0:02:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:02:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
 +0:04:00  ci        #1000 check `ci` completed on b963f19: success
 +0:04:00  webhook   #1000 check `ci` completed on b963f19: success
 +0:04:00  decision  read #2 #1000 main mergify/merge-queue/f2f5067500 before acting
 +0:04:00  decision  land car 5: squash #2 onto main if it is still 84886d8
++0:04:00  message   #2: Pull request 2 (#2)
 +0:04:00  reply     car 5 landed #2 as d9ff2dc
 +0:04:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1000
 +0:04:00  decision  #2 merged as d9ff2dc
++0:04:00  decision  labels #2 -queued
++0:04:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as d9ff2dc.

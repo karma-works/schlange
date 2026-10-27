@@ -23,6 +23,25 @@ pub enum Hint {
     Sha(String),
     /// Something repository-wide changed (rulesets, installation): a full reconciliation.
     Full,
+    /// A comment was created or edited (a command, or a ticked checkbox in the queue's own
+    /// comment). The comment's content is taken from the signed delivery: GitHub's API does
+    /// not say who edited a comment.
+    Comment(Box<CommentHint>),
+}
+
+/// A comment as an `issue_comment` delivery names it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CommentHint {
+    pub id: u64,
+    pub number: u64,
+    /// Who wrote the comment.
+    pub author: String,
+    /// Who sent the event (for an edit: who edited it).
+    pub sender: String,
+    pub body: String,
+    pub edited: bool,
+    /// `updated_at`.
+    pub version: String,
 }
 
 #[derive(Clone, Debug)]
@@ -251,8 +270,22 @@ struct IssueJson {
 }
 
 #[derive(Deserialize)]
+struct CommentJson {
+    id: u64,
+    user: UserJson,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
 struct IssueCommentEvent {
     issue: IssueJson,
+    #[serde(default)]
+    comment: Option<serde_json::Value>,
+    #[serde(default)]
+    sender: Option<UserJson>,
 }
 
 #[derive(Deserialize)]
@@ -309,7 +342,7 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
             parsed.summary = format!("{} #{n}", parsed.summary);
             parsed.event = match action.as_deref().unwrap_or("") {
                 "opened" | "reopened" => Some(Event::PullRequestOpened {
-                    pull_request: pull_request_of(p),
+                    pull_request: Box::new(pull_request_of(p)),
                 }),
                 "synchronize" => Some(Event::PullRequestSynchronized {
                     number: n,
@@ -372,10 +405,32 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
         }
         "issue_comment" => {
             let ev: IssueCommentEvent = serde_json::from_slice(body).map_err(de)?;
-            // Commands come in a later phase; a comment on a pull request is a hint for now.
+            // A comment on a pull request: the pull request is read, and a new or edited
+            // comment goes to the engine (commands, ticked checkboxes).
             if ev.issue.pull_request.is_some() {
-                parsed.hints.push(Hint::PullRequest(ev.issue.number));
-                parsed.summary = format!("{} #{}", parsed.summary, ev.issue.number);
+                let n = ev.issue.number;
+                parsed.hints.push(Hint::PullRequest(n));
+                parsed.summary = format!("{} #{n}", parsed.summary);
+                let comment = ev
+                    .comment
+                    .clone()
+                    .and_then(|c| serde_json::from_value::<CommentJson>(c).ok());
+                if let (Some(c), Some("created" | "edited")) = (&comment, action.as_deref()) {
+                    let sender = ev
+                        .sender
+                        .as_ref()
+                        .map(|s| s.login.clone())
+                        .unwrap_or_else(|| c.user.login.clone());
+                    parsed.hints.push(Hint::Comment(Box::new(CommentHint {
+                        id: c.id,
+                        number: n,
+                        author: c.user.login.clone(),
+                        sender,
+                        body: c.body.clone(),
+                        edited: action.as_deref() == Some("edited"),
+                        version: c.updated_at.clone(),
+                    })));
+                }
             }
         }
         "push" => {
@@ -391,6 +446,15 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
                 );
                 parsed.hints.push(Hint::Branch(branch.to_string()));
             }
+        }
+        "pull_request_review" => {
+            // Approvals feed the `approved-by` trailer: read the pull request again.
+            #[derive(Deserialize)]
+            struct ReviewEvent {
+                pull_request: PrNumber,
+            }
+            let ev: ReviewEvent = serde_json::from_slice(body).map_err(de)?;
+            parsed.hints.push(Hint::PullRequest(ev.pull_request.number));
         }
         "branch_protection_rule"
         | "repository_ruleset"
@@ -541,7 +605,30 @@ mod tests {
 
         let body = json!({"action": "created", "issue": {"number": 5, "pull_request": {}}, "comment": {"body": "@schlange queue"}});
         let p = parse("issue_comment", body.to_string().as_bytes()).unwrap();
-        assert_eq!(p.hints, vec![Hint::PullRequest(5)]);
+        assert_eq!(
+            p.hints,
+            vec![Hint::PullRequest(5)],
+            "an incomplete comment is only a hint"
+        );
+        let body = json!({"action": "edited", "issue": {"number": 5, "pull_request": {}},
+            "comment": {"id": 77, "user": {"login": "schlange[bot]"}, "body": "- [x] box", "updated_at": "2026-10-27T10:00:00Z"},
+            "sender": {"login": "alice"}});
+        let p = parse("issue_comment", body.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            p.hints,
+            vec![
+                Hint::PullRequest(5),
+                Hint::Comment(Box::new(CommentHint {
+                    id: 77,
+                    number: 5,
+                    author: "schlange[bot]".into(),
+                    sender: "alice".into(),
+                    body: "- [x] box".into(),
+                    edited: true,
+                    version: "2026-10-27T10:00:00Z".into(),
+                }))
+            ]
+        );
         let body = json!({"action": "created", "issue": {"number": 6}});
         assert!(
             parse("issue_comment", body.to_string().as_bytes())

@@ -45,10 +45,54 @@ pub struct User {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct RepoRef {
+    pub full_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct GitRefSide {
     #[serde(rename = "ref")]
     pub ref_name: String,
     pub sha: String,
+    /// The repository of the branch; `null` when the head repository was deleted.
+    #[serde(default)]
+    pub repo: Option<RepoRef>,
+}
+
+/// A review of a pull request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Review {
+    #[serde(default)]
+    pub user: Option<User>,
+    pub state: String,
+}
+
+/// A comment on an issue or pull request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub user: User,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub updated_at: String,
+    /// `…/issues/<n>`.
+    #[serde(default)]
+    pub issue_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Reaction {
+    pub user: User,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CommitPerson {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -156,6 +200,8 @@ pub struct CommitInner {
     pub tree: ShaOnly,
     #[serde(default)]
     pub message: String,
+    #[serde(default)]
+    pub author: Option<CommitPerson>,
 }
 
 /// A commit as `POST /merges` and `GET /pulls/{n}/commits` return it.
@@ -165,6 +211,9 @@ pub struct RepoCommit {
     pub commit: CommitInner,
     #[serde(default)]
     pub parents: Vec<ShaOnly>,
+    /// The GitHub account of the commit's author, when GitHub matched one.
+    #[serde(default)]
+    pub author: Option<User>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -180,6 +229,9 @@ pub struct Compare {
 pub struct Repository {
     pub full_name: String,
     pub default_branch: String,
+    /// `PR_BODY`, `COMMIT_MESSAGES` or `BLANK`: GitHub's squash body setting.
+    #[serde(default)]
+    pub squash_merge_commit_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -362,6 +414,46 @@ impl RepoApi {
 
     pub fn pull_commits(&self, n: u64, prio: Priority) -> Result<Vec<RepoCommit>, Error> {
         self.list(&format!("/pulls/{n}/commits"), prio, None)
+    }
+
+    pub fn reviews(&self, n: u64, prio: Priority) -> Result<Vec<Review>, Error> {
+        self.list(&format!("/pulls/{n}/reviews"), prio, None)
+    }
+
+    /// The comments on issue or pull request `n`.
+    pub fn issue_comments(&self, n: u64, prio: Priority) -> Result<Vec<IssueComment>, Error> {
+        self.list(&format!("/issues/{n}/comments"), prio, None)
+    }
+
+    /// The 100 most recently updated comments of the repository (one page, for reconciliation).
+    pub fn recent_comments(&self, prio: Priority) -> Result<Vec<IssueComment>, Error> {
+        self.get(
+            "/issues/comments?sort=updated&direction=desc&per_page=100",
+            prio,
+        )
+    }
+
+    pub fn comment_reactions(&self, id: u64, prio: Priority) -> Result<Vec<Reaction>, Error> {
+        self.list(&format!("/issues/comments/{id}/reactions"), prio, None)
+    }
+
+    /// A pull request of another repository the installation can read.
+    pub fn foreign_pull(&self, full: &str, n: u64, prio: Priority) -> Result<Pull, Error> {
+        let Some(r) = RepoName::parse(full) else {
+            return Err(Error::NotFound {
+                method: "GET".into(),
+                path: full.into(),
+            });
+        };
+        self.client.get_json(
+            &format!(
+                "/repos/{}/{}/pulls/{n}",
+                enc_path(&r.owner),
+                enc_path(&r.name)
+            ),
+            auth_inst(self.installation),
+            prio,
+        )
     }
 
     pub fn check_runs(&self, sha: &str, prio: Priority) -> Result<Vec<CheckRunJson>, Error> {
@@ -575,20 +667,24 @@ impl RepoApi {
         .map(|_| ())
     }
 
-    /// Squash-merges pull request `n` only if its head is still `sha`.
+    /// Squash-merges pull request `n` only if its head is still `sha`. A `None` title or
+    /// message leaves it to GitHub (the repository's squash merge settings).
     pub fn squash_pull(
         &self,
         n: u64,
         sha: &str,
-        title: &str,
+        title: Option<&str>,
+        message: Option<&str>,
         prio: Priority,
     ) -> Result<PullMergeOutcome, Error> {
-        let resp = self.send(
-            "PUT",
-            &format!("/pulls/{n}/merge"),
-            prio,
-            Some(&json!({ "merge_method": "squash", "sha": sha, "commit_title": title })),
-        );
+        let mut body = json!({ "merge_method": "squash", "sha": sha });
+        if let Some(t) = title {
+            body["commit_title"] = json!(t);
+        }
+        if let Some(m) = message {
+            body["commit_message"] = json!(m);
+        }
+        let resp = self.send("PUT", &format!("/pulls/{n}/merge"), prio, Some(&body));
         match resp {
             Ok(r) => {
                 #[derive(Deserialize)]
@@ -640,6 +736,16 @@ impl RepoApi {
             )?
             .json("comments")?;
         Ok(id.id)
+    }
+
+    pub fn update_comment(&self, id: u64, body: &str, prio: Priority) -> Result<(), Error> {
+        self.send(
+            "PATCH",
+            &format!("/issues/comments/{id}"),
+            prio,
+            Some(&json!({ "body": body })),
+        )
+        .map(|_| ())
     }
 
     /// Reacts to an issue comment (`+1`, `eyes`, `rocket`, …).

@@ -964,6 +964,7 @@ name = "schlange-core"
 version = "0.0.1"
 dependencies = [
  "fancy-regex 0.20.0",
+ "proptest",
  "schlange-config",
  "serde",
  "serde_json",

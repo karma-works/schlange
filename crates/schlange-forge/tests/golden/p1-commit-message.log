@@ -1,0 +1,66 @@
++0:00:00  action    #1 opened by human on main, files: login.txt
++0:00:30  action    #1 pushed by carol, head 4a7c3b3
++0:01:00  ci        #1 check `quick` completed on d53bda1: success
++0:01:30  ci        #1 check `quick` completed on 4a7c3b3: success
++0:01:30  webhook   #1 check `quick` completed on 4a7c3b3: success
++0:01:30  decision  controls comment #1: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
++0:05:00  action    alice commented on #1: @mergifyio queue
++0:05:00  webhook   #1 comment 2 by alice
++0:05:00  decision  react +1 to comment 2 on #1
++0:05:00  decision  enqueue #1 into `default` (rule `queue command by @alice`)
++0:05:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:05:00  reply     car 2 built at b6b58a2, draft #1000
++0:05:00  decision  labels #1 +queued
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @alice) — Being checked.
++0:05:00  decision  controls comment #1: **Merge queue** — @alice asked to queue this pull request.
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @alice) — Being checked in draft pull request #1000.
++0:15:00  ci        #1000 check `full` completed on b6b58a2: success
++0:15:00  webhook   #1000 check `full` completed on b6b58a2: success
++0:15:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:15:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:15:00  message   #1: Fix the login redirect (#1) ⏎  ⏎ The redirect lost the query string. ⏎  ⏎ Co-authored-by: carol <carol@users.noreply.example> ⏎ Approved-by: dave ⏎ Approved-by: erin ⏎ Merged-by: alice
++0:15:00  reply     car 2 landed #1 as e8c0c40
++0:15:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:15:00  decision  #1 merged as e8c0c40
++0:15:00  decision  labels #1 -queued
++0:15:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as e8c0c40.
++0:20:00  action    #2 opened by bot on main, files: lib.txt
++0:21:00  ci        #2 check `quick` completed on d864e08: success
++0:21:00  webhook   #2 check `quick` completed on d864e08: success
++0:21:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:21:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base e8c0c40 + #2 (checks #2)
++0:21:00  reply     car 5 built at e32de43, draft #1001
++0:21:00  decision  labels #2 +queued
++0:21:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:21:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:31:00  ci        #1001 check `full` completed on e32de43: success
++0:31:00  webhook   #1001 check `full` completed on e32de43: success
++0:31:00  decision  read #2 #1001 main mergify/merge-queue/f2f5067500 before acting
++0:31:00  decision  land car 5: squash #2 onto main if it is still e8c0c40
++0:31:00  message   #2: Bump a library (#2) ⏎  ⏎ Merged-by: schlange[bot]
++0:31:00  reply     car 5 landed #2 as 47c75f4
++0:31:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1001
++0:31:00  decision  #2 merged as 47c75f4
++0:31:00  decision  labels #2 -queued
++0:31:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as 47c75f4.
++0:40:00  action    #3 opened by bot on main, files: plain.txt
++0:41:00  action    #3 pushed, head 25e0243
++0:41:00  ci        #3 check `quick` completed on aed155b: success
++0:42:00  ci        #3 check `quick` completed on 25e0243: success
++0:42:00  webhook   #3 check `quick` completed on 25e0243: success
++0:42:00  decision  enqueue #3 into `plain` (rule `queue plain pull requests`)
++0:42:00  decision  build car 8 on mergify/merge-queue/0fe36e3333: base 47c75f4 + #3 (checks #3)
++0:42:00  reply     car 8 built at 5498870, draft #1002
++0:42:00  decision  labels #3 +queued
++0:42:00  decision  status comment #3: **Merge queue** · queue `plain` — Being checked.
++0:42:00  decision  status comment #3: **Merge queue** · queue `plain` — Being checked in draft pull request #1002.
++0:52:00  ci        #1002 check `full` completed on 5498870: success
++0:52:00  webhook   #1002 check `full` completed on 5498870: success
++0:52:00  decision  read #3 #1002 main mergify/merge-queue/0fe36e3333 before acting
++0:52:00  decision  land car 8: squash #3 onto main if it is still 47c75f4
++0:52:00  message   #3: Plain change (#3) ⏎  ⏎ * Plain change (#3) ⏎ * push 1 to #3
++0:52:00  reply     car 8 landed #3 as ac0a6b7
++0:52:00  decision  close car 8, delete mergify/merge-queue/0fe36e3333, close #1002
++0:52:00  decision  #3 merged as ac0a6b7
++0:52:00  decision  labels #3 -queued
++0:52:00  decision  status comment #3: **Merge queue** · merged — Merged by the queue as ac0a6b7.

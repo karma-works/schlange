@@ -14,6 +14,32 @@ pub enum AttrValue {
     Bool(bool),
     Str(String),
     List(Vec<String>),
+    /// A timestamp in Unix seconds; `None` when unset (then every comparison is false).
+    Time(Option<i64>),
+    /// A rank on [`PERMISSIONS`].
+    Permission(usize),
+}
+
+/// GitHub's repository permissions, lowest first (`sender-permission`).
+pub const PERMISSIONS: [&str; 6] = ["none", "read", "triage", "write", "maintain", "admin"];
+
+/// The rank of a permission name; `None` for an unknown name.
+pub fn permission_rank(p: &str) -> Option<usize> {
+    PERMISSIONS
+        .iter()
+        .position(|x| x.eq_ignore_ascii_case(p.trim()))
+}
+
+/// Where a pull request stands in its queue (queue attributes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QueueAttrs {
+    pub name: String,
+    /// 0 for the first pull request of the queue.
+    pub position: i64,
+    /// Unix seconds.
+    pub queued_at: i64,
+    /// Unix seconds; `None` until its checks started.
+    pub merge_started_at: Option<i64>,
 }
 
 /// Context that is not part of the pull request itself.
@@ -21,6 +47,40 @@ pub enum AttrValue {
 pub struct Context {
     /// Login of the commenter, for command restrictions.
     pub sender: Option<String>,
+    /// The commenter's repository permission (`sender-permission`); `None` counts as `none`.
+    pub sender_permission: Option<String>,
+    /// Unix seconds now, for relative timestamps (`… ago`).
+    pub now: i64,
+    /// `owner/name` of the repository, for `depends-on`.
+    pub repository: String,
+    /// Set while the pull request is queued.
+    pub queue: Option<QueueAttrs>,
+    /// The code of the last time its queue checks ended (`queue-dequeue-reason`).
+    pub dequeue_reason: Option<String>,
+}
+
+/// Replaces the template `{{author}}` (also `{{ author }}`) in condition values with the pull
+/// request's author (`commands_restrictions`).
+pub fn with_author(list: &[Condition], author: &str) -> Vec<Condition> {
+    fn render(c: &Condition, author: &str) -> Condition {
+        match c {
+            Condition::Atom(a) => {
+                let mut a = a.clone();
+                if let Some(v) = &a.value {
+                    let compact: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+                    if compact.contains("{{author}}") {
+                        a.value = Some(compact.replace("{{author}}", author));
+                    }
+                }
+                Condition::Atom(a)
+            }
+            Condition::And(cs) => Condition::And(cs.iter().map(|c| render(c, author)).collect()),
+            Condition::Or(cs) => Condition::Or(cs.iter().map(|c| render(c, author)).collect()),
+            Condition::Not(c) => Condition::Not(Box::new(render(c, author))),
+            Condition::Always => Condition::Always,
+        }
+    }
+    list.iter().map(|c| render(c, author)).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -33,6 +93,8 @@ pub enum EvalError {
     BadRegex(String),
     #[error("`{0}` needs a number")]
     NotANumber(String),
+    #[error("`{attribute}` cannot be compared with `{value}`")]
+    BadValue { attribute: String, value: String },
 }
 
 fn checks_where(pr: &PullRequest, pred: impl Fn(Option<Conclusion>) -> bool) -> AttrValue {
@@ -63,6 +125,38 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
             Some(s) => AttrValue::Str(s.clone()),
             None => AttrValue::Str(String::new()),
         },
+        "sender-permission" => AttrValue::Permission(
+            ctx.sender_permission
+                .as_deref()
+                .and_then(permission_rank)
+                .unwrap_or(0),
+        ),
+        "from-fork" => AttrValue::Bool(pr.from_fork),
+        "depends-on" => AttrValue::List(crate::protections::depends_on_attribute(
+            pr,
+            &ctx.repository,
+        )),
+        "mergify-configuration-changed" => AttrValue::Bool(
+            pr.files
+                .iter()
+                .any(|f| schlange_config::config_file::is_config_path(f)),
+        ),
+        "queue-position" => {
+            AttrValue::Str(ctx.queue.as_ref().map_or(-1, |q| q.position).to_string())
+        }
+        "queue-name" => AttrValue::Str(
+            ctx.queue
+                .as_ref()
+                .map(|q| q.name.clone())
+                .unwrap_or_default(),
+        ),
+        "queued-at" => AttrValue::Time(ctx.queue.as_ref().map(|q| q.queued_at)),
+        "queue-merge-started-at" => {
+            AttrValue::Time(ctx.queue.as_ref().and_then(|q| q.merge_started_at))
+        }
+        "queue-dequeue-reason" => {
+            AttrValue::Str(ctx.dequeue_reason.clone().unwrap_or_else(|| "NONE".into()))
+        }
         "check" => checks_where(pr, |_| true),
         "check-success" => checks_where(pr, |c| c == Some(Success)),
         "check-failure" => checks_where(pr, |c| {
@@ -148,14 +242,74 @@ fn compare_scalar(
     })
 }
 
+/// Ordering of `actual` against `expected` under `op`.
+fn ordered(op: Operator, o: std::cmp::Ordering) -> Option<bool> {
+    Some(match op {
+        Operator::Eq => o.is_eq(),
+        Operator::Ne => o.is_ne(),
+        Operator::Ge => o.is_ge(),
+        Operator::Gt => o.is_gt(),
+        Operator::Le => o.is_le(),
+        Operator::Lt => o.is_lt(),
+        Operator::Regex | Operator::Glob => return None,
+    })
+}
+
 /// Evaluates one atom.
 pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, EvalError> {
     let value = attribute(pr, ctx, &atom.attribute)?;
+    let bad_op = |op: Operator| EvalError::BadOperator {
+        attribute: atom.attribute.clone(),
+        op: op.as_str(),
+    };
+    let bad_value = |v: &str| EvalError::BadValue {
+        attribute: atom.attribute.clone(),
+        value: v.to_string(),
+    };
+    match (&value, atom.operator, &atom.value) {
+        (AttrValue::Permission(rank), Some(op), Some(v)) if !atom.length => {
+            let expected = permission_rank(v).ok_or_else(|| bad_value(v))?;
+            let r = ordered(op, rank.cmp(&expected)).ok_or_else(|| bad_op(op))?;
+            return Ok(r != atom.negate);
+        }
+        (AttrValue::Time(actual), Some(op), Some(v)) if !atom.length => {
+            if matches!(
+                op,
+                Operator::Eq | Operator::Ne | Operator::Regex | Operator::Glob
+            ) {
+                return Err(bad_op(op));
+            }
+            let expected =
+                crate::time::parse_condition_time(v, ctx.now).ok_or_else(|| bad_value(v))?;
+            let r = match actual {
+                Some(a) => ordered(op, a.cmp(&expected)).unwrap_or(false),
+                None => false,
+            };
+            return Ok(r != atom.negate);
+        }
+        (AttrValue::Str(code), Some(op @ (Operator::Eq | Operator::Ne)), Some(v))
+            if atom.attribute == "queue-dequeue-reason" && !atom.length =>
+        {
+            // The documentation writes the codes in kebab case, the schema in upper case.
+            let expected = v.trim().to_ascii_uppercase().replace('-', "_");
+            let r = (code == &expected) == (op == Operator::Eq);
+            return Ok(r != atom.negate);
+        }
+        (AttrValue::Time(t), None, _) => return Ok(t.is_some() != atom.negate),
+        (AttrValue::Permission(r), None, _) => return Ok((*r > 0) != atom.negate),
+        (AttrValue::Time(_) | AttrValue::Permission(_), ..) => {
+            return Err(EvalError::BadOperator {
+                attribute: atom.attribute.clone(),
+                op: "#",
+            });
+        }
+        _ => {}
+    }
     let result = if atom.length {
         let len = match &value {
             AttrValue::List(v) => v.len(),
             AttrValue::Str(s) => s.chars().count(),
-            AttrValue::Bool(_) => {
+            AttrValue::Bool(_) | AttrValue::Time(_) | AttrValue::Permission(_) => {
                 return Err(EvalError::BadOperator {
                     attribute: atom.attribute.clone(),
                     op: "#",
@@ -195,6 +349,7 @@ pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, E
                 any
             }
             (_, Some(_), None) => false,
+            (AttrValue::Time(_) | AttrValue::Permission(_), ..) => false,
         }
     };
     Ok(result != atom.negate)
@@ -363,6 +518,123 @@ mod tests {
         p.checks.push(run("ci", "h2", None, 4)); // second trigger still running
         assert!(holds("check-pending = ci", &p));
         assert!(!holds("check-success = ci", &p));
+    }
+
+    fn holds_with(cond: &str, pr: &PullRequest, ctx: &Context) -> bool {
+        eval_atom(&parse_atom(cond).unwrap(), pr, ctx).unwrap()
+    }
+
+    #[test]
+    fn sender_permission_ladder_and_fork() {
+        let mut p = pr();
+        for (perm, write) in [
+            ("none", false),
+            ("read", false),
+            ("triage", false),
+            ("write", true),
+            ("maintain", true),
+            ("admin", true),
+        ] {
+            let ctx = Context {
+                sender_permission: Some(perm.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                holds_with("sender-permission >= write", &p, &ctx),
+                write,
+                "{perm}"
+            );
+            assert_eq!(
+                holds_with("sender-permission = triage", &p, &ctx),
+                perm == "triage"
+            );
+            assert_eq!(
+                holds_with("sender-permission < read", &p, &ctx),
+                perm == "none"
+            );
+        }
+        assert!(
+            !holds_with("sender-permission >= read", &p, &Context::default()),
+            "unknown permission counts as none"
+        );
+        assert!(
+            eval_atom(
+                &parse_atom("sender-permission >= owner").unwrap(),
+                &p,
+                &Context::default()
+            )
+            .is_err()
+        );
+        assert!(!holds("from-fork", &p));
+        p.from_fork = true;
+        assert!(holds("from-fork", &p));
+    }
+
+    #[test]
+    fn author_template() {
+        let list = vec![Condition::Atom(
+            parse_atom("sender = {{ author }}").unwrap(),
+        )];
+        let r = with_author(&list, "alice");
+        let ctx = Context {
+            sender: Some("alice".into()),
+            ..Default::default()
+        };
+        let mut errors = Vec::new();
+        assert!(eval_list(&r, &pr(), &ctx, &mut errors).0);
+        let ctx = Context {
+            sender: Some("mallory".into()),
+            ..Default::default()
+        };
+        assert!(!eval_list(&r, &pr(), &ctx, &mut errors).0);
+    }
+
+    #[test]
+    fn queue_attributes() {
+        let p = pr();
+        let ctx = Context {
+            now: 10_000,
+            queue: Some(QueueAttrs {
+                name: "default".into(),
+                position: 0,
+                queued_at: 9_000,
+                merge_started_at: None,
+            }),
+            dequeue_reason: Some("CHECKS_FAILED".into()),
+            ..Default::default()
+        };
+        assert!(holds_with("queue-position = 0", &p, &ctx));
+        assert!(holds_with("queue-name = default", &p, &ctx));
+        assert!(holds_with("queued-at < 10 minutes ago", &p, &ctx));
+        assert!(!holds_with("queued-at < 20 minutes ago", &p, &ctx));
+        assert!(holds_with("queued-at > 1970-01-01T02:00:00Z", &p, &ctx));
+        assert!(!holds_with("queue-merge-started-at > 1970-01-01", &p, &ctx));
+        assert!(holds_with("queue-dequeue-reason = checks-failed", &p, &ctx));
+        assert!(holds_with(
+            "queue-dequeue-reason != CHECKS_TIMEOUT",
+            &p,
+            &ctx
+        ));
+        let none = Context::default();
+        assert!(holds_with("queue-position = -1", &p, &none));
+        assert!(holds_with("queue-dequeue-reason = none", &p, &none));
+        assert!(!holds_with("queued-at > 1970-01-01", &p, &none));
+        assert!(eval_atom(&parse_atom("queued-at = 1970-01-01").unwrap(), &p, &ctx).is_err());
+    }
+
+    #[test]
+    fn protection_attributes() {
+        let mut p = pr();
+        p.body = "Depends-On: #4\nDepends-On: org/other#5".into();
+        let ctx = Context {
+            repository: "org/app".into(),
+            ..Default::default()
+        };
+        assert!(holds_with("depends-on = org/app#4", &p, &ctx));
+        assert!(holds_with("#depends-on = 2", &p, &ctx));
+        assert!(!holds("mergify-configuration-changed", &p));
+        p.files.push(".github/mergify.yml".into());
+        assert!(holds("mergify-configuration-changed", &p));
     }
 
     #[test]

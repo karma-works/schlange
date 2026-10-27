@@ -96,6 +96,7 @@ impl Sim {
                 forge_faults: None,
                 flake_seed: 0,
                 max_time: 7 * 86400,
+                setup: Default::default(),
             },
             overrides: BTreeMap::new(),
         }
@@ -130,6 +131,9 @@ impl Sim {
                 .collect(),
             dependabot_update_types: vec![],
             scripts: vec![],
+            body: String::new(),
+            fork: false,
+            approvals: vec![],
         };
         f(&mut def);
         self.s.prs.push(def);
@@ -188,6 +192,74 @@ impl Sim {
                     .collect(),
             },
         )
+    }
+
+    /// `by` comments `body` on pull request `n`.
+    pub fn comment(self, t: &str, n: u64, by: &str, body: &str) -> Self {
+        self.at(
+            t,
+            Action::Comment {
+                number: n,
+                by: by.into(),
+                body: body.into(),
+            },
+        )
+    }
+
+    /// `by` ticks a checkbox in the queue's comment on pull request `n`.
+    pub fn tick(self, t: &str, n: u64, by: &str, checkbox: crate::sim::CheckBox) -> Self {
+        self.at(
+            t,
+            Action::Tick {
+                number: n,
+                by: by.into(),
+                checkbox,
+            },
+        )
+    }
+
+    /// `by` (not the author) pushes to pull request `n`.
+    pub fn push_as(self, t: &str, n: u64, by: &str, files: &[(&str, &str)]) -> Self {
+        self.at(
+            t,
+            Action::PushAs {
+                number: n,
+                by: by.into(),
+                files: files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), c.to_string()))
+                    .collect(),
+            },
+        )
+    }
+
+    pub fn edit_body(self, t: &str, n: u64, body: &str) -> Self {
+        self.at(
+            t,
+            Action::EditBody {
+                number: n,
+                body: body.into(),
+            },
+        )
+    }
+
+    /// A repository permission (`sender-permission`) of a login.
+    pub fn permission(mut self, login: &str, permission: &str) -> Self {
+        self.s
+            .setup
+            .permissions
+            .insert(login.into(), permission.into());
+        self
+    }
+
+    /// The configuration lives in `.mergify.yml` on the default branch and is reloaded from
+    /// there after every step.
+    pub fn config_in_repo(mut self, config: &str) -> Self {
+        self.s.setup.config_in_repo = true;
+        self.s
+            .base_files
+            .insert(".mergify.yml".into(), config.to_string());
+        self
     }
 
     pub fn faults(mut self, faults: Option<Faults>) -> Self {

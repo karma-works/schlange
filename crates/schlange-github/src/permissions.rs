@@ -31,6 +31,7 @@ pub const EVENTS: &[&str] = &[
     "check_suite",
     "status",
     "issue_comment",
+    "pull_request_review",
     "push",
 ];
 

@@ -35,69 +35,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `commands_restrictions.backport` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.copy` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.dequeue` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.queue` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.rebase` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.refresh` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.requeue` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.squash` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `commands_restrictions.update` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing: feature not built)",
-      "feature": "commands-restrictions"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `defaults.queue_rule.allow_inplace_checks` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
       "feature": "config-defaults"
     },
@@ -210,41 +147,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `merge_queue.checking_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing: feature not built)",
-      "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.dequeued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing: feature not built)",
-      "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.queue_controls_comment` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing: feature not built)",
-      "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.queued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing: feature not built)",
-      "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.status_comments` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing: feature not built)",
-      "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
       "feature": "queue-branch-protection"
     },
@@ -252,36 +154,8 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `queue_rules.commit_message_template` is in effect but not supported by Schlange yet (feature queue-commit-message, P1, missing: feature not built)",
-      "feature": "queue-commit-message"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.draft_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing: feature not built)",
-      "feature": "queue-bot-accounts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.merge_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing: feature not built)",
-      "feature": "queue-bot-accounts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.queue_branch_merge_method` is in effect but not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
       "feature": "queue-merge-methods-other"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.update_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing: feature not built)",
-      "feature": "queue-bot-accounts"
     },
     {
       "stage": "support",
@@ -411,91 +285,64 @@
       "id": "default:commands_restrictions.backport",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.copy",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.dequeue",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.queue",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.rebase",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.refresh",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.requeue",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.squash",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:commands_restrictions.update",
       "feature": "commands-restrictions",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:defaults.queue_rule.allow_inplace_checks",
@@ -661,21 +508,15 @@
       "id": "default:merge_queue.checking_label",
       "feature": "queue-labels-comments",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.dequeued_label",
       "feature": "queue-labels-comments",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.mode",
@@ -688,21 +529,15 @@
       "id": "default:merge_queue.queue_controls_comment",
       "feature": "queue-labels-comments",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.queued_label",
       "feature": "queue-labels-comments",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.reset_on_external_merge",
@@ -722,11 +557,8 @@
       "id": "default:merge_queue.status_comments",
       "feature": "queue-labels-comments",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.allow_inplace_checks",
@@ -784,21 +616,15 @@
       "id": "default:queue_rules.commit_message_template",
       "feature": "queue-commit-message",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.draft_bot_account",
       "feature": "queue-bot-accounts",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.max_checks_retries",
@@ -811,11 +637,8 @@
       "id": "default:queue_rules.merge_bot_account",
       "feature": "queue-bot-accounts",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.queue_branch_merge_method",
@@ -838,11 +661,8 @@
       "id": "default:queue_rules.update_bot_account",
       "feature": "queue-bot-accounts",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.update_method",

@@ -1,0 +1,43 @@
+# Checkbox controls (queue_controls_comment, default on): a ready pull request that no rule
+# queues gets a comment with a "queue" checkbox. Ticking it is `@mergifyio queue` by whoever
+# ticked, under the same restrictions: mallory's tick is refused, alice's queues. After a
+# failed check the status comment carries a "requeue" checkbox; bob ticks it after a fix.
+name: p1-checkbox
+description: The queue and requeue checkboxes act as the queue command of the person who ticks.
+config: configs/commands.yml
+permissions: { alice: write, bob: write, mallory: write }
+
+ci:
+  - check: quick
+    duration: 2m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    fail_when_contains: BROKEN
+
+pull_requests:
+  - { number: 1, author: human, files: { one.txt: "1\n" } }
+  - { number: 2, author: human, files: { two.txt: "BROKEN\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, tick: { pr: 1, by: mallory, checkbox: queue } }
+  - { at: 6m, tick: { pr: 1, by: alice, checkbox: queue } }
+  - { at: 7m, tick: { pr: 2, by: alice, checkbox: queue } }
+  - { at: 40m, push: { pr: 2, files: { two.txt: "fixed\n" } } }
+  - { at: 45m, tick: { pr: 2, by: bob, checkbox: requeue } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_base:
+  two.txt: "fixed\n"
+expect_log:
+  - "@mallory, the checkbox did not queue this pull request"
+  - "enqueue #1 into `default` (rule `queue command by @alice`)"
+  - "dequeue #2 from `default`: CHECKS_FAILED"
+  - "labels #2 +dequeued -queued"
+  - "Put this pull request back into the queue"
+  - "enqueue #2 into `default` (rule `queue command by @bob`)"

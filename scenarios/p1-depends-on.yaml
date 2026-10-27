@@ -1,0 +1,52 @@
+# Built-in protection `Depends-On` (MQ-49, MQ-09, MQ-27): #1 names #2 in its description and
+# waits, with the reason in the engine state, until #2 is merged; then it is queued and lands.
+# #3 names #4, which is closed without merge: it never queues. #5 and #6 name each other: the
+# cycle never resolves and is named in the reason. #7 names a pull request that does not
+# exist; #8 names one of another owner.
+name: p1-depends-on
+description: A pull request waits for the pull requests in its Depends-On lines.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, body: "Implementation.\n\nDepends-On: #2\n", files: { impl.txt: "impl\n" } }
+  - { number: 2, author: human, files: { schema.txt: "schema\n" } }
+  - { number: 3, author: bot, body: "Depends-On: https://github.com/sim/repo/pull/4", files: { c.txt: "c\n" } }
+  - { number: 4, author: human, files: { d.txt: "d\n" } }
+  - { number: 5, author: bot, body: "Depends-On: #6", files: { e.txt: "e\n" } }
+  - { number: 6, author: bot, body: "Depends-On: sim/repo#5", files: { f.txt: "f\n" } }
+  - { number: 7, author: bot, body: "Depends-On: #99", files: { g.txt: "g\n" } }
+  - { number: 8, author: bot, body: "Depends-On: elsewhere/repo#1", files: { h.txt: "h\n" } }
+  - { number: 9, author: bot, files: { i.txt: "i\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 0s, open: 5 }
+  - { at: 0s, open: 6 }
+  - { at: 0s, open: 7 }
+  - { at: 0s, open: 8 }
+  - { at: 1m, close: 4 }
+  # #2 has no rule; #9 is a bot change that lands first. Then #2 is merged by hand.
+  - { at: 2m, open: 9 }
+  - { at: 30m, merge_manually: 2 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: closed }
+  - { pr: 3, state: open, held: "closed without being merged" }
+  - { pr: 5, state: open, held: "circular dependency #5 → #6 → #5" }
+  - { pr: 6, state: open, held: "circular dependency" }
+  - { pr: 7, state: open, held: "cannot be resolved" }
+  - { pr: 8, state: open, held: "another owner" }
+  - { pr: 9, state: merged }
+expect_merged_order: [9, 1]

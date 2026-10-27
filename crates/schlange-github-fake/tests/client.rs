@@ -275,16 +275,17 @@ fn queue_operations_on_the_fake() {
     ));
     // Squash with the expected head; a moved head is refused.
     assert_eq!(
-        a.squash_pull(p1, &h2, "x", Priority::Landing).unwrap(),
+        a.squash_pull(p1, &h2, Some("x"), None, Priority::Landing)
+            .unwrap(),
         PullMergeOutcome::HeadMoved
     );
     assert!(matches!(
-        a.squash_pull(p1, &h1, "one (#1)", Priority::Landing)
+        a.squash_pull(p1, &h1, Some("one (#1)"), None, Priority::Landing)
             .unwrap(),
         PullMergeOutcome::Merged { .. }
     ));
     assert!(matches!(
-        a.squash_pull(p1, &h1, "one (#1)", Priority::Landing)
+        a.squash_pull(p1, &h1, Some("one (#1)"), None, Priority::Landing)
             .unwrap(),
         PullMergeOutcome::NotMergeable(_)
     ));
@@ -449,7 +450,8 @@ fn the_invariant_checker_catches_untested_landings_and_leftover_branches() {
     let a = api(&gh, &c);
     let n = gh.open_pr("u", "t", &[("a".into(), "1".into())], false, &[]);
     let head = gh.pr(n).unwrap().head_sha;
-    a.squash_pull(n, &head, "t", Priority::Landing).unwrap();
+    a.squash_pull(n, &head, Some("t"), None, Priority::Landing)
+        .unwrap();
     let v = gh.invariant_violations(true);
     assert!(v.iter().any(|v| v.starts_with("I0")), "{v:?}");
     a.create_ref("mergify/merge-queue/abcdef0123", &head, Priority::Normal)

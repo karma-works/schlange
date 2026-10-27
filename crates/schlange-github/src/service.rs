@@ -29,13 +29,14 @@ use crate::api::{RepoApi, RepoName};
 use crate::client::{Client, Priority};
 use crate::forge::{ForgeOptions, GithubForge};
 use crate::time::Clock;
-use crate::webhook::{Dedup, Hint, Parsed, parse, verify_signature};
+use crate::webhook::{CommentHint, Dedup, Hint, Parsed, parse, verify_signature};
 
 /// Where the configuration comes from.
 #[derive(Clone, Debug)]
 pub enum ConfigSource {
-    /// `.mergify.yml` (or `.mergify/config.yml`, `.github/mergify.yml`) on the default branch,
-    /// read again at every reconciliation.
+    /// The configuration file on the default branch, searched in the documented order
+    /// (`schlange_config::config_file::NAMES`), read again at every reconciliation. Two files
+    /// are an error; the last good configuration stays in use.
     Repository,
     /// A fixed configuration text (from `--config`).
     Text(String),
@@ -156,6 +157,14 @@ impl Service {
             app_slug: app.slug.clone(),
             check_name: cfg.check_name.clone(),
         };
+        // The schema for the "configuration changed" check, when it is at hand
+        // (`SCHLANGE_SCHEMA` or `.research/` above the working directory).
+        let schema = std::env::current_dir()
+            .ok()
+            .and_then(|d| schlange_config::schema::locate(None, &d))
+            .and_then(|p| schlange_config::Schema::load(&p).ok())
+            .map(Arc::new);
+        let features = schlange_config::FeatureMap::embedded().ok().map(Arc::new);
         let server = Arc::new(
             tiny_http::Server::http(cfg.listen)
                 .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?,
@@ -190,14 +199,25 @@ impl Service {
             let mut forge = GithubForge::new(api, clock.clone(), opts.clone());
             forge.retry_base = cfg.retry_base;
             forge.retry_max = cfg.retry_max;
+            forge.schema = schema.clone();
+            forge.features = features.clone();
+            let state = State {
+                host: schlange_core::engine::Host {
+                    epoch: 0,
+                    bot: opts.bot_login.clone(),
+                    repository: repo.full(),
+                },
+                ..State::default()
+            };
             let (tx, rx) = channel();
             sinks.insert(repo.full(), tx.clone());
             senders.push(tx);
             let worker = Worker {
                 forge,
                 clock: clock.clone(),
-                state: State::default(),
+                state,
                 rules: None,
+                comments_waiting: Vec::new(),
                 rules_text: None,
                 config_error: None,
                 config: cfg.config.clone(),
@@ -362,9 +382,9 @@ struct Worker {
     webhooks: u64,
     shared: Arc<Shared>,
     poll: Duration,
+    /// Comments whose sender's permission could not be read yet (retried each round).
+    comments_waiting: Vec<CommentHint>,
 }
-
-const CONFIG_PATHS: [&str; 3] = [".mergify.yml", ".mergify/config.yml", ".github/mergify.yml"];
 
 impl Worker {
     fn run(mut self) {
@@ -405,9 +425,26 @@ impl Worker {
             }
             if reconcile {
                 self.reconcile();
-            } else if !hints.is_empty() {
-                self.read_hints(&hints);
             }
+            if !hints.is_empty() {
+                if !reconcile {
+                    // A push to the default branch may change the configuration (MQ-19).
+                    let default = self.forge.default_branch(Priority::Normal).ok();
+                    if hints
+                        .iter()
+                        .any(|h| matches!(h, Hint::Branch(b) if Some(b) == default.as_ref()))
+                    {
+                        self.load_config();
+                    }
+                    self.read_hints(&hints);
+                }
+                for h in &hints {
+                    if let Hint::Comment(c) = h {
+                        self.comments_waiting.push((**c).clone());
+                    }
+                }
+            }
+            self.deliver_comments();
             let due: Vec<Time> = self.timers.iter().copied().filter(|t| *t <= now).collect();
             if !due.is_empty() {
                 for t in due {
@@ -436,12 +473,11 @@ impl Worker {
                         return;
                     }
                 };
-                let mut found = None;
-                for path in CONFIG_PATHS {
+                let mut found = BTreeMap::new();
+                for path in schlange_config::config_file::NAMES {
                     match api.file_content(path, &branch, Priority::Normal) {
                         Ok(Some(t)) => {
-                            found = Some(t);
-                            break;
+                            found.insert(path, t);
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -450,11 +486,26 @@ impl Worker {
                         }
                     }
                 }
-                found
+                let located = schlange_config::config_file::locate(|p| found.contains_key(p));
+                if let Some(e) = located.error() {
+                    // Two files: an error; keep the last good configuration.
+                    if self.config_error.as_deref() != Some(e.as_str()) {
+                        self.forge.note(format!("configuration not applied: {e}"));
+                    }
+                    self.config_error = Some(e);
+                    return;
+                }
+                match located {
+                    schlange_config::config_file::Located::One(p) => found.remove(p),
+                    _ => None,
+                }
             }
         };
         let Some(text) = text else {
-            self.config_error = Some("no .mergify.yml on the default branch".into());
+            self.config_error = Some(format!(
+                "no configuration file on the default branch (searched {})",
+                schlange_config::config_file::NAMES.join(", ")
+            ));
             return;
         };
         if self.rules_text.as_deref() == Some(text.as_str()) {
@@ -462,12 +513,21 @@ impl Worker {
         }
         match Rules::from_yaml(&text) {
             Ok(r) => {
-                if self.rules.is_some() {
-                    self.forge.note("configuration changed; using the new one");
-                }
+                let changed = self.rules.is_some();
+                self.forge.read_reviews = r.queue_rules.iter().any(|q| {
+                    q.commit_message_format.as_ref().is_some_and(|f| {
+                        f.trailers
+                            .contains(&schlange_config::rules::Trailer::ApprovedBy)
+                    })
+                });
                 self.rules = Some(r);
                 self.rules_text = Some(text);
                 self.config_error = None;
+                if changed {
+                    // MQ-19: every pull request is evaluated again under the new rules.
+                    self.forge.note("configuration changed; using the new one");
+                    self.feed(Event::ConfigurationChanged);
+                }
             }
             Err(e) => {
                 // Keep the last good configuration.
@@ -492,6 +552,15 @@ impl Worker {
                 self.forge.hurry_pending();
                 self.last_reconcile = Some(now);
                 self.reconciliations += 1;
+                match self.forge.unhandled_commands(&self.state) {
+                    Ok(comments) if !comments.is_empty() => {
+                        self.feed(Event::Comments { comments });
+                    }
+                    Ok(_) => {}
+                    Err(e) => self
+                        .forge
+                        .note(format!("comments not reconciled (provisional): {e}")),
+                }
             }
             Err(e) => self
                 .forge
@@ -520,6 +589,9 @@ impl Worker {
                         .filter(|p| &p.head_sha == sha && !p.closed)
                         .map(|p| p.number),
                 ),
+                Hint::Comment(c) => {
+                    numbers.insert(c.number);
+                }
                 Hint::Full => {}
             }
         }
@@ -530,6 +602,62 @@ impl Worker {
         let branches: Vec<String> = branches.into_iter().collect();
         let ev = self.forge.snapshot_partial(&numbers, &branches);
         self.feed(ev);
+    }
+
+    /// Hands waiting comments to the engine with their sender's permission, read now (the
+    /// restriction is checked when the command runs). A comment whose permission cannot be
+    /// read waits for the next round; one on a pull request the engine does not know yet
+    /// waits too.
+    fn deliver_comments(&mut self) {
+        if self.rules.is_none() || self.comments_waiting.is_empty() {
+            return;
+        }
+        let mut ready = Vec::new();
+        let mut later = Vec::new();
+        for c in std::mem::take(&mut self.comments_waiting) {
+            if !self.state.pull_requests.contains_key(&c.number) {
+                later.push(c);
+                continue;
+            }
+            let by_queue = c.author == self.forge.opts.bot_login;
+            let permission = if by_queue && c.sender == c.author {
+                Some("none".to_string())
+            } else {
+                match self
+                    .forge
+                    .api
+                    .collaborator_permission(&c.sender, Priority::Normal)
+                {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        self.forge.note(format!(
+                            "permission of {} not read (comment {} waits): {e}",
+                            c.sender, c.id
+                        ));
+                        later.push(c);
+                        continue;
+                    }
+                }
+            };
+            ready.push(schlange_core::model::Comment {
+                id: c.id,
+                number: c.number,
+                author: c.author.clone(),
+                sender: c.sender.clone(),
+                body: c.body.clone(),
+                edited: c.edited,
+                version: c.version.clone(),
+                sender_permission: permission,
+                by_queue,
+                head_sha: self.forge.head_of(c.number),
+            });
+        }
+        // A comment waits a bounded number of rounds for its pull request.
+        later.truncate(1000);
+        self.comments_waiting = later;
+        if !ready.is_empty() {
+            self.feed(Event::Comments { comments: ready });
+        }
     }
 
     /// One event into the engine, its decisions to GitHub, the replies back.

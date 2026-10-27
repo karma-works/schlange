@@ -7,8 +7,6 @@ status: partial
 inventory:
   - "attr:queue-dequeue-reason"
   - "enum:queue-dequeue-reason:*"
-unsupported:
-  - "attr:queue-dequeue-reason"
 problems:
   - "MQ-45"
   - "MQ-09"
@@ -57,11 +55,14 @@ human dequeued it. The code can also be read as a condition attribute.
   | car ahead edited by someone else | `BATCH_AHEAD_BRANCH_EDITED` | no |
   | base moved outside the queue | `MERGE_QUEUE_RESET` *assumed* | no |
   | sent back after a split | `BATCH_AHEAD_FAILED` *assumed* | no |
+  | `dequeue` command | `PR_MANUALLY_DEQUEUED` | yes |
+  | `queue <other queue>` command while queued | `PR_MANUALLY_DEQUEUED` *assumed* | yes, then waits for the other queue |
+  | a built-in protection holds a queued pull request (body edited) | `PR_DEQUEUED` *assumed* | yes |
 
-- `no-requeue-loop`: built. After `CHECKS_FAILED`, `CHECKS_TIMEOUT`, `CHECKS_INTERRUPTED`, conflicts and split drops, the `queue` action does not queue the same head again; a new push does.
+- `no-requeue-loop`: built. After `CHECKS_FAILED`, `CHECKS_TIMEOUT`, `CHECKS_INTERRUPTED`, conflicts and split drops, the `queue` action does not queue the same head again; a new push does, and so does a `queue` command (which resets the status, docs: commands/queue).
 - `own-rebase`: not applicable yet: Schlange never pushes to a pull request (in-place updates are not built), so its own updates cannot dequeue (W-08).
-- `attribute`: missing (listed as `unsupported`: the evaluator has no `queue-dequeue-reason` attribute).
-- `manual`: missing (`PR_MANUALLY_DEQUEUED` needs the `dequeue` command).
+- `attribute`: built. `queue-dequeue-reason` is the code of the last time the pull request's queue checks ended (a dequeue or a `checks ended` line), `NONE` before; `=` and `!=` accept the documented kebab case (`checks-failed`) as well as the schema's upper case.
+- `manual`: built. `@mergifyio dequeue` → `PR_MANUALLY_DEQUEUED`; the pull request does not rejoin on its own.
 
 ## How to get to it (user POV)
 
