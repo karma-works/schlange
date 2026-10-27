@@ -1,10 +1,21 @@
 //! `schlange doctor` checks against GitHub, when app credentials are configured: the app is
 //! reachable, the installation has the permissions Schlange needs (and not more, W-22), the
-//! rulesets on the repositories let the app bypass them, webhook deliveries are recent and
-//! succeed, and the rate limit has room.
+//! rulesets on the repositories let the app bypass them, each repository's `.mergify.yml` on
+//! the default branch passes the validator (the same pipeline `serve` applies), webhook
+//! deliveries are recent and succeed, and the rate limit has room.
+//!
+//! **Why the ruleset bypass.** A batch lands as several squash commits on the base. A ruleset
+//! (or classic protection) that requires pull requests with passing checks refuses a merge
+//! whose checks ran on the queue's draft, not on the pull request at its current base, so the
+//! app must be on the bypass list. The risk: a bypassing actor skips *every* rule of that
+//! ruleset for its merges, required checks and reviews included. Only the queue's own
+//! conditions stand between a bug in Schlange and the base, so give the bypass to the app only
+//! (never to people), keep it in a ruleset of its own if possible, and keep the queue's
+//! `merge_conditions` as strict as the protection was.
 
 use crate::api::RepoName;
 use crate::client::{Client, Error};
+use crate::config::ConfigCheck;
 use crate::permissions;
 use crate::time::{parse_rfc3339, unix_now};
 
@@ -24,12 +35,14 @@ fn check(name: &'static str, status: &'static str, detail: impl Into<String>) ->
     }
 }
 
-/// Runs the GitHub checks. `max_delivery_age` in seconds.
+/// Runs the GitHub checks. `max_delivery_age` in seconds. `config` validates each
+/// repository's `.mergify.yml`; `None` reports that the schema is missing.
 pub fn github_checks(
     client: &Client,
     repos: &[RepoName],
     installation: Option<u64>,
     max_delivery_age: u64,
+    config: Option<&ConfigCheck>,
 ) -> Vec<Check> {
     let mut out = Vec::new();
     let app = match client.app() {
@@ -46,6 +59,7 @@ pub fn github_checks(
             for name in [
                 "app-permissions",
                 "ruleset-exception",
+                "configuration",
                 "webhooks",
                 "rate-limit",
             ] {
@@ -87,6 +101,7 @@ pub fn github_checks(
             }
             out.push(check("app-permissions", status, detail));
             out.push(ruleset_check(client, repos, inst.id, app.id));
+            out.push(config_check(client, repos, inst.id, config));
             out.push(match client.rate_limit(inst.id) {
                 Ok(rl) => {
                     let low = rl.limit > 0 && rl.remaining * 10 < rl.limit;
@@ -111,11 +126,76 @@ pub fn github_checks(
                 format!("installation: {e}"),
             ));
             out.push(check("ruleset-exception", "SKIP", "no installation"));
+            out.push(check("configuration", "SKIP", "no installation"));
             out.push(check("rate-limit", "SKIP", "no installation"));
         }
     }
     out.push(webhook_check(client, max_delivery_age));
     out
+}
+
+/// Each repository's `.mergify.yml` from its default branch, through the validator.
+fn config_check(
+    client: &Client,
+    repos: &[RepoName],
+    installation: u64,
+    config: Option<&ConfigCheck>,
+) -> Check {
+    let Some(cfg) = config else {
+        return check(
+            "configuration",
+            "FAIL",
+            "no Mergify schema found (--schema, SCHLANGE_SCHEMA): `serve` does not start without it",
+        );
+    };
+    let mut fails = Vec::new();
+    let mut warns = Vec::new();
+    let mut oks = Vec::new();
+    for repo in repos {
+        let api = crate::api::RepoApi {
+            client: client.clone(),
+            repo: repo.clone(),
+            installation,
+        };
+        match crate::config::read_from_default_branch(&api, crate::client::Priority::Normal) {
+            Ok(None) => fails.push(format!(
+                "{}: no .mergify.yml on the default branch",
+                repo.full()
+            )),
+            Ok(Some((path, text))) => match cfg.check(&path, &text) {
+                Ok(l) if l.warnings.is_empty() => {
+                    oks.push(format!("{}: {path} valid", repo.full()))
+                }
+                Ok(l) => warns.push(format!(
+                    "{}: {path} valid, {} feature(s) not supported yet: {}",
+                    repo.full(),
+                    l.warnings.len(),
+                    l.warnings
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )),
+                Err(e) => fails.push(format!(
+                    "{}: {path} invalid, `serve` keeps the last valid configuration: {e}",
+                    repo.full()
+                )),
+            },
+            Err(e) => warns.push(format!("{}: configuration not read: {e}", repo.full())),
+        }
+    }
+    let status = if !fails.is_empty() {
+        "FAIL"
+    } else if !warns.is_empty() {
+        "WARN"
+    } else {
+        "OK"
+    };
+    let mut all = fails;
+    all.extend(warns);
+    all.extend(oks);
+    check("configuration", status, all.join("; "))
 }
 
 fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id: u64) -> Check {
@@ -175,7 +255,7 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
             "ruleset-exception",
             "FAIL",
             format!(
-                "the app (id {app_id}) may not bypass: {}; batch landings will be refused",
+                "the app (id {app_id}) may not bypass: {}; batch landings will be refused. {BYPASS_NOTE}",
                 problems.join(", ")
             ),
         )
@@ -185,10 +265,13 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
         check(
             "ruleset-exception",
             "OK",
-            format!("{seen} active branch ruleset(s), the app may bypass each"),
+            format!("{seen} active branch ruleset(s), the app may bypass each. {BYPASS_NOTE}"),
         )
     }
 }
+
+/// The bypass requirement and its risk, in one line for the doctor's output.
+pub const BYPASS_NOTE: &str = "Why: batches land as squash commits whose checks ran on the queue's draft, which a pull-request ruleset refuses without a bypass. Risk: a bypass skips every rule of the ruleset for the app's merges (checks, reviews); grant it to the app only and keep merge_conditions as strict as the protection.";
 
 fn webhook_check(client: &Client, max_age: u64) -> Check {
     match client.hook_deliveries(50) {

@@ -1040,7 +1040,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tiny_http",
  "ureq",
 ]
 
@@ -1048,6 +1047,7 @@ dependencies = [
 name = "schlange-github-fake"
 version = "0.0.1"
 dependencies = [
+ "proptest",
  "ring",
  "schlange-config",
  "schlange-core",

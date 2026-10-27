@@ -27,7 +27,8 @@
 //! expected base and its tree the tested tree; a mismatch halts the queue (MQ-02). The window
 //! left is one request long: a push that lands between the base read and GitHub executing the
 //! merge call is detected afterwards, not prevented. Only a sandbox on github.com can measure
-//! how often that happens and confirm GitHub's exact answers (see `docs/github-sandbox.md`).
+//! how often that happens and confirm GitHub's exact answers (the list is in the
+//! `github-integration` feature file, Gotchas).
 //!
 //! [`RepoApi::update_ref_cas`] reads the ref, compares it with the expected SHA and then
 //! patches with `force: false`; a racing writer between the read and the patch is not

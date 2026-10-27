@@ -87,6 +87,16 @@ impl Dedup {
         }
     }
 
+    /// Whether `id` was recorded (without recording it).
+    pub fn seen(&self, id: &str) -> bool {
+        self.seen.contains(id)
+    }
+
+    /// Records `id` (a delivery that was handled successfully).
+    pub fn record(&mut self, id: &str) {
+        self.check(id);
+    }
+
     /// Records `id`; true when it was seen before.
     pub fn check(&mut self, id: &str) -> bool {
         if self.seen.contains(id) {

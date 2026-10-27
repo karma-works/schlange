@@ -410,8 +410,32 @@ fn doctor_checks_against_the_fake() {
             .map(|c| c.status)
             .unwrap()
     };
-    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400);
+    let cc = schlange_github_fake::tester::config_check();
+    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400, Some(&cc));
     assert_eq!(status(&checks, "github-app"), "OK");
+    // No .mergify.yml on the default branch yet.
+    assert_eq!(status(&checks, "configuration"), "FAIL");
+    gh.push_base(&[(
+        ".mergify.yml".into(),
+        "pull_request_rules:\n  - name: q\n    conditions:\n      - base = main\n    actions: {}\n"
+            .into(),
+    )]);
+    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400, Some(&cc));
+    assert_ne!(status(&checks, "configuration"), "FAIL");
+    gh.push_base(&[(
+        ".mergify.yml".into(),
+        "pull_request_rules:\n  - name: q\n    actions: {}\n".into(),
+    )]);
+    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400, Some(&cc));
+    assert_eq!(status(&checks, "configuration"), "FAIL");
+    let d = checks.iter().find(|c| c.name == "configuration").unwrap();
+    assert!(
+        d.detail.contains("invalid") && d.detail.contains("conditions"),
+        "{}",
+        d.detail
+    );
+    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400, None);
+    assert_eq!(status(&checks, "configuration"), "FAIL");
     // Exactly the required permissions; workflows (optional) is missing: WARN.
     assert_eq!(status(&checks, "app-permissions"), "WARN");
     assert_eq!(status(&checks, "ruleset-exception"), "OK");
@@ -424,11 +448,17 @@ fn doctor_checks_against_the_fake() {
     gh.set_permissions(perms);
     gh.add_ruleset(json!({"id": 1, "name": "main", "target": "branch", "enforcement": "active",
                           "bypass_actors": [{"actor_id": 1, "actor_type": "Team", "bypass_mode": "always"}]}));
-    let checks = doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400);
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
     assert_eq!(status(&checks, "app-permissions"), "FAIL");
     let p = checks.iter().find(|c| c.name == "app-permissions").unwrap();
     assert!(p.detail.contains("contents: read → write") && p.detail.contains("administration"));
     assert_eq!(status(&checks, "ruleset-exception"), "FAIL");
+    let r = checks
+        .iter()
+        .find(|c| c.name == "ruleset-exception")
+        .unwrap();
+    assert!(r.detail.contains("Risk"), "{}", r.detail);
     gh.add_ruleset(json!({"id": 2, "name": "other", "target": "branch", "enforcement": "active",
                           "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "always"}]}));
 
@@ -437,7 +467,7 @@ fn doctor_checks_against_the_fake() {
         app_id: "1".into(),
         ..c.config().clone()
     });
-    let checks = doctor::github_checks(&bad, &[repo], None, 86_400);
+    let checks = doctor::github_checks(&bad, &[repo], None, 86_400, Some(&cc));
     assert_eq!(status(&checks, "github-app"), "FAIL");
     gh.shutdown();
 }
@@ -458,4 +488,107 @@ fn the_invariant_checker_catches_untested_landings_and_leftover_branches() {
     let v = gh.invariant_violations(true);
     assert!(v.iter().any(|v| v.starts_with("I3")), "{v:?}");
     gh.shutdown();
+}
+
+#[test]
+fn a_rate_limited_write_is_handed_back_not_repeated() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let c = client(&gh, roomy());
+    let a = api(&gh, &c);
+    let main = a.branch_sha("main", Priority::Normal).unwrap();
+    gh.add_fault(FaultRule::new(
+        "POST",
+        "/git/refs",
+        FaultKind::RateLimit { retry_after: 1 },
+        1,
+    ));
+    let e = a.create_ref("x", &main, Priority::Landing).unwrap_err();
+    assert!(matches!(e, Error::RateLimited { .. }), "{e:?}");
+    let posts = gh
+        .requests()
+        .iter()
+        .filter(|r| r.starts_with("POST /repos/karma-works/arzt-agent/git/refs"))
+        .count();
+    assert_eq!(posts, 1, "the write was not sent again after the wait");
+    assert!(gh.branch_sha("x").is_none());
+    assert_eq!(c.stats().writes_rate_limited, 1);
+    // A read is waited out and repeated.
+    gh.add_fault(FaultRule::new(
+        "GET",
+        "/git/ref/heads/main",
+        FaultKind::RateLimit { retry_after: 1 },
+        1,
+    ));
+    assert_eq!(a.branch_sha("main", Priority::Landing).unwrap(), main);
+    gh.shutdown();
+}
+
+#[test]
+fn renamed_repositories_are_followed_and_other_hosts_are_refused() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let c = client(&gh, roomy());
+    let a = api(&gh, &c);
+    let main = a.branch_sha("main", Priority::Normal).unwrap();
+    gh.rename_repo("arzt-agent-renamed");
+    // The old name still works: 301 for reads, 307 for writes, on the same host.
+    assert_eq!(a.branch_sha("main", Priority::Normal).unwrap(), main);
+    a.create_ref("after-rename", &main, Priority::Normal)
+        .unwrap();
+    assert!(gh.branch_sha("after-rename").is_some());
+    assert!(c.stats().redirects >= 2);
+    // Absolute URLs off the API host are refused before anything is sent.
+    let e = c
+        .get_json::<serde_json::Value>(
+            "https://evil.example/repos/x",
+            schlange_github::client::Auth::Installation(77),
+            Priority::Normal,
+        )
+        .unwrap_err();
+    assert!(matches!(e, Error::Refused(_)), "{e:?}");
+    // Plain HTTP without the test switch: refused.
+    let strict = Client::new(ClientConfig {
+        allow_insecure_http: false,
+        ..c.config().clone()
+    });
+    assert!(matches!(strict.app(), Err(Error::Refused(_))));
+    gh.shutdown();
+}
+
+#[test]
+fn link_headers_to_another_host_are_not_followed() {
+    // A one-shot server whose answer points its next page at another host.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut s, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = s.read(&mut buf);
+        let body = "[1, 2]";
+        let _ = write!(
+            s,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nlink: <https://evil.example/next?page=2>; rel=\"next\"\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    let c = Client::new(ClientConfig {
+        api_base: format!("http://{addr}"),
+        app_id: "1".into(),
+        key: Arc::new(AppKey::from_pem(TEST_APP_KEY).unwrap()),
+        retry: RetryPolicy::fast(),
+        budget: roomy(),
+        timeout: Duration::from_secs(5),
+        allow_insecure_http: true,
+    });
+    let e = c
+        .get_paginated::<u64>(
+            "/items",
+            schlange_github::client::Auth::None,
+            Priority::Normal,
+            10,
+            Some,
+        )
+        .unwrap_err();
+    assert!(matches!(e, Error::Refused(_)), "{e:?}");
+    srv.join().unwrap();
 }

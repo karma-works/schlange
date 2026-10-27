@@ -9,8 +9,10 @@
 
 pub mod api;
 pub mod client;
+pub mod config;
 pub mod doctor;
 pub mod forge;
+pub mod http;
 pub mod jwt;
 pub mod permissions;
 pub mod service;

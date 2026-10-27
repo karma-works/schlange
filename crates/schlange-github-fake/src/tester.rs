@@ -21,8 +21,9 @@ use std::time::{Duration, Instant};
 use schlange_forge::git::Tree;
 use schlange_github::RepoName;
 use schlange_github::client::{BudgetConfig, Client, ClientConfig, RetryPolicy};
+use schlange_github::config::ConfigCheck;
 use schlange_github::jwt::AppKey;
-use schlange_github::service::{ConfigSource, ServeConfig, Service};
+use schlange_github::service::{ConfigSource, CrashPoint, ServeConfig, Service};
 use schlange_github::time::ManualClock;
 
 use crate::{
@@ -44,6 +45,8 @@ pub struct Tester {
     /// handing it over directly.
     from_repo: bool,
     merge_guard: Option<MergeGuard>,
+    persistent: bool,
+    crash: Option<CrashPoint>,
 }
 
 pub struct Running {
@@ -51,7 +54,34 @@ pub struct Running {
     pub service: Option<Service>,
     pub clock: Arc<ManualClock>,
     pub client: Client,
-    serve_cfg: ServeConfig,
+    pub serve_cfg: ServeConfig,
+}
+
+/// The validator `serve` uses, with the pinned schema of this repository.
+pub fn config_check() -> Arc<ConfigCheck> {
+    static CHECK: std::sync::OnceLock<Arc<ConfigCheck>> = std::sync::OnceLock::new();
+    CHECK
+        .get_or_init(|| {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            Arc::new(
+                ConfigCheck::locate(None, &root)
+                    .expect("schema missing: run tools/fetch-mergify-sources"),
+            )
+        })
+        .clone()
+}
+
+/// A fresh directory under the system temp dir.
+pub fn temp_dir(name: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let d = std::env::temp_dir().join(format!(
+        "schlange-{name}-{}-{n}-{}",
+        std::process::id(),
+        schlange_github::time::unix_now()
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    d
 }
 
 fn secs(d: &str) -> u64 {
@@ -81,7 +111,22 @@ impl Tester {
             },
             from_repo: true,
             merge_guard: None,
+            persistent: false,
+            crash: None,
         }
+    }
+
+    /// `serve` with a data directory (SQLite journal, snapshots, dedup, audit).
+    pub fn persistent(mut self) -> Self {
+        self.persistent = true;
+        self
+    }
+
+    /// The first `serve` process crashes at this point (restart it with `start_service`).
+    pub fn crash_at(mut self, c: CrashPoint) -> Self {
+        self.crash = Some(c);
+        self.persistent = true;
+        self
     }
 
     /// The fake's merge guard: the conditions a pull request must meet when it lands (I1).
@@ -174,19 +219,27 @@ impl Tester {
             check_name: "Schlange merge queue".into(),
             retry_base: Duration::from_millis(20),
             retry_max: Duration::from_millis(300),
+            check: config_check(),
+            data_dir: self.persistent.then(|| temp_dir("data")),
+            admin_token: Some("test-admin-token".into()),
+            http: Default::default(),
+            crash: self.crash,
         };
         let service = Service::start(serve_cfg.clone(), clock.clone()).expect("serve starts");
         gh.set_webhook_target(Some(service.webhook_url()));
-        let r = Running {
+        let mut r = Running {
             gh,
             service: Some(service),
             clock,
             client,
             serve_cfg,
         };
+        // A restart does not crash again.
+        r.serve_cfg.crash = None;
         // The start-up reconciliation has run once the worker published its status.
         r.wait_until("start-up reconciliation", |r| {
-            r.status().is_some_and(|s| s.reconciliations > 0)
+            r.status()
+                .is_some_and(|s| s.reconciliations > 0 || s.config_error.is_some())
         });
         r
     }
@@ -410,7 +463,8 @@ impl Running {
         self.gh.set_webhook_target(Some(service.webhook_url()));
         self.service = Some(service);
         self.wait_until("start-up reconciliation", |r| {
-            r.status().is_some_and(|s| s.reconciliations > 0)
+            r.status()
+                .is_some_and(|s| s.reconciliations > 0 || s.config_error.is_some())
         });
     }
 
@@ -449,6 +503,23 @@ impl Running {
         (o["outcome"] == "dequeued").then(|| o["reason"]["code"].as_str().unwrap_or("").to_string())
     }
 
+    /// The engine's decisions so far (JSON lines).
+    pub fn decisions(&self) -> Vec<String> {
+        self.service
+            .as_ref()
+            .map(|s| s.decision_log(&self.gh.config().full_name()))
+            .unwrap_or_default()
+    }
+
+    /// Waits until the worker stopped (an injected crash).
+    pub fn wait_dead(&self) {
+        self.wait_until("the worker stopped", |t| {
+            t.service
+                .as_ref()
+                .is_some_and(|s| !s.dead_workers().is_empty())
+        });
+    }
+
     /// The base branch's tree (path → content).
     pub fn base_tree(&self) -> Tree {
         let tip = self.gh.branch_sha("main").expect("main");
@@ -458,5 +529,8 @@ impl Running {
     pub fn shutdown(mut self) {
         self.stop_service();
         self.gh.shutdown();
+        if let Some(d) = &self.serve_cfg.data_dir {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }

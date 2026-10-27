@@ -63,7 +63,9 @@ enum Command {
     Serve {
         #[command(flatten)]
         github: GithubArgs,
-        /// Webhook secret.
+        /// Webhook secret (at least 16 bytes). Prefer the environment or
+        /// `--webhook-secret-file`: a value on the command line is visible to every user of
+        /// the machine (`ps`), so it draws a warning.
         #[arg(long, env = "SCHLANGE_WEBHOOK_SECRET", hide_env_values = true)]
         webhook_secret: Option<String>,
         /// File holding the webhook secret.
@@ -72,6 +74,17 @@ enum Command {
         /// Address of the endpoint (`POST /webhook`, `GET /healthz`, `GET /status`).
         #[arg(long, env = "SCHLANGE_LISTEN", default_value = "0.0.0.0:8080")]
         listen: std::net::SocketAddr,
+        /// Data directory: the SQLite database (journal, snapshots, webhook dedup, audit).
+        #[arg(long, env = "SCHLANGE_DATA_DIR", default_value = "/data")]
+        data_dir: PathBuf,
+        /// Mergify JSON schema for validating the configuration (default: $SCHLANGE_SCHEMA or
+        /// .research/mergify/schema.json). `serve` does not start without it.
+        #[arg(long)]
+        schema: Option<PathBuf>,
+        /// File holding the admin token for `GET /status` (or SCHLANGE_ADMIN_TOKEN). Without
+        /// one, `/status` is off.
+        #[arg(long, env = "SCHLANGE_ADMIN_TOKEN_FILE")]
+        admin_token_file: Option<PathBuf>,
         /// Seconds between full reconciliations.
         #[arg(long, env = "SCHLANGE_RECONCILE_EVERY", default_value_t = 300)]
         reconcile_every: u64,
@@ -364,24 +377,24 @@ fn doctor(
             for f in &map.features {
                 *by_prio.entry(format!("{:?}", f.priority)).or_default() += 1;
             }
-            let supported = map
-                .features
-                .iter()
-                .filter(|f| f.status.is_supported())
-                .count();
+            let count = |s: Status| map.features.iter().filter(|f| f.status == s).count();
+            let (conformant, partial, missing) = (
+                count(Status::Conformant),
+                count(Status::Partial),
+                count(Status::Missing),
+            );
             checks.push(Check {
                 name: "support-matrix",
                 status: if problems.is_empty() { "OK" } else { "FAIL" },
                 detail: if problems.is_empty() {
                     format!(
-                        "{} features ({}), {} supported; {} inventory entries",
+                        "{} features ({}): {conformant} conformant, {partial} partial (some sub-features missing), {missing} not built; {} inventory entries",
                         map.features.len(),
                         by_prio
                             .iter()
                             .map(|(k, v)| format!("{k} {v}"))
                             .collect::<Vec<_>>()
                             .join(", "),
-                        supported,
                         map.inventory.total
                     )
                 } else {
@@ -415,13 +428,15 @@ fn doctor(
             },
         },
     });
-    const GITHUB_CHECKS: [&str; 5] = [
+    const GITHUB_CHECKS: [&str; 6] = [
         "github-app",
         "app-permissions",
         "ruleset-exception",
+        "configuration",
         "webhooks",
         "rate-limit",
     ];
+    let config_check = schlange_github::config::ConfigCheck::locate(schema_path, &cwd).ok();
     if offline || !github.configured() {
         let why = if offline {
             "--offline"
@@ -443,6 +458,7 @@ fn doctor(
                     &repos,
                     github.installation_id,
                     24 * 3600,
+                    config_check.as_ref(),
                 ) {
                     checks.push(Check {
                         name: c.name,
@@ -481,6 +497,15 @@ struct ServeArgs {
     reconcile_every: u64,
     config: Option<PathBuf>,
     check_name: String,
+    data_dir: PathBuf,
+    schema: Option<PathBuf>,
+    admin_token_file: Option<PathBuf>,
+}
+
+fn read_secret_file(p: &Path) -> Result<String, String> {
+    std::fs::read_to_string(p)
+        .map(|s| s.trim_end().to_string())
+        .map_err(|e| format!("cannot read {}: {e}", p.display()))
 }
 
 fn serve(a: ServeArgs) -> ExitCode {
@@ -497,17 +522,46 @@ fn serve(a: ServeArgs) -> ExitCode {
         Ok(_) => return fail("needs at least one --repo owner/name (or SCHLANGE_REPOS)".into()),
         Err(e) => return fail(e),
     };
+    if std::env::args().any(|x| x == "--webhook-secret" || x.starts_with("--webhook-secret=")) {
+        eprintln!(
+            "schlange serve: WARNING: --webhook-secret on the command line is visible to other users (ps); use SCHLANGE_WEBHOOK_SECRET or --webhook-secret-file"
+        );
+    }
     let secret = match (a.secret, a.secret_file) {
         (Some(s), _) => s.into_bytes(),
-        (None, Some(p)) => match std::fs::read_to_string(&p) {
-            Ok(s) => s.trim_end().as_bytes().to_vec(),
-            Err(e) => return fail(format!("cannot read {}: {e}", p.display())),
+        (None, Some(p)) => match read_secret_file(&p) {
+            Ok(s) => s.into_bytes(),
+            Err(e) => return fail(e),
         },
         (None, None) => {
             return fail(
                 "needs a webhook secret (SCHLANGE_WEBHOOK_SECRET or --webhook-secret-file)".into(),
             );
         }
+    };
+    if secret.len() < schlange_github::service::MIN_SECRET_LEN {
+        return fail(format!(
+            "the webhook secret is empty or shorter than {} bytes",
+            schlange_github::service::MIN_SECRET_LEN
+        ));
+    }
+    let admin_token = match (
+        &a.admin_token_file,
+        std::env::var("SCHLANGE_ADMIN_TOKEN").ok(),
+    ) {
+        (Some(p), _) => match read_secret_file(p) {
+            Ok(s) => Some(s),
+            Err(e) => return fail(e),
+        },
+        (None, t) => t.filter(|t| !t.is_empty()),
+    };
+    if admin_token.as_ref().is_some_and(|t| t.len() < 16) {
+        return fail("the admin token is shorter than 16 bytes".into());
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let check = match schlange_github::config::ConfigCheck::locate(a.schema.as_deref(), &cwd) {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => return fail(format!("the configuration cannot be validated: {e}")),
     };
     let config = match a.config {
         None => schlange_github::ConfigSource::Repository,
@@ -528,6 +582,11 @@ fn serve(a: ServeArgs) -> ExitCode {
         check_name: a.check_name,
         retry_base: std::time::Duration::from_secs(2),
         retry_max: std::time::Duration::from_secs(60),
+        check,
+        data_dir: Some(a.data_dir),
+        admin_token,
+        http: Default::default(),
+        crash: None,
     };
     let clock = std::sync::Arc::new(schlange_github::time::SystemClock);
     match schlange_github::Service::start(cfg, clock) {
@@ -570,6 +629,9 @@ fn main() -> ExitCode {
             reconcile_every,
             config,
             check_name,
+            data_dir,
+            schema,
+            admin_token_file,
         } => serve(ServeArgs {
             github,
             secret: webhook_secret,
@@ -578,6 +640,9 @@ fn main() -> ExitCode {
             reconcile_every,
             config,
             check_name,
+            data_dir,
+            schema,
+            admin_token_file,
         }),
     }
 }

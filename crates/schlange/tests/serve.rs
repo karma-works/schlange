@@ -54,6 +54,8 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
         .arg(&config)
         .env("SCHLANGE_LISTEN", format!("127.0.0.1:{port}"))
         .env("SCHLANGE_WEBHOOK_SECRET", "fake-webhook-secret")
+        .env("SCHLANGE_DATA_DIR", dir.join("data"))
+        .env("SCHLANGE_ADMIN_TOKEN", "serve-test-admin-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _child = Kill(cmd.spawn().unwrap());
@@ -81,16 +83,30 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(gh.invariant_violations(false).is_empty());
+    // `/status` shows pull request data: only with the admin token.
+    let anon = agent
+        .get(format!("http://127.0.0.1:{port}/status"))
+        .call()
+        .unwrap();
+    assert_eq!(anon.status().as_u16(), 401);
     let status = agent
         .get(format!("http://127.0.0.1:{port}/status"))
+        .header("authorization", "Bearer serve-test-admin-token")
         .call()
         .unwrap()
         .body_mut()
         .read_to_string()
         .unwrap();
     assert!(status.contains("\"merged\""), "{status}");
+    assert!(status.contains("\"persistent\": true"), "{status}");
+    assert!(dir.join("data/schlange.db").is_file());
 
-    // Doctor with the same environment: the GitHub checks run and none fails.
+    // Doctor with the same environment: the GitHub checks run and none fails. It validates the
+    // repository's `.mergify.yml` from the default branch.
+    gh.push_base(&[(
+        ".mergify.yml".into(),
+        std::fs::read_to_string(&config).unwrap(),
+    )]);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
     env_for(&mut cmd, &gh);
     let out = cmd.args(["doctor", "--json"]).output().unwrap();
@@ -107,6 +123,7 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
     assert_eq!(status_of("github-app"), "OK", "{v}");
     assert_eq!(status_of("webhooks"), "OK", "{v}");
     assert_eq!(status_of("rate-limit"), "OK");
+    assert_ne!(status_of("configuration"), "FAIL", "{v}");
     assert_eq!(out.status.code(), Some(0), "{v}");
     // Offline (the container health check) skips them.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
@@ -115,6 +132,40 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("SKIP  github-app"));
     gh.shutdown();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_refuses_plain_http_short_secrets_and_warns_about_secrets_on_the_command_line() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let run = |extra: &[&str], insecure: bool, secret: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
+        env_for(&mut cmd, &gh);
+        if !insecure {
+            cmd.env_remove("SCHLANGE_INSECURE_TEST_API");
+        }
+        cmd.arg("serve")
+            .args(extra)
+            .env("SCHLANGE_WEBHOOK_SECRET", secret)
+            .env("SCHLANGE_LISTEN", "127.0.0.1:0")
+            .env(
+                "SCHLANGE_DATA_DIR",
+                std::env::temp_dir().join("schlange-never-used"),
+            );
+        cmd.output().unwrap()
+    };
+    let out = run(&[], false, "fake-webhook-secret");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--insecure-test-api"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run(&[], true, "short");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("shorter than 16"));
+    let out = run(&["--webhook-secret", "x"], true, "");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("visible to other users"));
+    gh.shutdown();
 }
 
 #[test]
