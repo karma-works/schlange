@@ -27,9 +27,13 @@ Every decision of the queue as a log that can be queried.
 
 - `schlange events` (planned).
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run` already prints the simulation's event log.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; the `event log` section lists every event and decision with its virtual time.
 
 ## Gotchas
 

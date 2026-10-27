@@ -30,9 +30,16 @@ invariant report.
 
 - `schlange sim run scenarios/p0-queue-conditions.yaml`
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run <file> [--json]`; exit 0 when every expectation holds.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Run the scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `result: PASS`; every line under `expectations` reads `PASS`.
+- **Event log.** The log shows virtual times (`+0:03:00`), check runs per pull request and decisions `enqueue #1 into `default``, `dequeue #5 …` after `#5 labeled halt`.
+- **Invariant report.** Lines `I0` … `I5` read `not_checked` with the reason; placeholders are listed. That is the honest state of phase 0.
+- **Proof.** `--json` gives `passed: true`, `log`, `expectations`, `invariants`.
 
 ## Gotchas
 

@@ -31,10 +31,14 @@ a command with a reaction and a reply.
 
 - Comment `@mergifyio queue` on the pull request.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Fuzz the command parser (Unicode, line breaks).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Fuzz the command parser (Unicode, line breaks).
 
 ## Gotchas
 

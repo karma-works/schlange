@@ -34,10 +34,14 @@ the repository; for some commands the author of a fork pull request as well. Arz
 
 - An agent comments `@mergifyio queue` → refusal with a reply.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Simulated forge permission matrix: sender × command × permission.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Simulated forge permission matrix: sender × command × permission.
 
 ## Gotchas
 

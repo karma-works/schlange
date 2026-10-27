@@ -34,9 +34,13 @@ action `queue`.
 
 - A rule applies → the pull request is queued; report in the queue's check.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml`: both Arztagent rules are evaluated.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Both Arztagent rules are evaluated.
 
 ## Gotchas
 

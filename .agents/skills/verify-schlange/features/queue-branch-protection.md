@@ -33,9 +33,13 @@ conditions. By default they become part of the queue conditions. In Arztagent th
 
 - Ruleset in the repository settings; `schlange doctor` shows the derived checks (planned).
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
 
 ## Gotchas
 

@@ -29,10 +29,14 @@ queue conditions it meets, unless the `queue` action names one. Arztagent has ex
 
 - The user sees the queue in the status comment and in the queue's check.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml`: the simulation reads `queue_rules` and evaluates the `queue_conditions` of queue `default`.
-- The queue itself is a placeholder in phase 0.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. The simulation reads `queue_rules` and evaluates the `queue_conditions` of queue `default`.
+- **Planned.** The queue itself is a placeholder in phase 0.
 
 ## Gotchas
 

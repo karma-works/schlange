@@ -27,10 +27,14 @@ the queue then dequeues every affected pull request and reports the error.
 
 - Status comment with the reason.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Simulated forge with a foreign push to `mergify/merge-queue/*`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Simulated forge with a foreign push to `mergify/merge-queue/*`.
 
 ## Gotchas
 

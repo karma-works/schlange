@@ -35,9 +35,13 @@ batch merges do not fail on the queue's own rules.
 
 - Install the app, then `schlange doctor`.
 
-## Driving it
+## Driving it with schlange
 
-- Adapter `github` is missing; first `sim` → `localgit` → `forgejo`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Adapter `github` is missing; first `sim` → `localgit` → `forgejo`.
 
 ## Gotchas
 

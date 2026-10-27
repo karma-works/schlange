@@ -28,10 +28,14 @@ the guilty one is dequeued. Without a setting there is no limit on attempts (Arz
 
 - The status comment of the guilty pull request names the reason; the others are merged.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Property test with a failure predicate over subsets.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Property test with a failure predicate over subsets.
 
 ## Gotchas
 

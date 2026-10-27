@@ -34,10 +34,14 @@ retried by default.
 
 - The status comment lists the missing checks.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Virtual clock: a check never starts → timeout with the list of missing checks.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Virtual clock: a check never starts → timeout with the list of missing checks.
 
 ## Gotchas
 

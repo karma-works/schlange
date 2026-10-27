@@ -35,10 +35,14 @@ pull request that is already up to date may be tested in place.
 
 - A draft pull request of the bot appears; in Arztagent `pr-gate.yml` recognises it by branch prefix and bot login.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Check I3 after quiescence: temporary branches = branches in use.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Check I3 after quiescence: temporary branches = branches in use.
 
 ## Gotchas
 

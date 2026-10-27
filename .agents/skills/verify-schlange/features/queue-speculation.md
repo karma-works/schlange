@@ -37,10 +37,14 @@ discarded and rebuilt. Intermediate results are not skipped by default.
 
 - Several queue pull requests at once, each holding one entry more.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Property test over random event sequences with I4.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Property test over random event sequences with I4.
 
 ## Gotchas
 

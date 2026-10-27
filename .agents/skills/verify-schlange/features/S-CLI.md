@@ -27,9 +27,15 @@ stable and there are no interactive prompts.
 
 - `schlange --help`
 
-## Driving it
+## Driving it with schlange
 
-- `schlange config validate --json …`, `schlange sim run --json …`, `schlange doctor --json`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Help.** Run `target/release/schlange --help`. Lists `config`, `sim`, `support-matrix`, `doctor`.
+- **JSON everywhere.** Run each command with `--json`; stdout parses as JSON (`crates/schlange/tests/cli.rs`).
+- **Exit codes.** As in `AGENTS.md`: see the bullets of `config-validation`.
 
 ## Gotchas
 

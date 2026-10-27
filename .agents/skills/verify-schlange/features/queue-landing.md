@@ -33,10 +33,14 @@ journal entry precedes every side effect.
 
 - Invisible to users; visible in the evidence (`S-AUDIT`).
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Deterministic simulation with a crash at every side effect; model checking.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Deterministic simulation with a crash at every side effect; model checking.
 
 ## Gotchas
 

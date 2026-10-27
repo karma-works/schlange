@@ -25,9 +25,13 @@ available through CLI and MCP.
 
 - `schlange audit <pr>` (planned).
 
-## Driving it
+## Driving it with schlange
 
-- In the simulation from the event log.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** In the simulation from the event log.
 
 ## Gotchas
 

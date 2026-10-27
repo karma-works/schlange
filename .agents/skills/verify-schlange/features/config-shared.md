@@ -23,9 +23,13 @@ A free section for YAML anchors that are reused elsewhere through aliases.
 
 - Key `shared`.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange config validate` resolves anchors and aliases (YAML stage).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **CLI.** `schlange config validate` resolves anchors and aliases (YAML stage).
 
 ## Gotchas
 

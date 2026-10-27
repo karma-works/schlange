@@ -22,9 +22,13 @@ Evaluates a new configuration against real pull requests without acting.
 
 - `schlange config simulate --pr <n>`
 
-## Driving it
+## Driving it with schlange
 
-- Needs a forge adapter.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Needs a forge adapter.
 
 ## Gotchas
 

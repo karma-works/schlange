@@ -33,10 +33,14 @@ pull request leaves the queue.
 - A pull request becomes ready (not a draft), checks green → status "queued".
 - The queue pull request runs the full suite → merge.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml`: open a pull request, checks turn green, `queue_conditions` are evaluated, decision "enqueue" in the event log.
-- `merge_conditions` are not evaluated yet in phase 0 (queue placeholder).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Open a pull request, checks turn green, `queue_conditions` are evaluated, decision "enqueue" in the event log.
+- **Planned.** `merge_conditions` are not evaluated yet in phase 0 (queue placeholder).
 
 ## Gotchas
 

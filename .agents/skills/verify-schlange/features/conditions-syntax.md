@@ -29,10 +29,14 @@ A condition is a string of the form `[-][#]attribute [operator value]`, plus the
 
 - Conditions in `queue_conditions`, `merge_conditions`, `conditions`; `schlange config validate` shows errors with their line.
 
-## Driving it
+## Driving it with schlange
 
-- `cargo test -p schlange-config conditions` (parser), `cargo test -p schlange-core` (evaluation).
-- `schlange sim run scenarios/p0-queue-conditions.yaml`
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Tests.** `cargo test -p schlange-config conditions` (parser), `cargo test -p schlange-core` (evaluation).
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; the `or` with `author = dependabot[bot]` queues `#3` without `KI-Review`, `#4` (major update) stays out.
 
 ## Gotchas
 

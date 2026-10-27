@@ -25,9 +25,13 @@ and dequeue.
 
 - MCP client
 
-## Driving it
+## Driving it with schlange
 
-- Contract tests of the tools.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Contract tests of the tools.
 
 ## Gotchas
 

@@ -33,10 +33,19 @@ means valid, 1 invalid, 2 valid for Mergify but not supported by Schlange (only 
 - `schlange config validate .mergify.yml` before a commit or in CI.
 - Without a schema (`--schema` or `.research/mergify/schema.json`) the command stops with a clear message (exit 3).
 
-## Driving it
+## Driving it with schlange
 
-- `schlange config validate crates/schlange-config/tests/golden/arztagent.yml` → exit 0.
-- Golden files: `crates/schlange-config/tests/golden/*.yml` with expected output `*.txt` and `*.json`; `cargo test -p schlange-config --test golden`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+- `.research/mergify/schema.json` present (`tools/fetch-mergify-sources`).
+
+- **Valid configuration.** Validate Arztagent's file. Run `target/release/schlange config validate crates/schlange-config/tests/golden/arztagent.yml`. Exit `0`; the last line says `valid for Mergify` and lists unsupported features grouped by feature ID.
+- **Schema error with position.** Run `target/release/schlange config validate crates/schlange-config/tests/golden/bad-schema.yml`. Exit `1`; stdout has `bad-schema.yml:3:19: error[schema] /queue_rules/0/merge_method`.
+- **Condition errors.** Run `target/release/schlange config validate crates/schlange-config/tests/golden/bad-conditions.yml`. Exit `1`; one `error[conditions]` line per broken condition (unknown attribute, operator, regex).
+- **Strict support check.** Run `target/release/schlange config validate --strict crates/schlange-config/tests/golden/unsupported.yml`. Exit `2`.
+- **No schema.** Run `target/release/schlange config validate --schema /nonexistent.json crates/schlange-config/tests/golden/arztagent.yml`. Exit `3` with a message naming `tools/fetch-mergify-sources`.
+- **Proof.** `--json` of the same calls; `findings[].line` and `column` are set. Golden files: `cargo test -p schlange-config --test golden`.
 
 ## Gotchas
 

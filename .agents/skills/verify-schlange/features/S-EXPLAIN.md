@@ -27,9 +27,13 @@ and the configuration line.
 
 - `schlange pr explain <n>`
 
-## Driving it
+## Driving it with schlange
 
-- Needs a forge adapter; in the simulation through the event log.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Needs a forge adapter; in the simulation through the event log.
 
 ## Gotchas
 

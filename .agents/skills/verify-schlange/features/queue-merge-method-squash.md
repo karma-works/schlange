@@ -29,10 +29,14 @@ pull request; each of these commits must have a tree that was tested as such (in
 
 - A merged pull request shows up on `main` as one commit with the pull request's title and number.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Real repositories: `localgit`, batch size 1 to 5, I0 after every commit.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Real repositories: `localgit`, batch size 1 to 5, I0 after every commit.
 
 ## Gotchas
 

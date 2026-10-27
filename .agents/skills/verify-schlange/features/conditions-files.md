@@ -27,9 +27,13 @@ with a negated regex with lookahead, which needs Python-compatible regex semanti
 
 - A pull request changes `.github/workflows/ci.yml` → the rule does not apply, a human must queue it.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml` (a pull request touching a constitution file is not queued automatically).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#2` (touches `.github/workflows/ci.yml`) is not queued, `#9` (exception path under `.agents/skills/verify-arztagent/features/`) is queued.
 
 ## Gotchas
 

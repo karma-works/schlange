@@ -14,7 +14,7 @@ use schlange_config::features::{FEATURE_DIR, Priority};
 const SECTIONS: [&str; 4] = [
     "## Sub-features",
     "## How to get to it (user POV)",
-    "## Driving it",
+    "## Driving it with schlange",
     "## Gotchas",
 ];
 
@@ -134,4 +134,16 @@ fn embedded_map_matches_the_files() {
         ids(&embedded),
         "rebuild: the embedded map is stale"
     );
+}
+
+#[test]
+fn readme_lists_every_feature() {
+    let readme = std::fs::read_to_string(root().join(FEATURE_DIR).join("README.md")).unwrap();
+    for f in &map().features {
+        assert!(
+            readme.contains(&format!("]({})", f.file)),
+            "README.md misses {}",
+            f.file
+        );
+    }
 }

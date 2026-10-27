@@ -34,10 +34,14 @@ Without settings, the batch size is 1 and the wait time 30 seconds.
 
 - Several ready pull requests in quick succession; one shared draft pull request `mergify/merge-queue/…` appears.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Virtual clock: 4 pull requests, then 5 minutes of silence → a batch of 4 starts.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Virtual clock: 4 pull requests, then 5 minutes of silence → a batch of 4 starts.
 
 ## Gotchas
 

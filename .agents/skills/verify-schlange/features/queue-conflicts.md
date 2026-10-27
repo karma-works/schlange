@@ -34,10 +34,14 @@ rebuilt by default. Landing happens only while the base still is the expected st
 
 - Status comment "conflict"; after the author rebases, the pull request can be queued again.
 
-## Driving it
+## Driving it with schlange
 
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- Simulated forge with a foreign push between "green" and "set ref".
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Planned.** Simulated forge with a foreign push between "green" and "set ref".
 
 ## Gotchas
 

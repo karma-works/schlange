@@ -29,10 +29,14 @@ A configuration change inside a pull request takes effect only once it is merged
 - A human changes `.mergify.yml` through a pull request (class "constitution" in Arztagent).
 - After the merge the new configuration applies to every pull request.
 
-## Driving it
+## Driving it with schlange
 
-- Locally: `schlange config validate <file>` checks one file; the search in a repository is not built yet.
-- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **CLI.** Locally: `schlange config validate <file>` checks one file; the search in a repository is not built yet.
+- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
 
 ## Gotchas
 

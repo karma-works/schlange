@@ -26,9 +26,13 @@ with Mergify.
 
 - Operating mode of the server.
 
-## Driving it
+## Driving it with schlange
 
-- Difference test against Mergify on Arztagent.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Difference test against Mergify on Arztagent.
 
 ## Gotchas
 

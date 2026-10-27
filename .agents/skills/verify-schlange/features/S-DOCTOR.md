@@ -28,9 +28,15 @@ limit; serves as the container's health check.
 
 - `schlange doctor`
 
-## Driving it
+## Driving it with schlange
 
-- `schlange doctor --json`; exit 0 without FAIL.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Binary.** Run `target/release/schlange doctor`. Exit `0`; lines `OK version`, `OK support-matrix`, `OK schema` (or `WARN schema` without `.research/`), `SKIP` for the GitHub checks.
+- **Container.** Run `docker run --rm --read-only --cap-drop ALL schlange:verify doctor`. Exit `0`; `WARN schema` because the image holds no Mergify file.
+- **Proof.** `schlange doctor --json` gives `ok: true` and one entry per check.
 
 ## Gotchas
 

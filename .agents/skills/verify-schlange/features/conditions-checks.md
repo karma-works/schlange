@@ -41,10 +41,14 @@ source.
 
 - Checks on the pull request; `schlange pr explain` shows the run read per condition (planned).
 
-## Driving it
+## Driving it with schlange
 
-- `cargo test -p schlange-core` table test of all conclusions × attributes.
-- `schlange sim run scenarios/p0-queue-conditions.yaml`
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Tests.** `cargo test -p schlange-core` table test of all conclusions × attributes.
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#7` (`ci-ok` failure) and `#10` (cancelled check) are not queued; `#1` enters only after its last required check completes.
 
 ## Gotchas
 

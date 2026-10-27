@@ -24,9 +24,13 @@ metrics.
 
 - Dashboard.
 
-## Driving it
+## Driving it with schlange
 
-- Not planned.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Not planned.** No verification path; the feature stays `missing` on purpose.
 
 ## Gotchas
 

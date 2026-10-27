@@ -34,9 +34,13 @@ chosen.
 
 - Look at the commit on `main` after the merge.
 
-## Driving it
+## Driving it with schlange
 
-- Golden files per method (unit) once merging is built.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Golden files per method (unit) once merging is built.
 
 ## Gotchas
 

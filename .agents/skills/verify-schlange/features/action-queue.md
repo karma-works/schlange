@@ -31,9 +31,13 @@ whose queue conditions match.
 
 - Status "queued" on the pull request.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml`: decision `enqueue` in the event log (placeholder queue).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Decision `enqueue` in the event log (placeholder queue).
 
 ## Gotchas
 

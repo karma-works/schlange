@@ -25,9 +25,13 @@ Conditions over the current time and recurring time windows.
 
 - Conditions.
 
-## Driving it
+## Driving it with schlange
 
-- Virtual clock in the simulation.
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Planned.** Virtual clock in the simulation.
 
 ## Gotchas
 

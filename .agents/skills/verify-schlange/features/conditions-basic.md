@@ -34,9 +34,13 @@ The simple pull request attributes Arztagent uses: target branch, draft state, l
 
 - Set label `halt` → the pull request leaves the queue.
 
-## Driving it
+## Driving it with schlange
 
-- `schlange sim run scenarios/p0-queue-conditions.yaml` (base, draft, label, author).
+Preconditions:
+
+- Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
+
+- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#8` (author not in the rule) stays out, `#5` leaves the queue after `labeled halt`, `#6` enters only after `ready for review`.
 
 ## Gotchas
 
