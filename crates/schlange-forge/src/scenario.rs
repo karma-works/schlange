@@ -46,6 +46,7 @@
 //!   - { pr: 1, state: merged }          # merged | dequeued | queued | open | closed
 //!   - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
 //!   - { pr: 3, queued: false }          # phase-0 form: in the queue at the end?
+//!   - { pr: 4, state: open, held: depends-on }  # held at the end (kind or text)
 //! expect_merged_order: [1, 3]
 //! expect_base: { src/lib.rs: "v2\n" }
 //! expect_log: ["build car"]

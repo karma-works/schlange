@@ -10,7 +10,7 @@ Launch, doctor, evidence and cleanup are in [`../SKILL.md`](../SKILL.md).
 - `target/release/schlange doctor` reports no FAIL and the expected version.
 - The pinned Mergify sources are in `.research/mergify/` (`tools/fetch-mergify-sources` exits 0);
   `config validate` needs the schema, `sim run` does not.
-- Scenarios run in the simulated forge only; nothing talks to GitHub in phase 0.
+- Scenarios run in the simulated forge; GitHub behaviour is tested against the fake GitHub (`crates/schlange-github-fake`), never against github.com.
 - With `--image`: the image `schlange:verify` was built by this run; never drive an image or
   container this run did not start.
 
@@ -93,17 +93,17 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Shadow mode](S-SHADOW.md) | missing |  |
 | P1 | [Scenarios in the simulated forge](S-SIM.md) | partial |  |
 | P1 | [Action `queue`](action-queue.md) | partial | yes |
-| P1 | [Commands `queue`, `dequeue`, `refresh`](commands.md) | missing | yes |
-| P1 | [Who may run commands (`commands_restrictions`)](commands-restrictions.md) | missing | yes |
+| P1 | [Commands `queue`, `dequeue`, `refresh`](commands.md) | partial | yes |
+| P1 | [Who may run commands (`commands_restrictions`)](commands-restrictions.md) | partial | yes |
 | P1 | [Attributes `base`, `draft`, `label`, `author`, `sender`](conditions-basic.md) | partial | yes |
 | P1 | [Check attributes and check semantics](conditions-checks.md) | partial | yes |
 | P1 | [Dependabot attributes](conditions-dependabot.md) | partial | yes |
 | P1 | [Attribute `files` with regex](conditions-files.md) | partial | yes |
 | P1 | [Condition syntax and combinators](conditions-syntax.md) | partial | yes |
-| P1 | [Dependencies between pull requests (`Depends-On`)](depends-on.md) | missing | yes |
-| P1 | [Bot accounts for merge, draft and update](queue-bot-accounts.md) | missing | yes |
-| P1 | [Built-in protection: configuration changed](merge-protections-builtin.md) | missing | yes |
-| P1 | [Find and load the configuration file](config-file.md) | missing | yes |
+| P1 | [Dependencies between pull requests (`Depends-On`)](depends-on.md) | partial | yes |
+| P1 | [Bot accounts for merge, draft and update](queue-bot-accounts.md) | partial | yes |
+| P1 | [Built-in protection: configuration changed](merge-protections-builtin.md) | partial | yes |
+| P1 | [Find and load the configuration file](config-file.md) | partial | yes |
 | P1 | [Validate a configuration](config-validation.md) | partial | yes |
 | P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | missing | yes |
 | P1 | [Workflow rules (`pull_request_rules`)](pull-request-rules.md) | partial | yes |
@@ -112,11 +112,11 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Foreign pushes to queue branches](queue-branch-edit.md) | partial | yes |
 | P1 | [Required checks from branch protection and rulesets](queue-branch-protection.md) | missing | yes |
 | P1 | [Check timeout and retries (defaults)](queue-checks-timeout.md) | partial | yes |
-| P1 | [Commit message on merge](queue-commit-message.md) | missing | yes |
+| P1 | [Commit message on merge](queue-commit-message.md) | partial | yes |
 | P1 | [Conflicts and a moving base](queue-conflicts.md) | partial | yes |
 | P1 | [Dequeue with a reason](queue-dequeue-reasons.md) | partial | yes |
 | P1 | [Queue pull requests as drafts on `mergify/merge-queue/`](queue-draft-pr.md) | partial | yes |
-| P1 | [Queue labels and status comments](queue-labels-comments.md) | missing | yes |
+| P1 | [Queue labels and status comments](queue-labels-comments.md) | partial | yes |
 | P1 | [Landing as compare-and-swap with evidence](queue-landing.md) | partial | yes |
 | P1 | [Merge method `squash`](queue-merge-method-squash.md) | partial | yes |
 | P1 | [Queue rules (`queue_rules`)](queue-rules.md) | partial | yes |
@@ -146,7 +146,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P2 | [Deployment attributes](conditions-deployments.md) | missing |  |
 | P2 | [Further file and line attributes](conditions-files-other.md) | missing |  |
 | P2 | [Further pull request metadata](conditions-pr-metadata.md) | partial |  |
-| P2 | [Queue attributes](conditions-queue.md) | missing |  |
+| P2 | [Queue attributes](conditions-queue.md) | partial |  |
 | P2 | [Review attributes](conditions-reviews.md) | missing |  |
 | P2 | [Time and schedule](conditions-time.md) | missing |  |
 | P2 | [Shared defaults (`defaults`)](config-defaults.md) | missing |  |
@@ -156,7 +156,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P2 | [Conflict resolvers (experimental)](conflict-resolvers.md) | missing |  |
 | P2 | [Event log](events.md) | missing |  |
 | P2 | [Merge protections and auto-merge](merge-protections.md) | missing |  |
-| P2 | [Built-in protection `Merge-After`](merge-after.md) | missing |  |
+| P2 | [Built-in protection `Merge-After`](merge-after.md) | partial |  |
 | P2 | [Direct merge without queue CI](direct-merge.md) | missing |  |
 | P2 | [Scheduled freeze](queue-freeze.md) | missing |  |
 | P2 | [Other merge methods](queue-merge-methods-other.md) | missing |  |

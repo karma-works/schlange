@@ -3,7 +3,7 @@ id: queue-bot-accounts
 title: "Bot accounts for merge, draft and update"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "config:queue_rules.merge_bot_account"
   - "config:queue_rules.draft_bot_account"
@@ -11,6 +11,10 @@ inventory:
   - "default:queue_rules.draft_bot_account"
   - "default:queue_rules.merge_bot_account"
   - "default:queue_rules.update_bot_account"
+unsupported:
+  - "config:queue_rules.merge_bot_account"
+  - "config:queue_rules.draft_bot_account"
+  - "config:queue_rules.update_bot_account"
 problems:
   - "MQ-51"
   - "W-23"
@@ -25,10 +29,14 @@ each of these.
 
 ## Sub-features
 
-- `default-app`: no account set → the app creates drafts, merges and updates (P1).
-- `merge`: merge as a user account (P2).
-- `draft`: open drafts as a user account (P2).
-- `update`: update pull requests as a user account (P2).
+- `default-app`: built. Without accounts the app itself acts: GitHub calls use the installation
+  token only, so drafts are opened, queue branches written and pull requests squash-merged by
+  `<slug>[bot]` (`e2e_commands arztagent_constitution_pull_request_waits_for_a_listed_human`
+  checks the draft's author and the merger; the simulated forge writes as `schlange[bot]`).
+  Schlange never updates pull requests yet. `Merged-by` trailers name the app when no command
+  queued the pull request.
+- `merge`, `draft`, `update`: missing (listed as unsupported): acting as a user account needs a
+  user token, which Schlange does not take.
 
 ## How to get to it (user POV)
 
@@ -40,7 +48,8 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Default.** `cargo test -p schlange-github-fake --test e2e_commands arztagent_constitution_pull_request_waits_for_a_listed_human` (draft author and merger are `schlange[bot]`).
+- **Unsupported options.** `target/release/schlange config validate --strict` exits 2 for a configuration that sets an account.
 
 ## Gotchas
 
