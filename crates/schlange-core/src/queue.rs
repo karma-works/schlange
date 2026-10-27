@@ -1219,8 +1219,15 @@ fn collect_garbage(state: &mut State, rules: &Rules, out: &mut Vec<Decision>) {
 /// The checks of the front car failed and `max_checks_retries` allows another attempt: the car
 /// is rebuilt on a fresh draft (docs: automatic CI retries). The cars behind keep running: the
 /// retried batch is the same pull requests at the same heads.
-fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec<Decision>) {
-    let old = state.trains[base].cars[0].clone();
+fn retry(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    i: usize,
+    text: &str,
+    out: &mut Vec<Decision>,
+) {
+    let old = state.trains[base].cars[i].clone();
     let max = rule(rules, &old.queue).map_or(0, |r| r.max_checks_retries);
     let prefix = rule(rules, &old.queue)
         .map(|r| r.queue_branch_prefix.clone())
@@ -1241,10 +1248,18 @@ fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec
         replaces: Some(old.id),
         ..old.clone()
     };
-    state.trains.get_mut(base).expect("train").cars[0] = car;
+    let train = state.trains.get_mut(base).expect("train");
+    train.cars[i] = car;
+    if let Some(b) = train.bisection.as_mut()
+        && b.land == Some(old.id)
+    {
+        b.land = Some(id);
+    }
     for &n in &old.own {
         if let Some(e) = state.queued.get_mut(&n) {
-            e.status = EntryStatus::InCar { car: id };
+            if e.status == (EntryStatus::InCar { car: old.id }) {
+                e.status = EntryStatus::InCar { car: id };
+            }
             out.push(Decision::ChecksEnded {
                 number: n,
                 queue: e.queue.clone(),
@@ -1255,6 +1270,32 @@ fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec
             });
         }
     }
+}
+
+/// A red split test of a bisection is retried like any car while `max_checks_retries` allows
+/// (docs: batches, a split's `previous_check_retries`). Returns whether a test was retried.
+fn retry_split_tests(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    out: &mut Vec<Decision>,
+) -> bool {
+    let mut changed = false;
+    loop {
+        let train = &state.trains[base];
+        let failed = train.cars.iter().position(|c| {
+            c.test.is_some()
+                && matches!(c.status, CarStatus::Failed { .. })
+                && rule(rules, &c.queue).is_some_and(|r| c.attempt < r.max_checks_retries)
+        });
+        let Some(i) = failed else { break };
+        let CarStatus::Failed { text, .. } = train.cars[i].status.clone() else {
+            unreachable!("matched above")
+        };
+        retry(state, rules, base, i, &text, out);
+        changed = true;
+    }
+    changed
 }
 
 /// Handles the front car; returns whether the train changed.
@@ -1393,7 +1434,7 @@ fn front(
         CarStatus::Failed { code, text } if car.test.is_none() => {
             let (code, text) = (*code, text.clone());
             if rule(rules, &car.queue).is_some_and(|r| car.attempt < r.max_checks_retries) {
-                retry(state, rules, base, &text, out);
+                retry(state, rules, base, 0, &text, out);
                 return true;
             }
             drop_cars_from(
@@ -1716,6 +1757,7 @@ pub fn process_trains(
         timeouts(state, &base, out);
         for _ in 0..64 {
             let mut changed = evaluate_cars(state, rules, &base, now, token, out);
+            changed |= retry_split_tests(state, rules, &base, out);
             changed |= bisect::resolve(state, rules, &base, out);
             changed |= front(state, rules, &base, now, token, out);
             if !changed {
@@ -1760,6 +1802,68 @@ pub fn batch_size(size: BatchSize, backlog: u32, free_slots: u32) -> u32 {
         BatchSize::Fixed(n) => n,
         BatchSize::Range { min, max } => backlog.div_ceil(free_slots.max(1)).clamp(min, max),
     }
+}
+
+/// The directories a pull request changes (`""` for the repository root).
+fn changed_dirs(pr: Option<&PullRequest>) -> std::collections::BTreeSet<String> {
+    pr.map(|p| {
+        p.files
+            .iter()
+            .map(|f| f.rsplit_once('/').map_or("", |(d, _)| d).to_string())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Picks the next batch of at most `size` from the waiting pull requests (queue order). The
+/// batch is seeded with the first one; the free places go to the most similar candidates among
+/// the first `window`, one at a time (docs: batches, "Filling the batch by similarity"). Without
+/// scopes (not built) every candidate ties on scopes, so the changed directories decide: the
+/// share of directories a candidate has in common with the batch, out of all directories either
+/// side changes; ties go to the one queued first. The window (batch size plus
+/// `max_parallel_checks`) and the measure are our reading of the docs, which name neither
+/// exactly. The batch keeps queue order.
+pub fn group_by_similarity(state: &State, order: &[u64], size: usize, window: usize) -> Vec<u64> {
+    let Some(&seed) = order.first() else {
+        return vec![];
+    };
+    let mut batch = vec![seed];
+    let mut dirs = changed_dirs(state.pull_requests.get(&seed));
+    let mut candidates: Vec<(usize, u64)> = order
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(1)
+        .take(window.saturating_sub(1))
+        .collect();
+    while batch.len() < size && !candidates.is_empty() {
+        let score = |n: u64| {
+            let d = changed_dirs(state.pull_requests.get(&n));
+            let union = d.union(&dirs).count();
+            let common = d.intersection(&dirs).count();
+            if union == 0 {
+                0.0
+            } else {
+                common as f64 / union as f64
+            }
+        };
+        let best = candidates
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                score(a.1)
+                    .partial_cmp(&score(b.1))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.0.cmp(&a.0))
+            })
+            .map(|(k, _)| k)
+            .expect("non-empty");
+        let (_, n) = candidates.remove(best);
+        dirs.extend(changed_dirs(state.pull_requests.get(&n)));
+        batch.push(n);
+    }
+    batch.sort_by_key(|n| order.iter().position(|o| o == n));
+    batch
 }
 
 /// Starts at most one car: a retry, the next bisection test or the next batch.
@@ -1842,7 +1946,8 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
             return;
         }
     }
-    let batch: Vec<u64> = group.into_iter().take(size.max(1) as usize).collect();
+    let window = size.max(1) as usize + slots;
+    let batch = group_by_similarity(state, &group, size.max(1) as usize, window);
     let train = &state.trains[base];
     // The pull requests ahead: those of the last car that are still queued (landed ones are
     // part of the base now).
