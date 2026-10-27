@@ -23,6 +23,7 @@ workspace = true
 schlange-config.workspace = true
 schlange-core.workspace = true
 schlange-forge.workspace = true
+schlange-github.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -31,3 +32,5 @@ serde_json.workspace = true
 [dev-dependencies]
 # The CLI tests drive `sim run --forge localgit`.
 schlange-forge = { workspace = true, features = ["localgit"] }
+schlange-github-fake.workspace = true
+ureq.workspace = true

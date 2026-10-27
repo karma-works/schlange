@@ -192,6 +192,11 @@ impl Repo {
             .unwrap_or_else(|| panic!("unknown commit {sha}"))
     }
 
+    /// The commit, or `None` when the id is unknown.
+    pub fn get_opt(&self, sha: &str) -> Option<&Commit> {
+        self.commits.get(sha)
+    }
+
     pub fn tree(&self, sha: &str) -> &Tree {
         &self.get(sha).tree
     }

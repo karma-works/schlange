@@ -1,0 +1,129 @@
+//! The real binary: `schlange serve` and `schlange doctor` against the fake GitHub, configured
+//! through the environment as in production.
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use schlange_github_fake::{CiOn, CiRule, FakeConfig, FakeGithub};
+
+fn key_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../schlange-github-fake/fixtures/test-app-key.pem")
+}
+
+fn env_for(cmd: &mut Command, gh: &FakeGithub) {
+    let cfg = gh.config();
+    cmd.env("SCHLANGE_GITHUB_APP_ID", cfg.app_id.to_string())
+        .env("SCHLANGE_GITHUB_PRIVATE_KEY", key_path())
+        .env("SCHLANGE_GITHUB_API_URL", gh.url())
+        .env("SCHLANGE_REPOS", cfg.full_name())
+        .env_remove("SCHLANGE_SCHEMA");
+}
+
+struct Kill(Child);
+
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    gh.set_ci(vec![CiRule::success("ci", CiOn::Both)]);
+    let dir = std::env::temp_dir().join(format!("schlange-serve-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("mergify.yml");
+    std::fs::write(
+        &config,
+        "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - base = main\n      - check-success = ci\n\
+         pull_request_rules:\n  - name: all\n    conditions: []\n    actions:\n      queue:\n",
+    )
+    .unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
+    env_for(&mut cmd, &gh);
+    cmd.args(["serve", "--config"])
+        .arg(&config)
+        .env("SCHLANGE_LISTEN", format!("127.0.0.1:{port}"))
+        .env("SCHLANGE_WEBHOOK_SECRET", "fake-webhook-secret")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _child = Kill(cmd.spawn().unwrap());
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build(),
+    );
+    let health = format!("http://127.0.0.1:{port}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while agent.get(&health).call().map(|r| r.status().as_u16()).ok() != Some(200) {
+        assert!(Instant::now() < deadline, "serve did not come up");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    gh.set_webhook_target(Some(format!("http://127.0.0.1:{port}/webhook")));
+    let n = gh.open_pr(
+        "someone",
+        "Add a",
+        &[("a.txt".into(), "a\n".into())],
+        false,
+        &[],
+    );
+    while !gh.pr(n).unwrap().merged {
+        assert!(Instant::now() < deadline, "not merged: {:?}", gh.requests());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(gh.invariant_violations(false).is_empty());
+    let status = agent
+        .get(format!("http://127.0.0.1:{port}/status"))
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_to_string()
+        .unwrap();
+    assert!(status.contains("\"merged\""), "{status}");
+
+    // Doctor with the same environment: the GitHub checks run and none fails.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
+    env_for(&mut cmd, &gh);
+    let out = cmd.args(["doctor", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let status_of = |name: &str| {
+        v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .map(|c| c["status"].as_str().unwrap().to_string())
+            .unwrap()
+    };
+    assert_eq!(status_of("github-app"), "OK", "{v}");
+    assert_eq!(status_of("webhooks"), "OK", "{v}");
+    assert_eq!(status_of("rate-limit"), "OK");
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    // Offline (the container health check) skips them.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
+    env_for(&mut cmd, &gh);
+    let out = cmd.args(["doctor", "--offline"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("SKIP  github-app"));
+    gh.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn serve_without_credentials_is_an_environment_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_schlange"))
+        .arg("serve")
+        .env_remove("SCHLANGE_GITHUB_APP_ID")
+        .env_remove("SCHLANGE_GITHUB_PRIVATE_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--app-id"));
+}

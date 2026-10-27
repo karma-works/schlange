@@ -4,6 +4,8 @@ members = [
     "crates/schlange-config",
     "crates/schlange-core",
     "crates/schlange-forge",
+    "crates/schlange-github",
+    "crates/schlange-github-fake",
     "crates/schlange",
     "tools/inventory",
 ]
@@ -21,8 +23,10 @@ publish = false
 schlange-config = { path = "crates/schlange-config" }
 schlange-core = { path = "crates/schlange-core" }
 schlange-forge = { path = "crates/schlange-forge", default-features = false }
+schlange-github = { path = "crates/schlange-github" }
+schlange-github-fake = { path = "crates/schlange-github-fake" }
 anyhow = "1"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 fancy-regex = "0.20"
 jsonschema = { version = "0.60", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
@@ -31,6 +35,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
 sha2 = "0.10"
 thiserror = "2"
+# GitHub adapter: a blocking HTTP client on rustls with the ring provider (no OpenSSL, no
+# bundled root store: the roots come from SSL_CERT_FILE / the system bundle), a small blocking
+# HTTP server for webhooks, ring for the app JWT (RS256) and the webhook HMAC.
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "_ring"] }
+tiny_http = "0.12"
+ring = "0.17"
+rustls-pki-types = { version = "1.12", features = ["std"] }
 yaml-rust2 = "0.13"
 
 [workspace.lints.rust]
