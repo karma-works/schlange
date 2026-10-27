@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::conditions::{self, Condition};
-use crate::features::{FeatureMap, Priority, Status};
+use crate::features::{FeatureMap, Priority, Status, Unsupported};
 
 /// Sections whose defaults apply even when the configuration does not mention them.
 const ALWAYS_ACTIVE: &[&str] = &["merge_queue", "commands_restrictions"];
@@ -26,34 +26,64 @@ pub fn collect_uses(
     map: &FeatureMap,
 ) -> Vec<Use> {
     let mut uses: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let mut set_paths = BTreeSet::new();
-    walk(
-        config,
-        "",
-        "",
-        condition_keys,
-        map,
-        &mut uses,
-        &mut set_paths,
-    );
+    walk(config, "", "", condition_keys, map, &mut uses);
 
-    // Defaults take effect where the path is not set but its parent section exists.
     for entry in &map.inventory.entries {
-        let Some(path) = entry.id.strip_prefix("default:") else {
-            continue;
-        };
-        if set_paths.contains(path) {
-            continue;
-        }
-        let parent = path.rsplit_once('.').map_or("", |(p, _)| p);
-        let top = path.split('.').next().unwrap_or("");
-        if set_paths.contains(parent) || (parent == top && ALWAYS_ACTIVE.contains(&top)) {
+        if let Some(path) = entry.id.strip_prefix("default:")
+            && default_in_effect(config, path)
+        {
             uses.entry(entry.id.clone()).or_insert(None);
         }
     }
     uses.into_iter()
         .map(|(id, pointer)| Use { id, pointer })
         .collect()
+}
+
+/// Sections of `defaults` that fill in options of other sections before Mergify's own defaults.
+const DEFAULTS_SECTIONS: &[(&str, &str)] = &[
+    ("queue_rules.", "defaults.queue_rule."),
+    ("pull_request_rules.actions.", "defaults.actions."),
+];
+
+/// Whether Mergify's default for `path` (dotted, list levels skipped) takes effect: some object
+/// at the parent path exists (an empty `key:` counts) and lacks the key, and no `defaults`
+/// section sets it instead. Sections in [`ALWAYS_ACTIVE`] exist even when not written.
+fn default_in_effect(config: &Value, path: &str) -> bool {
+    for (prefix, defaults) in DEFAULTS_SECTIONS {
+        if let Some(rest) = path.strip_prefix(prefix)
+            && lookup(config, &format!("{defaults}{rest}")).is_some()
+        {
+            return false;
+        }
+    }
+    let segs: Vec<&str> = path.split('.').collect();
+    let empty = Value::Object(Default::default());
+    match config.get(segs[0]) {
+        Some(section) => missing_somewhere(section, &segs[1..]),
+        None if ALWAYS_ACTIVE.contains(&segs[0]) => missing_somewhere(&empty, &segs[1..]),
+        None => false,
+    }
+}
+
+fn lookup<'a>(config: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(config, |v, seg| v.get(seg))
+}
+
+/// Whether some object reached through `segs[..len-1]` (any list element) lacks the last key.
+fn missing_somewhere(value: &Value, segs: &[&str]) -> bool {
+    let Some((first, rest)) = segs.split_first() else {
+        return false;
+    };
+    match value {
+        Value::Array(items) => items.iter().any(|i| missing_somewhere(i, segs)),
+        Value::Object(obj) => match obj.get(*first) {
+            None => rest.is_empty(),
+            Some(child) => !rest.is_empty() && missing_somewhere(child, rest),
+        },
+        Value::Null => rest.is_empty(),
+        _ => false,
+    }
 }
 
 fn add(uses: &mut BTreeMap<String, Option<String>>, map: &FeatureMap, id: String, pointer: &str) {
@@ -69,7 +99,6 @@ fn walk(
     condition_keys: &BTreeSet<String>,
     map: &FeatureMap,
     uses: &mut BTreeMap<String, Option<String>>,
-    set_paths: &mut BTreeSet<String>,
 ) {
     match value {
         Value::Object(obj) => {
@@ -80,7 +109,6 @@ fn walk(
                     format!("{path}.{key}")
                 };
                 let child_ptr = format!("{pointer}/{}", crate::yaml::escape(key));
-                set_paths.insert(child_path.clone());
                 add(uses, map, format!("config:{child_path}"), &child_ptr);
                 if path.ends_with("actions") {
                     add(uses, map, format!("action:{key}"), &child_ptr);
@@ -110,15 +138,7 @@ fn walk(
                     }
                     continue;
                 }
-                walk(
-                    child,
-                    &child_path,
-                    &child_ptr,
-                    condition_keys,
-                    map,
-                    uses,
-                    set_paths,
-                );
+                walk(child, &child_path, &child_ptr, condition_keys, map, uses);
             }
         }
         Value::Array(items) => {
@@ -130,7 +150,6 @@ fn walk(
                     condition_keys,
                     map,
                     uses,
-                    set_paths,
                 );
             }
         }
@@ -157,6 +176,9 @@ pub struct SupportRow {
     pub priority: Priority,
     pub status: Status,
     pub supported: bool,
+    /// Why the entry is unsupported (absent when supported).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Unsupported>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pointer: Option<String>,
 }
@@ -166,12 +188,14 @@ pub fn report(uses: &[Use], map: &FeatureMap) -> Vec<SupportRow> {
     uses.iter()
         .filter_map(|u| {
             let f = map.owner(&u.id)?;
+            let reason = f.support(&u.id);
             Some(SupportRow {
                 id: u.id.clone(),
                 feature: f.id.clone(),
                 priority: f.priority,
                 status: f.status,
-                supported: f.status.is_supported(),
+                supported: reason.is_none(),
+                reason,
                 pointer: u.pointer.clone(),
             })
         })

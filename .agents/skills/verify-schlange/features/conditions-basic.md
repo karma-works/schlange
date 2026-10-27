@@ -3,7 +3,7 @@ id: conditions-basic
 title: "Attributes `base`, `draft`, `label`, `author`, `sender`"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "attr:base"
   - "attr:draft"
@@ -24,11 +24,12 @@ The simple pull request attributes Arztagent uses: target branch, draft state, l
 
 ## Sub-features
 
-- `base`: target branch as text.
-- `draft`: boolean, negatable (`-draft`).
-- `label`: list; label `halt` as stop.
-- `author`: login, bots too (`dependabot[bot]`).
-- `sender`: login of the commenter for commands.
+- `base`: built. Target branch as text (`crates/schlange-core/src/eval.rs`, `attribute`).
+- `draft`: built. Boolean, negatable (`-draft`).
+- `label`: built. List; label `halt` as stop.
+- `author`: built. Login, bots too (`dependabot[bot]`).
+- `sender`: built in the evaluator (login of the commenter, empty without a command); only read by `commands_restrictions`, which is missing, so it is evaluated nowhere yet.
+- `login-ids`: missing. Logins are compared as text, not resolved to IDs (W-06).
 
 ## How to get to it (user POV)
 

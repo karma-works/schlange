@@ -15,7 +15,10 @@ use schlange_core::engine::{Outcome, short};
 use schlange_core::model::Time;
 use schlange_core::{Decision, Event, State, step};
 
-use crate::ci::CiScript;
+use schlange_core::journal::{Journal, MemoryJournal, is_side_effect};
+
+use crate::ci::{CiScript, Rng};
+use crate::faults::{CrashPlan, ForgeFaults, Wire};
 use crate::git::{GitStore, Repo, Tree};
 use crate::invariants::{Checker, IDS, InvariantState};
 use crate::sim::{Action, Faults, Hint, Item, PrDef, SimForge};
@@ -71,6 +74,9 @@ pub struct Scenario {
     pub expect_log: Vec<String>,
     /// `None`: no disturbed run, I5 is not checked.
     pub faults: Option<Faults>,
+    /// Forge faults (late, lost, duplicated, lying replies; races; lagging reads; CI timing)
+    /// added to the disturbed run.
+    pub forge_faults: Option<ForgeFaults>,
     pub flake_seed: u64,
     /// Virtual time after which the run counts as not settling (I2).
     pub max_time: Time,
@@ -106,6 +112,9 @@ pub struct EndState {
     pub merged: BTreeSet<u64>,
     pub still_queued: BTreeSet<u64>,
     pub base_trees: BTreeMap<String, String>,
+    /// Per pull request: `merged`, `dequeued CODE`, `queued`, `open` or `closed`. Dequeue
+    /// reasons are part of the end state.
+    pub outcomes: BTreeMap<u64, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,13 +160,21 @@ pub struct Simulation<G: GitStore = Repo> {
     pub steps: u64,
     pub merged_order: Vec<u64>,
     pub settled: bool,
+    pub wire: Wire,
+    pub journal: MemoryJournal,
+    pub crash: CrashPlan,
+    /// Side effects carried out so far.
+    pub effects: u64,
+    pub crashes: u32,
+    crashed: bool,
+    crash_rng: Rng,
+    intent_seq: u64,
 }
 
-pub const LIMITATIONS: [&str; 7] = [
+pub const LIMITATIONS: [&str; 6] = [
     "merge methods other than squash, queue modes parallel/isolated, priorities, scopes: not built",
-    "checks_timeout `auto` applies no timeout (no CI history is kept); fixed durations work",
-    "max_checks_retries, skip_intermediate_results, direct merge: not built",
-    "reset_on_external_merge `never` behaves like `always`",
+    "skip_intermediate_results, direct merge, batch_pull_request: not built",
+    "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
     "in place: only for an up-to-date pull request; Mergify would update it first",
     "labels and status comments on pull requests: not built",
     "commands (queue, dequeue, requeue): not built",
@@ -295,6 +312,9 @@ fn describe_reply(e: &Event) -> Option<String> {
                 .map(|e| format!("; refused: {e:?}"))
                 .unwrap_or_default()
         )),
+        Event::Failed { decision, error } => {
+            Some(format!("forge error ({error}) on: {}", describe(decision)))
+        }
         _ => None,
     }
 }
@@ -337,7 +357,102 @@ impl<G: GitStore> Simulation<G> {
             steps: 0,
             merged_order: Vec::new(),
             settled: true,
+            wire: Wire::new(ForgeFaults::none()),
+            journal: MemoryJournal::default(),
+            crash: CrashPlan::none(),
+            effects: 0,
+            crashes: 0,
+            crashed: false,
+            crash_rng: Rng::new(0),
+            intent_seq: 0,
         }
+    }
+
+    /// Adds forge faults: late, lost, duplicated and lying replies, base races, lagging reads,
+    /// CI timing.
+    pub fn with_forge_faults(mut self, f: ForgeFaults) -> Self {
+        self.forge.ci_timing = f.ci.clone();
+        self.checker.relaxed_steps |= !f.is_none();
+        self.wire = Wire::new(f);
+        self
+    }
+
+    /// Crashes the engine at these points (and restarts it from its journal).
+    pub fn with_crashes(mut self, plan: CrashPlan) -> Self {
+        self.crash_rng = Rng::new(plan.seed ^ 0xc4a5_4ed0);
+        self.checker.relaxed_steps |= !plan.is_none();
+        self.crash = plan;
+        self
+    }
+
+    /// Whether to crash before (`after: false`) or right after side effect `index`.
+    fn should_crash(&mut self, index: u64, after: bool) -> bool {
+        // A point fires once: a crash before a side effect does not advance the count.
+        if self.crash.points.remove(&(index, after)) {
+            return true;
+        }
+        self.crash.rate > 0.0
+            && self.crashes < self.crash.max
+            && self.crash_rng.unit() < self.crash.rate
+    }
+
+    /// The engine dies: its memory and everything on its way to it are gone.
+    fn crash_now(&mut self) {
+        self.crashes += 1;
+        self.crashed = true;
+        self.state = State::default();
+        let lost = self.forge.drop_engine_inbox();
+        self.log(
+            "crash",
+            format!(
+                "engine crashed at side effect {}; {lost} replies, deliveries and timers lost",
+                self.effects
+            ),
+        );
+    }
+
+    /// Restarts the engine from its journal and a fresh full read of the forge.
+    fn restart(&mut self, rules: &Rules) {
+        self.crashed = false;
+        let recovered = self.journal.recover().expect("journal readable");
+        let in_doubt = match recovered {
+            Some(r) => {
+                self.state = r.state;
+                r.in_doubt
+            }
+            None => vec![],
+        };
+        self.log(
+            "restart",
+            format!(
+                "engine restarted from its journal; side effects in doubt: {}",
+                if in_doubt.is_empty() {
+                    "none".to_string()
+                } else {
+                    in_doubt
+                        .iter()
+                        .map(|(_, d)| describe(d))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                }
+            ),
+        );
+        self.feed(rules, Event::Restarted, None);
+        if self.crashed {
+            return;
+        }
+        let known = self.known_branches();
+        let ev = self.wire.snapshot_all(&self.forge, &known);
+        self.feed(rules, ev, Some("full read after restart".into()));
+    }
+
+    /// `feed`, then restarts after a crash (as often as needed).
+    pub fn deliver(&mut self, rules: &Rules, event: Event, origin: Option<String>) -> bool {
+        let acted = self.feed(rules, event, origin);
+        while self.crashed {
+            self.restart(rules);
+        }
+        acted
     }
 
     fn log(&mut self, kind: &'static str, text: String) {
@@ -350,17 +465,23 @@ impl<G: GitStore> Simulation<G> {
 
     /// Hands one event to the engine, carries out its decisions and feeds the replies back.
     /// Returns whether the engine decided anything besides wake-ups.
+    ///
+    /// The state each step produces is journaled before any of its side effects, and every side
+    /// effect is journaled before it is carried out (MQ-31). With a crash plan the engine may
+    /// die before or after any side effect; `deliver` restarts it.
     pub fn feed(&mut self, rules: &Rules, event: Event, origin: Option<String>) -> bool {
-        let mut queue = vec![event];
+        let mut queue = std::collections::VecDeque::from([event]);
         let mut any = false;
         let mut origin = origin;
-        while !queue.is_empty() {
-            let ev = queue.remove(0);
+        while let Some(ev) = queue.pop_front() {
+            if self.crashed {
+                break;
+            }
             let now = self.forge.now();
             let (next, decisions) = step(&self.state, rules, &ev, now);
             self.state = next;
             self.steps += 1;
-            let mut replies = Vec::new();
+            self.journal.checkpoint(&self.state).expect("journal");
             for d in &decisions {
                 if !matches!(d, Decision::WakeAt { .. }) {
                     any = true;
@@ -372,14 +493,34 @@ impl<G: GitStore> Simulation<G> {
                 if let Decision::Merged { number, .. } = d {
                     self.merged_order.push(*number);
                 }
-                for r in self.forge.execute(d) {
+                if !is_side_effect(d) {
+                    self.forge.execute(d);
+                    continue;
+                }
+                let index = self.effects;
+                if self.should_crash(index, false) {
+                    self.crash_now();
+                    return any;
+                }
+                self.intent_seq += 1;
+                self.journal.intent(self.intent_seq, d).expect("journal");
+                let replies = self.wire.execute(&mut self.forge, d);
+                for (_, note) in std::mem::take(&mut self.forge.notes) {
+                    self.log("fault", note);
+                }
+                for r in replies {
                     if let Some(text) = describe_reply(&r) {
                         self.log("reply", text);
                     }
-                    replies.push(r);
+                    queue.push_back(r);
+                }
+                self.journal.done(self.intent_seq).expect("journal");
+                self.effects += 1;
+                if self.should_crash(index, true) {
+                    self.crash_now();
+                    return any;
                 }
             }
-            queue.extend(replies);
         }
         any
     }
@@ -390,8 +531,8 @@ impl<G: GitStore> Simulation<G> {
 
     pub fn run(&mut self, s: &Scenario) {
         let rules = &s.rules;
-        let initial = self.forge.snapshot_all(&[]);
-        self.feed(rules, initial, None);
+        let initial = self.wire.snapshot_all(&self.forge, &[]);
+        self.deliver(rules, initial, None);
         let mut rounds = 0;
         loop {
             while let Some((t, item)) = self.forge.next_item() {
@@ -407,19 +548,29 @@ impl<G: GitStore> Simulation<G> {
                     Item::Ci(text) => self.log("ci", text),
                     Item::Webhook { hint, text } => {
                         let ev = match &hint {
-                            Hint::PullRequest(n) => self.forge.snapshot(&[*n], &[], None),
+                            Hint::PullRequest(n) => {
+                                self.wire.snapshot(&self.forge, &[*n], &[], None)
+                            }
                             Hint::Branch(b) => {
-                                self.forge.snapshot(&[], std::slice::from_ref(b), None)
+                                self.wire
+                                    .snapshot(&self.forge, &[], std::slice::from_ref(b), None)
                             }
                         };
-                        self.feed(rules, ev, Some(text));
+                        self.deliver(rules, ev, Some(text));
                     }
                     Item::Tick => {
-                        self.feed(rules, Event::Tick, Some("timer".into()));
+                        self.deliver(rules, Event::Tick, Some("timer".into()));
                     }
                     Item::Reconcile => {
-                        let ev = self.forge.snapshot_all(&self.known_branches());
-                        self.feed(rules, ev, Some("reconciliation pass".into()));
+                        let known = self.known_branches();
+                        let ev = self.wire.snapshot_all(&self.forge, &known);
+                        self.deliver(rules, ev, Some("reconciliation pass".into()));
+                    }
+                    Item::Reply(ev) => {
+                        if let Some(text) = describe_reply(&ev) {
+                            self.log("reply", format!("late: {text}"));
+                        }
+                        self.deliver(rules, *ev, None);
                     }
                 }
                 self.checker.after_step(&self.forge, &self.state, rules);
@@ -428,8 +579,9 @@ impl<G: GitStore> Simulation<G> {
                 break;
             }
             // Quiescent: a final reconciliation reads everything once more.
-            let ev = self.forge.snapshot_all(&self.known_branches());
-            let acted = self.feed(rules, ev, Some("final reconciliation".into()));
+            let known = self.known_branches();
+            let ev = self.wire.snapshot_all_fresh(&self.forge, &known);
+            let acted = self.deliver(rules, ev, Some("final reconciliation".into()));
             self.checker.after_step(&self.forge, &self.state, rules);
             rounds += 1;
             if (!acted && !self.forge.has_work()) || rounds > 100 {
@@ -469,10 +621,22 @@ impl<G: GitStore> Simulation<G> {
                     .map(|s| (b.clone(), self.forge.repo.tree_id_of(&s)))
             })
             .collect();
+        let outcomes = self
+            .forge
+            .numbers()
+            .into_iter()
+            .filter(|n| {
+                self.forge
+                    .read_pull_request(*n)
+                    .is_some_and(|p| p.author != crate::sim::BOT)
+            })
+            .map(|n| (n, self.outcome(n)))
+            .collect();
         EndState {
             merged,
             still_queued: self.state.queued.keys().copied().collect(),
             base_trees,
+            outcomes,
         }
     }
 
@@ -588,7 +752,8 @@ pub fn run_with<G: GitStore, E>(
             .notes
             .push("no faults configured: no disturbed run".into()),
         Some(f) => {
-            let mut d = Simulation::on(s, f.clone(), make()?, real_ci);
+            let mut d = Simulation::on(s, f.clone(), make()?, real_ci)
+                .with_forge_faults(s.forge_faults.clone().unwrap_or_default());
             d.run(s);
             let d_end = d.end_state();
             let i5 = results.get_mut("I5").expect("I5");

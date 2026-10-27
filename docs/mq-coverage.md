@@ -1,7 +1,7 @@
 # Coverage of the problem catalogue (MQ-01 … MQ-53)
 
 Which case from [research/merge-queue-probleme.md](research/merge-queue-probleme.md) has which
-test, as of phase 1c (simulated forge with git in memory, `localgit` with real git
+test, as of phase 1c and the fix round after the critique of phase 1a (simulated forge with git in memory, `localgit` with real git
 repositories on disk, and the GitHub adapter against the fake GitHub over HTTP). "Covered" means a scenario or test asserts the expected behaviour;
 "partial" means only part of the expectation is tested; "open" means no test yet. "Real git"
 means the test runs on `localgit`: real three-way merges, `git update-ref` compare-and-swap,
@@ -10,20 +10,23 @@ Scenario commands: `target/release/schlange sim run [--forge localgit] scenarios
 (`--forge localgit` needs a build with the `localgit` feature). Tests:
 `cargo test -p <crate> --test <file> <name>`. "Fake GitHub" means `schlange serve` against
 `crates/schlange-github-fake` over HTTP: REST calls, signed webhooks, the fake's git state
-checked for I0, double landings and I3.
+checked for I0, double landings and I3. "Fault mode" means `ForgeFaults` and `CrashPlan`
+(`crates/schlange-forge/src/faults.rs`): lost, late, duplicated and lying replies, errors at
+every side effect, pushes racing a landing, lagging reads, CI jitter, late check runs, delayed
+cancellation, and engine crashes with a restart from the journal.
 
 | ID | Status | Where |
 |---|---|---|
 | MQ-01 semantic conflict | covered | `p1-semantic-conflict.yaml`; `p1-semantic-conflict-compile.yaml` (a real compile script runs in a checkout: a rename plus a call of the old name, red only together; on both forges); property tests (`SEM_A`/`SEM_B`, also on real git) |
-| MQ-02 landed ≠ tested | covered for `squash` (sim and real git) | engine tree check: `schlange-core --test queue landed_tree_differs_from_tested_tree_halts_the_queue`; I0 per commit in every scenario and property case; real git: `schlange-forge --test localgit` (six scenarios, matrix) and `--test localgit_properties`; the checker reads every landed tree from the repository |
+| MQ-02 landed ≠ tested | covered for `squash`, batch size 1 (sim, real git); batches: Mergify's semantics | engine tree check: `schlange-core --test queue landed_tree_differs_from_tested_tree_halts_the_queue`; I0 strict per commit (batch size 1: every landed tree is a tree the checks ran on) in every scenario and property case; with batches, a commit inside a batch is the tested prefix tree but only the tip had checks (I0 batch mode, KONZEPT §6). Real git: `--test localgit`, `--test localgit_properties`. When a landing's reply is lost the engine resolves it from a read and cannot compare trees itself; the checker still does. Methods other than `squash`: open |
 | MQ-03 squash of a batch on a moving parent | covered for `squash` × batch 1–5 (real git) | `schlange-forge --test localgit matrix_squash_by_batch_size_one_to_five_keeps_i0_on_real_git`: every pull request edits one file on different lines, plus a culprit and a line conflict; I0 per commit, main's content line by line, a one-parent history, `git fsck`. `localgit_properties`: overlapping lines and base pushes. Methods `merge`, `rebase`, `fast-forward` and `merge-batch`: open, not built in the core |
 | MQ-04, MQ-05 fast-forward | open | method not built |
-| MQ-06 base moves outside the queue | covered | `p1-base-moved.yaml` (also on real git); `landing_refused_because_the_base_moved_resets_the_queue`; random base pushes in properties (also on real git) |
+| MQ-06 base moves outside the queue | covered (sim, real git) | `p1-base-moved.yaml` (also on real git); `landing_refused_because_the_base_moved_resets_the_queue`; real compare-and-swap races: in fault mode a push lands on main between "green" and "set ref" (`ForgeFaults::base_race`) in `invariants_hold_under_forge_faults_and_crashes`, `innocent_pull_requests_are_never_blamed`, `--test crashes every_scenario_keeps_its_invariants_under_forge_faults_and_crashes`, `--test localgit forge_faults_and_crashes_keep_the_invariants_on_real_git`; `reset_on_external_merge: never`: `--test regressions reset_on_external_merge_never_keeps_the_cars` |
 | MQ-07 push while queued, lost webhook | covered | `p1-push-to-queued-pr.yaml`; `landing_refused_because_the_head_moved_dequeues`; properties with dropped webhooks |
 | MQ-08 push to a queue branch | covered | `p1-queue-branch-push.yaml`; `a_foreign_push_to_the_queue_branch_dequeues`; properties |
 | MQ-09 closed, draft, merged by hand | partial | `closed_and_drafted_pull_requests_leave`, `merged_by_hand_while_queued`; reopen not tested |
 | MQ-10 base branch changed | covered (engine) | `a_retargeted_pull_request_leaves_its_queue`; no forge action yet |
-| MQ-11 halt / condition false during CI | covered | `p1-label-halt.yaml`; `a_label_seen_only_in_the_fresh_read_prevents_landing`; I1 |
+| MQ-11 halt / condition false during CI | covered (sim), with a residual race | `p1-label-halt.yaml`; `a_label_seen_only_in_the_fresh_read_prevents_landing`; labels read only by `merge_conditions`: `regressions/critic-stuck-bisection.yaml`, `--test regressions bisection_with_a_merge_condition_label_never_wedges_or_blames_an_innocent`, `wip` toggles in every property; I1 on the forge's truth at landing. The verification read must be a consistent read and is repeated when answered later than 10 s; a label set between that read and the merge call is not caught (no forge offers a compare-and-swap on labels) |
 | MQ-12 flapping conditions | partial | idempotence tests (`the_same_snapshot_twice_changes_nothing`, phase-0 test); duplicated webhooks in properties |
 | MQ-13 changing branch protection | open | |
 | MQ-14 stale check result | partial | newest run per head (phase-0 unit test); flakes keyed per tree |
@@ -33,29 +36,29 @@ checked for I0, double landings and I3.
 | MQ-18 events that trigger queue CI | partial (sim, fake GitHub) | queue draft per car, `runs_on: queue` in `p1-arztagent-two-step.yaml`; fake GitHub: the queue creates the branch, pushes merge commits and opens a draft pull request, which emit `push` and `pull_request.opened` (`e2e arztagent_one_pull_request_through_the_draft_to_a_squash_landing`); which workflows GitHub really starts: open (needs a sandbox) |
 | MQ-19 config change in the PR | open | |
 | MQ-20 commit message | open | |
-| MQ-21 bisection | covered | `p1-bisection.yaml`; `bisection_*` DSL tests; properties with and without limits |
-| MQ-22 flaky test in a batch | covered | `p1-flaky.yaml`; flakes in properties (no red tree lands: I0/I1) |
+| MQ-21 bisection | covered (sim, real git) | `p1-bisection.yaml`; `bisection_*` DSL tests; a split test that turns red on the fresh read before landing (critic reproduction, now handled as a failure of its parts); innocence oracle `innocent_pull_requests_are_never_blamed` (one culprit, with and without limits, with webhook and forge faults and crashes) |
+| MQ-22 flaky test in a batch | partial | `p1-flaky.yaml`; flakes in properties: no red tree lands (I0/I1); `max_checks_retries` retries on a fresh draft (`--test regressions max_checks_retries_recreates_the_draft`). With flakes and no retries the split can blame the pull request whose test flaked: no oracle for that |
 | MQ-23 cascade | covered | `p1-cascade.yaml`; I0 in properties |
 | MQ-24 priority | open | priorities not built |
-| MQ-25 slot leaks | covered | I3 and I4 after every step in every scenario and property case |
-| MQ-26 batch timer, minimum | covered | `p1-batch-five.yaml`; `dynamic_batch_size_spreads_over_slots`; I2 at quiescence |
+| MQ-25 slot leaks | covered | I3 and I4 after every step in every scenario and property case; a closing car keeps its slot until the forge confirms that its draft is closed and its CI stopped; I4 counts drafts whose CI still runs after closing (with delayed cancellation in fault mode) |
+| MQ-26 batch timer, minimum | covered | `p1-batch-five.yaml`; `--test regressions batch_wait_timer_starts_with_the_first_pull_request`; dynamic size by free slots and backlog, the documented example (3 → three batches of one, 10 → five of two): `--test regressions dynamic_batch_size_matches_the_documented_example`; I2 at quiescence |
 | MQ-27 conflict with a PR ahead | covered | `p1-conflict-ahead.yaml` |
 | MQ-28 CI cost | open | not measured |
-| MQ-29 webhooks duplicated, reordered, lost | covered (sim, fake GitHub) | I5 in every scenario with faults; `delivery_does_not_change_the_end_state`; fake GitHub: `e2e duplicated_and_reordered_webhooks_change_nothing`, delivery ids deduplicated (`client the_webhook_endpoint_checks_signatures_and_drops_repeated_deliveries`) |
+| MQ-29 webhooks duplicated, reordered, lost | covered (sim, fake GitHub) | I5 (end state with dequeue reasons) in every scenario with faults; `delivery_does_not_change_the_end_state` (also with label toggles, forge faults and crashes); fake GitHub: `e2e duplicated_and_reordered_webhooks_change_nothing`, delivery ids deduplicated (`client the_webhook_endpoint_checks_signatures_and_drops_repeated_deliveries`) |
 | MQ-30 without webhooks | covered (sim, fake GitHub) | `every_scenario_also_holds_without_webhooks_but_with_reconciliation`; `lost_webhooks_are_repaired_by_reconciliation`; fake GitHub: `e2e lost_webhooks_are_recovered_by_reconciliation` (every webhook lost) |
-| MQ-31 crash mid-merge | partial (fake GitHub) | no journal yet; `e2e a_restart_recovers_from_github_and_sweeps_orphans`: a restart while a car runs recovers by reconciliation, sweeps the orphaned branch and draft, lands |
+| MQ-31 crash mid-merge | covered in the simulation (sim, real git); persistence open | state journaled before every side effect (`schlange_core::journal`, in-memory `MemoryJournal`); `--test crashes a_crash_at_every_side_effect_changes_nothing` (200 runs: before and after every side effect of eight scenarios; I0–I4 hold, nothing lands twice, same end state); random crashes in `invariants_hold_under_forge_faults_and_crashes`, the innocence oracle, I5 and on real git. SQLite journal and its use in `schlange serve`: open. Fake GitHub: `e2e a_restart_recovers_from_github_and_sweeps_orphans` |
 | MQ-32 two instances | open | |
-| MQ-33 eventual consistency | partial | red/timeout verdicts confirmed by a fresh read; fake GitHub: 404/5xx storms on reads never dequeue (`e2e storms_of_404_and_5xx_never_dequeue`); a 404 for a branch counts only after a canary read; delayed (stale) reads not injected |
+| MQ-33 eventual consistency | covered for lagging reads (sim), with a requirement on adapters | webhook-driven and reconciliation reads return the previous state for up to `max_lag` after a change (`ForgeFaults::stale_read`) in every fault-mode test; the engine treats `merged` as final, ignores a base tip it already left, cleans up phantom branches without a slot. The engine's own reads (verify, confirm, resolve a landing) must be consistent: no engine keeps I1 on a lagging verification read. Fake GitHub: `e2e storms_of_404_and_5xx_never_dequeue` |
 | MQ-34 rate limits | covered (fake GitHub) | `e2e rate_limits_are_waited_out_and_landing_still_happens` (429 with `Retry-After`, secondary limit on the merge); `client rate_limits_block_everyone_and_cosmetics_are_deferred`; unit tests of the budget (landing before cosmetics) |
-| MQ-35 5xx after a successful write | covered (fake GitHub) | `e2e a_5xx_after_the_merge_happened_does_not_land_twice` (each pull request squashed once, no halt); `e2e a_lying_5xx_on_draft_creation_and_queue_branch_merges_is_absorbed`; `client reads_retry_5xx_and_404_but_writes_report_an_unknown_outcome` |
-| MQ-36 leftover branches | covered | I3 (strict pattern, after every step and at quiescence); fake GitHub: I3 at the end of every e2e test, orphan sweep after a restart |
-| MQ-37 a check never reports | covered | `p1-checks-timeout.yaml` (with a fixed timeout) |
-| MQ-38 `checks_timeout: auto` | open | not built |
-| MQ-39 cancelled runs | partial | code `CHECKS_INTERRUPTED` in the verdict; no scenario |
+| MQ-35 5xx after a successful write | covered (sim, real git, fake GitHub) | every side effect can fail before it happens or happen and answer with an error (`ForgeFaults::error`, `lie`); lost, late and duplicated replies; an unknown landing is resolved from `merged`/`merge_commit_sha` and the base tip, nothing lands twice (I1). Properties, `--test crashes`, `--test localgit forge_faults_and_crashes_keep_the_invariants_on_real_git`; fake GitHub: `e2e a_5xx_after_the_merge_happened_does_not_land_twice`, `e2e a_lying_5xx_on_draft_creation_and_queue_branch_merges_is_absorbed` |
+| MQ-36 leftover branches | covered | I3 (strict pattern, after every step and at quiescence); the engine deletes leftover queue branches and closes leftover drafts it reads (strict name pattern only); fake GitHub: I3 at the end of every e2e test, orphan sweep after a restart |
+| MQ-37 a check never reports | covered | `p1-checks-timeout.yaml` (fixed timeout); `--test regressions a_merge_check_that_never_reports_on_the_draft_times_out_naming_it` (the reason lists it under "never reported"); `checks_timeout: auto` with history: `checks_timeout_auto_with_history_times_out` |
+| MQ-38 `checks_timeout: auto` | covered (sim); margin and weighting assumed | weighted p95 of successful first runs per queue and base in seven days, × 1.5, at least 60 s, only after 20 runs; retries, bisection tests and in-place checks do not count. Unit test `auto_timeout_needs_history_and_has_a_floor`; `--test regressions checks_timeout_auto_without_history_waits` (no timeout on a new queue, as documented), `checks_timeout_auto_with_history_times_out`. The docs do not give the margin or the weighting: 1.5 and a one-day half-life are ours |
+| MQ-39 cancelled runs | partial | code `CHECKS_INTERRUPTED` in the verdict; closing a draft cancels its CI (with a delay in fault mode); no scenario for a cancellation that ends a car |
 | MQ-40 forge recomputes the merge ref | covered (sim, real git) | cars are frozen commits on queue branches; on `localgit` they are real merge commits on real refs |
 | MQ-41 CI side effects on queue branches | open | |
-| MQ-42 merge checks never run on the queue PR | covered | `p1-checks-timeout.yaml`; reason lists checks that never reported |
-| MQ-43 queue hangs without a reason | partial | I2 at quiescence in every run; `pr explain` missing |
+| MQ-42 merge checks never run on the queue PR | covered | critic reproduction `--test regressions a_merge_check_that_never_reports_on_the_draft_times_out_naming_it`: another check on the draft passes, the named one never reports; no early CHECKS_FAILED, CHECKS_TIMEOUT after the timeout naming it. Under `auto` without history the car waits (documented) |
+| MQ-43 queue hangs without a reason | partial | I2 at quiescence in every run, also with forge faults and crashes (every outstanding request is retried or resolved after a reply timeout); `pr explain` missing |
 | MQ-44 head-of-line blocking | open | not measured |
-| MQ-45 dequeue reasons | partial | codes per path in `queue-dequeue-reasons.md`, golden event logs; some codes assumed |
+| MQ-45 dequeue reasons | partial | codes per path in `queue-dequeue-reasons.md`, golden event logs, I5 compares them; new: BATCH_AHEAD_REBUILT (`a_rebuilt_batch_ahead_is_reported_as_such`), CHECKS_RETRIED, PR_DEQUEUED for a pull request whose own attributes fail the merge conditions; some codes assumed |
 | MQ-46 … MQ-53 | open | except MQ-47 (= MQ-06, covered) and MQ-53 (= MQ-08, covered) |

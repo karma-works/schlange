@@ -1,0 +1,18 @@
+# Valid for Mergify: the combinations the merge method rules accept. Schlange builds only
+# squash, so the other methods are reported as unsupported.
+merge_queue:
+  max_parallel_checks: 1
+defaults:
+  queue_rule:
+    merge_method: fast-forward
+queue_rules:
+  - name: ff-retries
+    max_checks_retries: 2
+    allow_queue_branch_edit: true
+  - name: batch-edit
+    merge_method: merge-batch
+    batch_size: 3
+    allow_queue_branch_edit: true
+  - name: squash
+    merge_method: squash
+    allow_queue_branch_edit: false

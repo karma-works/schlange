@@ -8,10 +8,16 @@
 //!
 //! Every decision that changes the base is bound to head SHAs and to the expected base SHA:
 //! landing is a compare-and-swap, and the forge refuses it when anything moved.
+//!
+//! Replies are not trusted to arrive: any of them can be lost, duplicated, delayed or replaced
+//! by an error although the side effect happened (`Event::Failed`). The queue retries or
+//! resolves every outstanding request from a fresh read (see `queue`). The state is
+//! serialisable; a host journals it before every side effect (`journal`) and after a crash
+//! restarts from the journal with `Event::Restarted` and a full read.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use schlange_config::rules::Rules;
 
@@ -22,14 +28,14 @@ pub use crate::reasons::DequeueReason;
 use crate::reasons::{self as code, blocks_requeue};
 
 /// A pull request as tested in a car: number and the head SHA it was tested with.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarPr {
     pub number: u64,
     pub head_sha: String,
 }
 
 /// One squash commit the forge created while landing.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LandedCommit {
     pub number: u64,
     pub sha: String,
@@ -37,7 +43,7 @@ pub struct LandedCommit {
 }
 
 /// Why the forge refused (part of) a landing.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LandError {
     /// Compare-and-swap failed: the base is no longer the expected commit.
@@ -115,10 +121,22 @@ pub enum Event {
     },
     /// Virtual time reached a wake-up the engine asked for.
     Tick,
+    /// The forge answered a decision with an error. The side effect may still have happened
+    /// (a timeout or 5xx after a successful write, MQ-35).
+    Failed {
+        decision: Decision,
+        error: String,
+    },
+    /// Reply to `CloseCar`: the draft is closed, the branch deleted and the draft's CI stopped.
+    CarClosed {
+        car: u64,
+    },
+    /// The engine restarted from its journal; outstanding requests are in doubt.
+    Restarted,
 }
 
 /// What the engine decided. The forge adapter turns decisions into side effects.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Decision {
     Enqueue {
@@ -157,7 +175,8 @@ pub enum Decision {
         number: u64,
         head_sha: String,
     },
-    /// Close the draft pull request and delete the queue branch.
+    /// Close the draft pull request (and any open draft on `branch`), delete the queue branch
+    /// and stop the draft's CI. Reply: `CarClosed`. Idempotent.
     CloseCar {
         car: u64,
         branch: Option<String>,
@@ -191,7 +210,7 @@ pub enum Decision {
     WakeAt { at: Time },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum EntryStatus {
     /// Waiting for a car.
@@ -204,7 +223,7 @@ pub enum EntryStatus {
     Held { on: Vec<u64> },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueEntry {
     pub queue: String,
     pub rule: String,
@@ -219,14 +238,32 @@ pub struct QueueEntry {
 }
 
 /// How a queued pull request ended up, the last time it left the queue.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     Merged { sha: String },
     Dequeued { reason: DequeueReason },
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+/// A car being closed: it keeps its slot until the forge confirms (`CarClosed`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Closing {
+    /// The base branch whose slot it holds; `None` when unknown (a late reply).
+    pub base: Option<String>,
+    pub branch: Option<String>,
+    pub draft: Option<u64>,
+    /// When the close was (last) sent.
+    pub since: Time,
+}
+
+/// One successful first run of a queue's checks, for `checks_timeout: auto`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sample {
+    pub at: Time,
+    pub secs: Time,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
     pub queued: BTreeMap<u64, QueueEntry>,
@@ -240,6 +277,23 @@ pub struct State {
     pub wakeups: BTreeSet<Time>,
     pub reported_errors: BTreeSet<(u64, String)>,
     pub counter: u64,
+    /// Time of the event being handled.
+    #[serde(default)]
+    pub now: Time,
+    /// Cars being closed, by car id.
+    #[serde(default)]
+    pub closing: BTreeMap<u64, Closing>,
+    /// Runtimes per `queue@base` for `checks_timeout: auto`.
+    #[serde(default)]
+    pub history: BTreeMap<String, Vec<Sample>>,
+    /// Pull requests whose landing had an unknown outcome (lost or lying reply, restart): if
+    /// one shows up merged later, the queue merged it (MQ-35).
+    #[serde(default)]
+    pub unconfirmed_land: BTreeSet<u64>,
+    /// Pull requests whose own attributes failed the merge conditions, with the attributes they
+    /// had then: not queued again until they change.
+    #[serde(default)]
+    pub blocked_attrs: BTreeMap<u64, String>,
 }
 
 impl State {
@@ -252,20 +306,15 @@ impl State {
 /// Applies one event and re-evaluates every pull request and queue.
 pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, Vec<Decision>) {
     let mut next = state.clone();
+    next.now = now;
     let mut out = Vec::new();
     next.wakeups.retain(|t| *t > now);
-    let token = apply(&mut next, rules, event, now, &mut out);
+    let token = apply(&mut next, rules, event, &mut out);
     process(&mut next, rules, now, token, &mut out);
     (next, out)
 }
 
-fn apply(
-    state: &mut State,
-    rules: &Rules,
-    event: &Event,
-    now: Time,
-    out: &mut Vec<Decision>,
-) -> Option<u64> {
+fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision>) -> Option<u64> {
     fn pr(state: &mut State, n: u64) -> Option<&mut PullRequest> {
         state.pull_requests.get_mut(&n)
     }
@@ -324,6 +373,10 @@ fn apply(
             token,
         } => {
             for p in pull_requests {
+                // Merged is final: a read that says otherwise lags behind (MQ-33).
+                if !p.merged && state.pull_requests.get(&p.number).is_some_and(|o| o.merged) {
+                    continue;
+                }
                 state.pull_requests.insert(p.number, p.clone());
             }
             for (b, sha) in branches {
@@ -340,7 +393,7 @@ fn apply(
             head_sha,
             tree,
             draft,
-        } => queue::car_built(state, *car, branch, head_sha, tree, *draft, now, out),
+        } => queue::car_built(state, *car, branch, head_sha, tree, *draft, out),
         Event::CarConflict {
             car,
             number,
@@ -351,8 +404,11 @@ fn apply(
             car,
             commits,
             error,
-        } => queue::landed(state, rules, *car, commits, error.as_ref(), now, out),
+        } => queue::landed(state, rules, *car, commits, error.as_ref(), out),
         Event::Tick => {}
+        Event::Failed { decision, .. } => queue::side_effect_failed(state, decision, out),
+        Event::CarClosed { car } => queue::car_closed(state, *car),
+        Event::Restarted => queue::expire_all(state, out),
     }
     None
 }
@@ -426,6 +482,18 @@ fn evaluate_pull_request(
 
     if let Some(entry) = state.queued.get(&number).cloned() {
         let rule = rules.queue_rules.iter().find(|q| q.name == entry.queue);
+        if pr.merged && queue::landing_in_flight(state, number) {
+            // The queue's own landing, seen before its reply: the reply (or the read that
+            // resolves it) decides.
+            return;
+        }
+        if pr.merged && state.unconfirmed_land.contains(&number) {
+            // The queue's own landing, whose reply was lost or lied (MQ-35).
+            let sha = pr.merge_commit_sha.clone().unwrap_or_default();
+            queue::discard_containing(state, rules, &entry.base, number, out);
+            queue::record_merge(state, number, &sha, out);
+            return;
+        }
         let reason = if pr.merged {
             Some(DequeueReason::new(
                 code::PR_MANUALLY_MERGED,
@@ -481,6 +549,10 @@ fn evaluate_pull_request(
             return;
         }
         state.blocked_heads.remove(&number);
+        if state.blocked_attrs.get(&number) == Some(&fingerprint(pr)) {
+            return;
+        }
+        state.blocked_attrs.remove(&number);
         'rules: for rule in &rules.pull_request_rules {
             let Some(target) = &rule.queue else { continue };
             let (matches, _) = eval::eval_list(&rule.conditions, pr, &ctx, &mut errors);
@@ -527,6 +599,14 @@ fn evaluate_pull_request(
             out.push(Decision::EvaluationError { number, message });
         }
     }
+}
+
+/// The attributes of a pull request that its own merge conditions can read, as one string.
+pub(crate) fn fingerprint(pr: &PullRequest) -> String {
+    format!(
+        "{}|{}|{}|{}|{:?}|{:?}|{:?}",
+        pr.head_sha, pr.base, pr.title, pr.draft, pr.labels, pr.files, pr.dependabot_update_types
+    )
 }
 
 /// First seven characters of a SHA, for messages.

@@ -1,5 +1,7 @@
 //! Coverage test of the feature map (`.agents/skills/verify-schlange/features/`):
 //! - every inventory entry belongs to exactly one feature file, and every pattern matches;
+//! - every `unsupported` pattern matches an inventory entry of its own feature, and only
+//!   `partial` features have `unsupported` entries;
 //! - every referenced problem ID (`MQ-…`, `W-…`) exists in `docs/research/`;
 //! - every P1 feature names at least one `MQ-` ID;
 //! - every feature file has exactly the four sections of the verification skill;
@@ -68,6 +70,36 @@ fn every_inventory_entry_has_exactly_one_feature() {
 }
 
 #[test]
+fn unsupported_entries_belong_to_their_partial_feature() {
+    let map = map();
+    for f in &map.features {
+        for p in &f.unsupported {
+            let own: Vec<_> = map
+                .inventory
+                .entries
+                .iter()
+                .filter(|e| {
+                    schlange_config::features::pattern_matches(p, &e.id)
+                        && map.owner(&e.id).is_some_and(|o| o.id == f.id)
+                })
+                .collect();
+            assert!(
+                !own.is_empty(),
+                "{}: unsupported pattern `{p}` matches none of its own inventory entries",
+                f.id
+            );
+        }
+        if f.status != schlange_config::features::Status::Partial {
+            assert!(
+                f.unsupported.is_empty(),
+                "{}: `unsupported` needs status partial",
+                f.id
+            );
+        }
+    }
+}
+
+#[test]
 fn problem_ids_exist() {
     let known = known_problem_ids();
     assert_eq!(known.iter().filter(|i| i.starts_with("MQ-")).count(), 53);
@@ -126,7 +158,7 @@ fn embedded_map_matches_the_files() {
     let ids = |m: &FeatureMap| {
         m.features
             .iter()
-            .map(|f| (f.id.clone(), f.status))
+            .map(|f| (f.id.clone(), f.status, f.unsupported.clone()))
             .collect::<Vec<_>>()
     };
     assert_eq!(

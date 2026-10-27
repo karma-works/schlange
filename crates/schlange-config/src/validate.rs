@@ -149,10 +149,13 @@ pub fn validate(
                         line,
                         column,
                         message: format!(
-                            "{what} not supported by Schlange yet (feature {}, {:?}, {})",
+                            "{what} not supported by Schlange yet (feature {}, {:?}, {}: {})",
                             row.feature,
                             row.priority,
-                            row.status.as_str()
+                            row.status.as_str(),
+                            row.reason
+                                .as_ref()
+                                .map_or_else(String::new, |r| r.describe())
                         ),
                         feature: Some(row.feature.clone()),
                     });

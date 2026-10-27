@@ -36,7 +36,7 @@
 +0:50:00  decision  read #1 #2 #1002 mergify/merge-queue/a7693b7b9b before acting
 +0:50:00  decision  close car 7, delete mergify/merge-queue/a7693b7b9b, close #1002
 +0:50:00  decision  checks of #3 ended, stays queued: BATCH_AHEAD_FAILED (code assumed): tested on top of a failing part while the batch was split
-+0:50:00  decision  dequeue #2 from `default`: CHECKS_FAILED: found by splitting the batch: merge conditions are false on #1000; failed: ci-ok
++0:50:00  decision  dequeue #2 from `default`: CHECKS_FAILED: found by splitting the batch: merge conditions are false on #1002; failed: ci-ok
 +0:50:00  decision  read #1 #1001 main mergify/merge-queue/744dfff868 before acting
 +0:50:00  decision  land car 6: squash #1 onto main if it is still 5a8b940
 +0:50:00  reply     car 6 landed #1 as 7fbc924

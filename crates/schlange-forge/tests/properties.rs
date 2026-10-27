@@ -1,14 +1,25 @@
 //! Property tests over random scenarios: random queue settings, pull requests with conflicting
 //! files, markers that break or hang the full suite, semantic conflicts, flaky checks, human
-//! actions (labels, pushes, closes, drafts, manual merges, direct pushes to main, pushes to
-//! queue branches) and webhook faults. The runner checks I0–I4 after every step and I2/I3 at
+//! actions (labels read by the queue conditions and by the merge conditions only, pushes,
+//! closes, drafts, manual merges, direct pushes to main, pushes to queue branches), webhook
+//! faults, forge faults (lost, late, duplicated and lying replies, base races, lagging reads, CI
+//! timing) and engine crashes. The runner checks I0–I4 after every step and I2/I3 at
 //! quiescence; any violation fails the case.
 //!
-//! I5 (same end state with perfect and disturbed delivery) only holds when the outcome does not
-//! depend on timing; `delivery_does_not_change_the_end_state` generates such scenarios (no
-//! flakes, no conflicts between pull requests, no human actions that race the queue).
+//! - `invariants_hold_in_every_step`: perfect and disturbed webhook delivery.
+//! - `invariants_hold_under_forge_faults_and_crashes`: the same plans with forge faults and
+//!   random crashes (restart from the journal).
+//! - `innocent_pull_requests_are_never_blamed`: one deterministic culprit (a broken or a
+//!   hanging pull request), no flakes, no semantic conflicts: no other pull request is ever
+//!   dequeued for CHECKS_FAILED or CHECKS_TIMEOUT, and without a resolution limit none for
+//!   DROPPED_BY_BISECTION_ELIMINATION or BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS (with a limit
+//!   the docs drop pull requests untested on purpose).
+//! - `delivery_does_not_change_the_end_state` (I5): when the outcome does not depend on timing
+//!   (no flakes, no conflicts between pull requests, label toggles only around a pull
+//!   request's own life), disturbed webhooks, forge faults and crashes reach the same end
+//!   state as perfect delivery, dequeue reasons included.
 //!
-//! Deterministic: a fixed seed. `SCHLANGE_PBT_CASES` sets the number of cases (default 40 per
+//! Deterministic: a fixed seed. `SCHLANGE_PBT_CASES` sets the number of cases (default 64 per
 //! property); e.g. `SCHLANGE_PBT_CASES=2000 cargo test --release -p schlange-forge --test
 //! properties` for a long run.
 
@@ -17,14 +28,15 @@ use proptest::test_runner::{Config, RngSeed};
 
 use schlange_forge::Scenario;
 use schlange_forge::dsl::{Sim, ci};
-use schlange_forge::runner::Simulation;
-use schlange_forge::sim::{Action, Faults};
+use schlange_forge::faults::{CrashPlan, ForgeFaults};
+use schlange_forge::runner::{EndState, Simulation, clock};
+use schlange_forge::sim::{Action, CiTiming, Faults};
 
 fn config() -> Config {
     let cases = std::env::var("SCHLANGE_PBT_CASES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(40);
+        .unwrap_or(64);
     Config {
         cases,
         rng_seed: RngSeed::Fixed(0x5c41_a46e),
@@ -41,6 +53,9 @@ struct Settings {
     limit: Option<u32>,
     timeout: bool,
     single_step: bool,
+    /// `-label = wip` in the merge conditions only (an attribute the queue conditions do not
+    /// read).
+    wip: bool,
 }
 
 impl Settings {
@@ -58,11 +73,22 @@ impl Settings {
         if self.timeout {
             rule.push_str("    checks_timeout: 20 min\n");
         }
-        rule.push_str(
-            "    queue_conditions:\n      - base = main\n      - -draft\n      - -label = halt\n      - check-success = quick\n",
-        );
-        if !self.single_step {
-            rule.push_str("    merge_conditions:\n      - check-success = full\n");
+        let queue = "      - base = main\n      - -draft\n      - -label = halt\n      - check-success = quick\n";
+        rule.push_str("    queue_conditions:\n");
+        rule.push_str(queue);
+        match (self.single_step, self.wip) {
+            (false, false) => {
+                rule.push_str("    merge_conditions:\n      - check-success = full\n")
+            }
+            (false, true) => rule.push_str(
+                "    merge_conditions:\n      - check-success = full\n      - -label = wip\n",
+            ),
+            (true, true) => {
+                rule.push_str("    merge_conditions:\n");
+                rule.push_str(queue);
+                rule.push_str("      - -label = wip\n");
+            }
+            (true, false) => {}
         }
         format!(
             "merge_queue:\n  max_parallel_checks: {}\nqueue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
@@ -81,14 +107,16 @@ fn settings() -> impl Strategy<Value = Settings> {
         prop_oneof![Just(None), (0u32..=2).prop_map(Some)],
         any::<bool>(),
         prop::bool::weighted(0.2),
+        prop::bool::weighted(0.4),
     )
         .prop_map(
-            |(batch, max_parallel, limit, timeout, single_step)| Settings {
+            |(batch, max_parallel, limit, timeout, single_step, wip)| Settings {
                 batch,
                 max_parallel,
                 limit,
                 timeout,
                 single_step,
+                wip,
             },
         )
 }
@@ -104,6 +132,7 @@ struct PrPlan {
 #[derive(Clone, Debug)]
 enum Human {
     Label(usize, bool),
+    Wip(usize, bool),
     Push(usize, bool),
     Close(usize),
     Draft(usize),
@@ -155,9 +184,48 @@ fn faults() -> impl Strategy<Value = Faults> {
         )
 }
 
+fn forge_faults() -> impl Strategy<Value = ForgeFaults> {
+    (
+        (
+            any::<u64>(),
+            0.0f64..0.3,
+            0.0f64..0.3,
+            0.0f64..0.6,
+            0u64..150,
+        ),
+        (0.0f64..0.2, 0.0f64..0.2, 0.0f64..0.3, 0.0f64..0.5, 0u64..60),
+        (0.0f64..0.4, 0u64..120, 0u64..90),
+    )
+        .prop_map(
+            |(
+                (seed, reply_drop, reply_duplicate, reply_delay, max_reply_delay),
+                (error, lie, base_race, stale_read, max_lag),
+                (jitter, max_create_delay, max_cancel_delay),
+            )| ForgeFaults {
+                seed,
+                reply_drop,
+                reply_duplicate,
+                reply_delay,
+                max_reply_delay,
+                error,
+                lie,
+                base_race,
+                stale_read,
+                max_lag,
+                ci: CiTiming {
+                    seed,
+                    jitter,
+                    max_create_delay,
+                    max_cancel_delay,
+                },
+            },
+        )
+}
+
 fn human() -> impl Strategy<Value = Human> {
     prop_oneof![
         (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Label(n, on)),
+        (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Wip(n, on)),
         (0usize..6, any::<bool>()).prop_map(|(n, fix)| Human::Push(n, fix)),
         (0usize..6).prop_map(Human::Close),
         (0usize..6).prop_map(Human::Draft),
@@ -184,7 +252,7 @@ fn plan() -> impl Strategy<Value = Plan> {
                 }),
             1..=6,
         ),
-        prop::collection::vec((0u64..3600, human()), 0..=5),
+        prop::collection::vec((0u64..3600, human()), 0..=6),
         prop::bool::weighted(0.3),
         faults(),
     )
@@ -195,6 +263,49 @@ fn plan() -> impl Strategy<Value = Plan> {
             flake,
             faults,
         })
+}
+
+fn human_action(p: &Plan, k: usize, h: &Human) -> Action {
+    let n = p.prs.len();
+    let pr = |i: &usize| (*i % n) as u64 + 1;
+    match h {
+        Human::Label(i, true) => Action::Label {
+            number: pr(i),
+            label: "halt".into(),
+        },
+        Human::Label(i, false) => Action::Unlabel {
+            number: pr(i),
+            label: "halt".into(),
+        },
+        Human::Wip(i, true) => Action::Label {
+            number: pr(i),
+            label: "wip".into(),
+        },
+        Human::Wip(i, false) => Action::Unlabel {
+            number: pr(i),
+            label: "wip".into(),
+        },
+        Human::Push(i, fix) => Action::Push {
+            number: pr(i),
+            files: vec![(
+                PATHS[p.prs[*i % n].path].to_string(),
+                if *fix {
+                    format!("fixed by push {k}\n")
+                } else {
+                    format!("push {k} BUG\n")
+                },
+            )],
+        },
+        Human::Close(i) => Action::Close { number: pr(i) },
+        Human::Draft(i) => Action::Draft { number: pr(i) },
+        Human::Ready(i) => Action::Ready { number: pr(i) },
+        Human::MergeByHand(i) => Action::MergeManually(pr(i)),
+        Human::PushBase(i) => Action::PushBase {
+            branch: "main".into(),
+            files: vec![(PATHS[*i].to_string(), format!("direct {k}\n"))],
+        },
+        Human::PushQueueBranch(i) => Action::PushQueueBranch(pr(i)),
+    }
 }
 
 fn scenario(p: &Plan) -> Scenario {
@@ -225,7 +336,6 @@ fn scenario(p: &Plan) -> Scenario {
     if !p.settings.single_step {
         sim = sim.check(full);
     }
-    let n = p.prs.len();
     for (i, pr) in p.prs.iter().enumerate() {
         let num = i as u64 + 1;
         // Without a fixed checks_timeout (`auto` has no history here, so no timeout), a hanging
@@ -242,47 +352,26 @@ fn scenario(p: &Plan) -> Scenario {
             .at(&format!("{}s", pr.open_at), Action::Open(num));
     }
     for (k, (t, h)) in p.humans.iter().enumerate() {
-        let at = format!("{t}s");
-        let pr = |i: &usize| (*i % n) as u64 + 1;
-        let action = match h {
-            Human::Label(i, true) => Action::Label {
-                number: pr(i),
-                label: "halt".into(),
-            },
-            Human::Label(i, false) => Action::Unlabel {
-                number: pr(i),
-                label: "halt".into(),
-            },
-            Human::Push(i, fix) => Action::Push {
-                number: pr(i),
-                files: vec![(
-                    PATHS[p.prs[*i % n].path].to_string(),
-                    if *fix {
-                        format!("fixed by push {k}\n")
-                    } else {
-                        format!("push {k} BUG\n")
-                    },
-                )],
-            },
-            Human::Close(i) => Action::Close { number: pr(i) },
-            Human::Draft(i) => Action::Draft { number: pr(i) },
-            Human::Ready(i) => Action::Ready { number: pr(i) },
-            Human::MergeByHand(i) => Action::MergeManually(pr(i)),
-            Human::PushBase(i) => Action::PushBase {
-                branch: "main".into(),
-                files: vec![(PATHS[*i].to_string(), format!("direct {k}\n"))],
-            },
-            Human::PushQueueBranch(i) => Action::PushQueueBranch(pr(i)),
-        };
-        sim = sim.at(&at, action);
+        sim = sim.at(&format!("{t}s"), human_action(p, k, h));
     }
     let mut s = sim.build();
     s.max_time = 3 * 86400;
     s
 }
 
-fn violations(s: &Scenario, faults: Faults) -> Vec<String> {
+fn outcome_of(
+    s: &Scenario,
+    faults: Faults,
+    forge: Option<ForgeFaults>,
+    crash: Option<CrashPlan>,
+) -> (Vec<String>, Simulation, String) {
     let mut sim = Simulation::new(s, faults);
+    if let Some(f) = forge {
+        sim = sim.with_forge_faults(f);
+    }
+    if let Some(c) = crash {
+        sim = sim.with_crashes(c);
+    }
     sim.run(s);
     let mut out = Vec::new();
     for (id, r) in &sim.checker.results {
@@ -290,16 +379,21 @@ fn violations(s: &Scenario, faults: Faults) -> Vec<String> {
             out.push(format!("{id}: {v}"));
         }
     }
-    if !out.is_empty() {
-        out.push(
-            sim.log
-                .iter()
-                .map(|l| format!("{} {} {}", l.t, l.kind, l.text))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+    let log = sim
+        .log
+        .iter()
+        .map(|l| format!("{} {} {}", clock(l.t), l.kind, l.text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (out, sim, log)
+}
+
+fn violations(s: &Scenario, faults: Faults) -> Vec<String> {
+    let (mut v, _, log) = outcome_of(s, faults, None, None);
+    if !v.is_empty() {
+        v.push(log);
     }
-    out
+    v
 }
 
 proptest! {
@@ -314,13 +408,190 @@ proptest! {
         let disturbed = violations(&s, p.faults.clone());
         prop_assert!(disturbed.is_empty(), "disturbed delivery:\n{}", disturbed.join("\n"));
     }
+
+    /// I0–I4 hold, the queue settles and nothing lands twice when the forge's replies are lost,
+    /// late, duplicated or lie, pushes race the landings, reads lag, CI timing varies, and the
+    /// engine crashes at random side effects and restarts from its journal.
+    #[test]
+    fn invariants_hold_under_forge_faults_and_crashes(
+        p in plan(),
+        f in forge_faults(),
+        crash_rate in prop_oneof![Just(0.0f64), 0.0f64..0.08],
+    ) {
+        let s = scenario(&p);
+        let crash = CrashPlan::random(f.seed, crash_rate, 4);
+        let (v, sim, log) = outcome_of(&s, p.faults.clone(), Some(f), Some(crash));
+        prop_assert!(v.is_empty(), "{}\n{}\nwire: {:?}", v.join("\n"), log, sim.wire.stats);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OraclePlan {
+    settings: Settings,
+    /// Per pull request: path and open time.
+    prs: Vec<(usize, u64)>,
+    culprit: usize,
+    hang: bool,
+    humans: Vec<(u64, Human)>,
+    faults: Faults,
+}
+
+fn oracle_plan() -> impl Strategy<Value = OraclePlan> {
+    (
+        settings(),
+        prop::collection::vec((0usize..6, 0u64..1800), 2..=6),
+        any::<prop::sample::Index>(),
+        any::<bool>(),
+        prop::collection::vec(
+            (
+                0u64..3600,
+                prop_oneof![
+                    (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Label(n, on)),
+                    (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Wip(n, on)),
+                    // Only fixing pushes: a push that adds a bug makes a second culprit.
+                    (0usize..6).prop_map(|n| Human::Push(n, true)),
+                    (0usize..6).prop_map(Human::Close),
+                    (0usize..6).prop_map(Human::Draft),
+                    (0usize..6).prop_map(Human::Ready),
+                    (0usize..6).prop_map(Human::MergeByHand),
+                    (0usize..6).prop_map(Human::PushBase),
+                    (0usize..6).prop_map(Human::PushQueueBranch),
+                ],
+            ),
+            0..=5,
+        ),
+        faults(),
+    )
+        .prop_map(|(settings, prs, culprit, hang, humans, faults)| {
+            let culprit = culprit.index(prs.len());
+            let hang = hang && settings.timeout;
+            OraclePlan {
+                settings,
+                prs,
+                culprit,
+                hang,
+                humans,
+                faults,
+            }
+        })
+}
+
+fn oracle_scenario(p: &OraclePlan) -> Scenario {
+    let full = ci("full", "10m")
+        .queue_only()
+        .fails_on("BUG")
+        .hangs_on("HANG");
+    let quick = if p.settings.single_step {
+        ci("quick", "2m").fails_on("BUG").hangs_on("HANG")
+    } else {
+        ci("quick", "1m").pr_only()
+    };
+    let mut sim = Sim::new("pbt-oracle", &p.settings.yaml())
+        .check(quick)
+        .faults(Some(p.faults.clone()));
+    if !p.settings.single_step {
+        sim = sim.check(full);
+    }
+    let n = p.prs.len();
+    for (i, (path, t)) in p.prs.iter().enumerate() {
+        let num = i as u64 + 1;
+        let marker = match (i == p.culprit, p.hang) {
+            (true, true) => " HANG",
+            (true, false) => " BUG",
+            _ => "",
+        };
+        let content = format!("#{num}{marker}\n");
+        sim = sim
+            .pr(num, &[(PATHS[*path], content.as_str())])
+            .at(&format!("{t}s"), Action::Open(num));
+    }
+    let as_plan = Plan {
+        settings: p.settings.clone(),
+        prs: p
+            .prs
+            .iter()
+            .map(|(path, t)| PrPlan {
+                path: *path,
+                marker: 0,
+                open_at: *t,
+            })
+            .collect(),
+        humans: vec![],
+        flake: false,
+        faults: p.faults.clone(),
+    };
+    for (k, (t, h)) in p.humans.iter().enumerate() {
+        // Merging the culprit by hand puts the bug on main: every later batch fails.
+        if matches!(h, Human::MergeByHand(i) if *i % n == p.culprit) {
+            continue;
+        }
+        sim = sim.at(&format!("{t}s"), human_action(&as_plan, k, h));
+    }
+    let mut s = sim.build();
+    s.max_time = 3 * 86400;
+    s
+}
+
+/// The dequeue codes in a log, per pull request: `dequeue #N from `q`: CODE …`.
+fn dequeues(log: &str) -> Vec<(u64, String)> {
+    log.lines()
+        .filter_map(|l| {
+            let rest = l.split("dequeue #").nth(1)?;
+            let (n, rest) = rest.split_once(' ')?;
+            let code = rest.split(": ").nth(1)?.split([' ', ':']).next()?;
+            Some((n.parse().ok()?, code.to_string()))
+        })
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Innocence oracle: with one deterministic culprit, no other pull request is dequeued for a
+    /// CI failure, a timeout or (without a limit) bisection elimination. Perfect delivery,
+    /// disturbed webhooks, and forge faults with crashes.
+    #[test]
+    fn innocent_pull_requests_are_never_blamed(p in oracle_plan(), f in forge_faults()) {
+        let s = oracle_scenario(&p);
+        let culprit = p.culprit as u64 + 1;
+        let mut forbidden = vec!["CHECKS_FAILED", "CHECKS_TIMEOUT"];
+        if p.settings.limit.is_none() {
+            forbidden.extend(["DROPPED_BY_BISECTION_ELIMINATION", "BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS"]);
+        }
+        let crash = CrashPlan::random(f.seed, 0.02, 2);
+        for (name, faults, forge, crash) in [
+            ("perfect", Faults::none(), None, None),
+            ("webhook faults", p.faults.clone(), None, None),
+            ("forge faults and crashes", p.faults.clone(), Some(f.clone()), Some(crash)),
+        ] {
+            let (v, _, log) = outcome_of(&s, faults, forge, crash);
+            prop_assert!(v.is_empty(), "{name}: {}\n{log}", v.join("\n"));
+            for (n, code) in dequeues(&log) {
+                prop_assert!(
+                    n == culprit || !forbidden.contains(&code.as_str()),
+                    "{name}: innocent #{n} dequeued with {code} (culprit #{culprit})\n{log}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Toggle {
+    None,
+    /// `halt` from the start, removed later: merges eventually.
+    HaltUntil(u64),
+    /// `halt` for good: never queued.
+    HaltForever,
+    /// `wip` (merge conditions only) from the start, removed later.
+    WipUntil(u64),
 }
 
 #[derive(Clone, Debug)]
 struct CalmPlan {
     settings: Settings,
-    /// Per pull request: open time and whether it breaks the full suite (or hangs).
-    prs: Vec<(u64, u8)>,
+    /// Per pull request: open time, marker (0 none, 1 BUG, 2 HANG) and a label toggle.
+    prs: Vec<(u64, u8, Toggle)>,
     base_pushes: Vec<u64>,
     faults: Faults,
 }
@@ -334,17 +605,29 @@ fn calm_plan() -> impl Strategy<Value = CalmPlan> {
             s
         }),
         prop::collection::vec(
-            (0u64..1800, prop::sample::select(vec![0u8, 0, 0, 1, 2])),
+            (
+                0u64..1800,
+                prop::sample::select(vec![0u8, 0, 0, 1, 2]),
+                prop_oneof![
+                    4 => Just(Toggle::None),
+                    1 => (0u64..3600).prop_map(Toggle::HaltUntil),
+                    1 => Just(Toggle::HaltForever),
+                    1 => (0u64..3600).prop_map(Toggle::WipUntil),
+                ],
+            ),
             1..=6,
         ),
         prop::collection::vec(0u64..3600, 0..=3),
         faults(),
     )
-        .prop_map(|(settings, prs, base_pushes, faults)| CalmPlan {
-            settings,
-            prs,
-            base_pushes,
-            faults,
+        .prop_map(|(mut settings, prs, base_pushes, faults)| {
+            settings.wip |= prs.iter().any(|p| matches!(p.2, Toggle::WipUntil(_)));
+            CalmPlan {
+                settings,
+                prs,
+                base_pushes,
+                faults,
+            }
         })
 }
 
@@ -364,14 +647,35 @@ fn calm_scenario(p: &CalmPlan) -> Scenario {
     if !p.settings.single_step {
         sim = sim.check(full);
     }
-    for (i, (t, m)) in p.prs.iter().enumerate() {
+    for (i, (t, m, toggle)) in p.prs.iter().enumerate() {
         let n = i as u64 + 1;
         // Every pull request has its own file: no conflicts between them.
         let path = format!("pr{n}.rs");
         let content = format!("#{n}{}\n", marker_text(*m));
+        let label = match toggle {
+            Toggle::None => None,
+            Toggle::HaltUntil(_) | Toggle::HaltForever => Some("halt"),
+            Toggle::WipUntil(_) => Some("wip"),
+        };
         sim = sim
-            .pr(n, &[(path.as_str(), content.as_str())])
+            .pr_with(n, &[(path.as_str(), content.as_str())], |d| {
+                if let Some(l) = label {
+                    d.labels.insert(l.to_string());
+                }
+            })
             .at(&format!("{t}s"), Action::Open(n));
+        match toggle {
+            Toggle::HaltUntil(off) | Toggle::WipUntil(off) => {
+                sim = sim.at(
+                    &format!("{}s", t + off),
+                    Action::Unlabel {
+                        number: n,
+                        label: label.expect("label").into(),
+                    },
+                );
+            }
+            _ => {}
+        }
     }
     for (k, t) in p.base_pushes.iter().enumerate() {
         sim = sim.at(
@@ -391,10 +695,10 @@ proptest! {
     #![proptest_config(config())]
 
     /// I5: when the outcome does not depend on timing, disturbed delivery (dropped,
-    /// duplicated, delayed and reordered webhooks, repaired by reconciliation) reaches the same
-    /// end state as perfect delivery.
+    /// duplicated, delayed and reordered webhooks, repaired by reconciliation), forge faults and
+    /// crashes reach the same end state as perfect delivery, dequeue reasons included.
     #[test]
-    fn delivery_does_not_change_the_end_state(p in calm_plan()) {
+    fn delivery_does_not_change_the_end_state(p in calm_plan(), f in forge_faults()) {
         let s = calm_scenario(&p);
         let report = schlange_forge::run(&s);
         let i5 = report.invariant("I5");
@@ -402,12 +706,25 @@ proptest! {
         for i in &report.invariants {
             prop_assert!(i.violations.is_empty(), "{}", report.to_text());
         }
-        // Sanity: every pull request without a marker merged.
-        for (i, (_, m)) in p.prs.iter().enumerate() {
+        // Sanity: every pull request without a marker and not halted for good merged.
+        for (i, (_, m, toggle)) in p.prs.iter().enumerate() {
             let n = i as u64 + 1;
-            if *m == 0 {
-                prop_assert_eq!(report.outcome(n), "merged", "{}", report.to_text());
-            }
+            let expected = match (m, toggle) {
+                (_, Toggle::HaltForever) => "open",
+                (0, _) => "merged",
+                _ => continue,
+            };
+            prop_assert_eq!(report.outcome(n), expected, "{}", report.to_text());
         }
+        // The same end state with forge faults and crashes on top.
+        let crash = CrashPlan::random(f.seed, 0.03, 3);
+        let (v, sim, log) = outcome_of(&s, p.faults.clone(), Some(f), Some(crash));
+        prop_assert!(v.is_empty(), "{}\n{log}", v.join("\n"));
+        let mut end: EndState = sim.end_state();
+        if sim.wire.stats.base_races > 0 {
+            // Races push commits of their own to main: the trees differ by design.
+            end.base_trees = report.end_state.base_trees.clone();
+        }
+        prop_assert_eq!(&end, &report.end_state, "forge faults and crashes\n{}", log);
     }
 }

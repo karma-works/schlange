@@ -22,7 +22,8 @@ the queue then dequeues every affected pull request and reports the error.
 
 - `default-off`: built. The engine knows the head it built on each queue branch; any other head read from the forge is a foreign push.
 - `dequeue`: built. The car's own pull requests leave with `DRAFT_PULL_REQUEST_CHANGED`; cars behind are rebuilt with `BATCH_AHEAD_BRANCH_EDITED`; the branch is deleted.
-- `allow-true`: missing. `allow_queue_branch_edit: true` is parsed but behaves like `false`; Mergify only allows it with `merge-batch` or `fast-forward`, which are not built.
+- `allow-true`: the engine accepts the edit and keeps the car on the pushed head; the cars behind are torn down and rebuilt (`BATCH_AHEAD_BRANCH_EDITED`, code assumed). With `squash`, the only method built, what lands would be the pull request without the edit, so the tree check halts the queue (`cargo test -p schlange-forge --test regressions allow_queue_branch_edit_accepts_the_edit`). But Mergify accepts `allow_queue_branch_edit: true` only with `merge_method: merge-batch` or `fast-forward`, and Schlange builds neither, so there is no configuration in which the option is both valid and supported.
+- `validation`: `config validate` rejects `true` with any other method or with `merge_method` unset (stage 4, error), and flags `merge-batch` and `fast-forward` as unsupported (feature `queue-merge-methods-other`). The option itself is therefore not listed as `unsupported`: `false` is supported, and every valid `true` is already flagged through its merge method.
 
 ## How to get to it (user POV)
 

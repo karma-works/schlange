@@ -1,0 +1,15 @@
+merge_queue:
+  reset_on_external_merge: never
+queue_rules:
+  - name: default
+    merge_method: rebase
+    allow_queue_branch_edit: true
+    max_checks_retries: 2
+    queue_conditions:
+      - check-success = ci
+pull_request_rules:
+  - name: q
+    conditions:
+      - author = bot
+    actions:
+      queue:

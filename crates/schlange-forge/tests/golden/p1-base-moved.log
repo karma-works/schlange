@@ -20,8 +20,6 @@
 +0:05:00  reply     car 5 built at e8df987, draft #1002
 +0:05:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 02fd98e + #1 #2 (checks #2)
 +0:05:00  reply     car 6 built at fa09f71, draft #1003
-+0:11:00  ci        #1000 check `full` completed on ecd3e04: success
-+0:11:00  ci        #1001 check `full` completed on 405b1bd: success
 +0:15:00  ci        #1002 check `full` completed on e8df987: success
 +0:15:00  ci        #1003 check `full` completed on fa09f71: success
 +0:15:00  webhook   #1002 check `full` completed on e8df987: success

@@ -23,8 +23,9 @@ fn scenario(name: &str) -> PathBuf {
         .join(format!("{name}.yaml"))
 }
 
-/// Scenarios that must pass on both forges.
-const BOTH: [&str; 6] = [
+/// Scenarios that must pass on both forges (the critic's stuck bisection included).
+const BOTH: [&str; 7] = [
+    "regressions/critic-stuck-bisection",
     "p1-batch-five",
     "p1-bisection",
     "p1-semantic-conflict",
@@ -257,4 +258,31 @@ fn the_checker_sees_an_untested_commit_in_the_real_repository() {
     c.after_step(&forge, &state, &rules);
     assert!(!c.results["I0"].violations.is_empty());
     assert!(!c.results["I3"].violations.is_empty());
+}
+
+/// Forge faults and crashes on real git: lost, late, duplicated and lying replies, base races,
+/// lagging reads, CI timing, and the engine crashing at random side effects and restarting
+/// from its journal. I0–I4 hold and the queue settles (MQ-31, MQ-33, MQ-35).
+#[test]
+fn forge_faults_and_crashes_keep_the_invariants_on_real_git() {
+    use schlange_forge::faults::{CrashPlan, ForgeFaults};
+    for name in ["p1-bisection", "p1-batch-five"] {
+        let file = scenario(name);
+        let s = schlange_forge::scenario::parse(&std::fs::read_to_string(&file).unwrap(), &file)
+            .unwrap();
+        for seed in 0..3u64 {
+            let git = LocalGit::new().expect("git");
+            let mut sim = Simulation::on(&s, Faults::standard(seed), git, false)
+                .with_forge_faults(ForgeFaults::standard(seed))
+                .with_crashes(CrashPlan::random(seed, 0.05, 3));
+            sim.run(&s);
+            let v: Vec<String> = sim
+                .checker
+                .results
+                .iter()
+                .flat_map(|(id, r)| r.violations.iter().map(move |v| format!("{id}: {v}")))
+                .collect();
+            assert!(v.is_empty(), "{name} seed {seed} on localgit: {v:?}");
+        }
+    }
 }

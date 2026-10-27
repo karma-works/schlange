@@ -285,3 +285,39 @@ fn branch_names_follow_the_prefix_and_ten_hex() {
     );
     assert_eq!(b, branch_name("mergify/merge-queue/", "main", 7));
 }
+
+/// Every check passed and the check conditions are still false (a count): the reason names
+/// what was seen, never an empty "failed:" list.
+#[test]
+fn a_false_check_condition_without_a_failed_check_names_what_it_saw() {
+    let mut dr = Driver::new();
+    dr.rules = Rules::from_yaml(
+        "queue_rules:\n  - name: default\n    queue_conditions:\n      - check-success = quick\n    merge_conditions:\n      - \"#check-success >= 2\"\n\
+         pull_request_rules:\n  - name: q\n    conditions: []\n    actions:\n      queue:\n",
+    )
+    .unwrap();
+    dr.queued_car();
+    let draft = dr.draft(vec![run("full", "c1", Some(Conclusion::Success), 2)]);
+    let d = dr.snapshot(vec![draft], &[]);
+    let Some(Decision::Refresh { token, .. }) = d
+        .iter()
+        .find(|d| matches!(d, Decision::Refresh { .. }))
+        .cloned()
+    else {
+        panic!("no confirming read: {d:?}")
+    };
+    let d = dr.feed(Event::Snapshot {
+        pull_requests: vec![],
+        branches: BTreeMap::new(),
+        token: Some(token),
+    });
+    let text = d
+        .iter()
+        .find_map(|d| match d {
+            Decision::Dequeue { reason, .. } => Some(reason.text.clone()),
+            _ => None,
+        })
+        .expect("dequeued");
+    assert!(!text.trim_end().ends_with("failed:"), "{text}");
+    assert!(text.contains("full=success"), "{text}");
+}

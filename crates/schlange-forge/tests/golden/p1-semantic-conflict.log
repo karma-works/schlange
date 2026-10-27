@@ -32,7 +32,6 @@
 +0:11:10  decision  dequeue #2 from `default`: CHECKS_FAILED: merge conditions are false on #1001; failed: full
 +0:11:10  decision  build car 9 on mergify/merge-queue/8cd12edb01: base e076f41 + #3 (checks #3)
 +0:11:10  reply     car 9 built at 15fd6ce, draft #1003
-+0:11:20  ci        #1002 check `full` completed on 37c7601: failure
 +0:21:10  ci        #1003 check `full` completed on 15fd6ce: success
 +0:21:10  webhook   #1003 check `full` completed on 15fd6ce: success
 +0:21:10  decision  read #3 #1003 main mergify/merge-queue/8cd12edb01 before acting

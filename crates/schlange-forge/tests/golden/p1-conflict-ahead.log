@@ -39,7 +39,6 @@
 +0:05:00  decision  build car 11 on mergify/merge-queue/7d7b1cef54: base 9af3ba5 + #1 #4 (checks #4)
 +0:05:00  reply     car 11 built at 09a0e4c, draft #1002
 +0:12:00  ci        #1000 check `full` completed on 549a62a: success
-+0:12:00  ci        #1001 check `full` completed on 3719b82: success
 +0:12:00  webhook   #1000 check `full` completed on 549a62a: success
 +0:12:00  decision  read #1 #1000 main mergify/merge-queue/34fd968ed0 before acting
 +0:12:00  decision  land car 4: squash #1 onto main if it is still 9af3ba5

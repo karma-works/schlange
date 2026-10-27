@@ -7,6 +7,8 @@ status: partial
 inventory:
   - "attr:queue-dequeue-reason"
   - "enum:queue-dequeue-reason:*"
+unsupported:
+  - "attr:queue-dequeue-reason"
 problems:
   - "MQ-45"
   - "MQ-09"
@@ -49,13 +51,16 @@ human dequeued it. The code can also be read as a condition attribute.
   | car ahead failed | `BATCH_AHEAD_FAILED` | no |
   | pull request ahead left | `PR_AHEAD_DEQUEUED` | no |
   | another pull request of the same batch left | `BATCH_REBUILT` | no |
+  | the batch ahead was rebuilt without a pull request | `BATCH_AHEAD_REBUILT` *assumed* | no |
+  | its own attributes fail the merge conditions | `PR_DEQUEUED` *assumed* | until the attributes change |
+  | checks failed, retried on a fresh draft | `CHECKS_RETRIED` *assumed* | no |
   | car ahead edited by someone else | `BATCH_AHEAD_BRANCH_EDITED` | no |
   | base moved outside the queue | `MERGE_QUEUE_RESET` *assumed* | no |
   | sent back after a split | `BATCH_AHEAD_FAILED` *assumed* | no |
 
 - `no-requeue-loop`: built. After `CHECKS_FAILED`, `CHECKS_TIMEOUT`, `CHECKS_INTERRUPTED`, conflicts and split drops, the `queue` action does not queue the same head again; a new push does.
 - `own-rebase`: not applicable yet: Schlange never pushes to a pull request (in-place updates are not built), so its own updates cannot dequeue (W-08).
-- `attribute`: missing (`queue-dequeue-reason` in conditions).
+- `attribute`: missing (listed as `unsupported`: the evaluator has no `queue-dequeue-reason` attribute).
 - `manual`: missing (`PR_MANUALLY_DEQUEUED` needs the `dequeue` command).
 
 ## How to get to it (user POV)

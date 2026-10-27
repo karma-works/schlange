@@ -136,6 +136,22 @@ impl Faults {
     }
 }
 
+/// CI timing faults: runs that are not all alike (KONZEPT.md section 6). All zero: every run
+/// takes exactly its script's duration, every check run exists as soon as CI starts, and a
+/// closed draft's CI stops at once.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CiTiming {
+    pub seed: u64,
+    /// Each run's duration varies by up to this fraction, up or down.
+    pub jitter: f64,
+    /// A check run is created up to this long after CI starts (late check-run creation); until
+    /// then the draft has no run of that name at all.
+    pub max_create_delay: Time,
+    /// Closing a draft cancels its running checks up to this long later; the forge confirms
+    /// the close (`CarClosed`) only then.
+    pub max_cancel_delay: Time,
+}
+
 /// What a webhook delivery names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hint {
@@ -157,6 +173,8 @@ pub enum Item {
     },
     Tick,
     Reconcile,
+    /// A reply to one of the engine's decisions, delivered late (`ForgeFaults`).
+    Reply(Box<Event>),
 }
 
 enum Pending {
@@ -172,6 +190,16 @@ enum Pending {
     },
     Tick,
     Reconcile,
+    Reply(Box<Event>),
+    /// A check run that is created late.
+    CreateRun {
+        number: u64,
+        run: CheckRun,
+        conclusion: Option<Conclusion>,
+        duration: Time,
+    },
+    /// Running checks of a closed draft are cancelled.
+    Cancel(u64),
 }
 
 /// A car the forge built for the queue (or recorded for an in-place check).
@@ -184,8 +212,10 @@ pub struct CarRecord {
     pub draft: Option<u64>,
     pub in_place: bool,
     pub base_sha: Sha,
-    /// Per pull request in the car: number, head, and the tree after merging it.
+    /// Per pull request in the car: number, the commit after merging it, and its tree.
     pub prefix: Vec<(u64, Sha, String)>,
+    /// The pull request heads the car was built from (the tested heads, for I1).
+    pub heads: Vec<(u64, Sha)>,
     pub head: Sha,
     pub tree: String,
     pub closed: bool,
@@ -239,6 +269,7 @@ pub struct SimForge<G: GitStore = Repo> {
     pub notes: Vec<(Time, String)>,
     pub dropped: u64,
     pub duplicated: u64,
+    pub ci_timing: CiTiming,
 }
 
 impl SimForge<Repo> {
@@ -284,6 +315,7 @@ impl<G: GitStore> SimForge<G> {
             notes: Vec::new(),
             dropped: 0,
             duplicated: 0,
+            ci_timing: CiTiming::default(),
         }
     }
 
@@ -306,6 +338,29 @@ impl<G: GitStore> SimForge<G> {
     pub fn define(&mut self, def: PrDef) {
         self.base_branches.insert(def.base.clone());
         self.defs.insert(def.number, def);
+    }
+
+    /// Applies a scenario action now (a push that races the queue, for example).
+    pub fn act_now(&mut self, action: Action) -> String {
+        self.act(action)
+    }
+
+    /// Delivers a reply to the engine at `at`.
+    pub fn schedule_reply(&mut self, at: Time, event: Event) {
+        self.push_pending(at, Pending::Reply(Box::new(event)));
+    }
+
+    /// The engine crashed: whatever was on its way to it (replies, webhook deliveries, its
+    /// timers) is lost. Returns how many items were dropped.
+    pub fn drop_engine_inbox(&mut self) -> usize {
+        let before = self.pending.len();
+        self.pending.retain(|_, p| {
+            !matches!(
+                p,
+                Pending::Reply(_) | Pending::Deliver { .. } | Pending::Tick
+            )
+        });
+        before - self.pending.len()
     }
 
     /// Schedules a scenario action at `at`.
@@ -390,6 +445,22 @@ impl<G: GitStore> SimForge<G> {
                 Pending::Deliver { hint, text } => return Some((t, Item::Webhook { hint, text })),
                 Pending::Tick => return Some((t, Item::Tick)),
                 Pending::Reconcile => return Some((t, Item::Reconcile)),
+                Pending::Reply(e) => return Some((t, Item::Reply(e))),
+                Pending::CreateRun {
+                    number,
+                    run,
+                    conclusion,
+                    duration,
+                } => {
+                    let Some(text) = self.create_run(number, run, conclusion, duration) else {
+                        continue;
+                    };
+                    return Some((t, Item::Ci(text)));
+                }
+                Pending::Cancel(number) => {
+                    self.cancel_runs(number);
+                    continue;
+                }
             }
         }
     }
@@ -397,6 +468,9 @@ impl<G: GitStore> SimForge<G> {
     fn complete_check(&mut self, number: u64, seq: u64, conclusion: Conclusion) -> Option<String> {
         let pr = self.prs.get_mut(&number)?;
         let run = pr.checks.iter_mut().find(|c| c.seq == seq)?;
+        if run.conclusion.is_some() {
+            return None; // cancelled meanwhile
+        }
         run.conclusion = Some(conclusion);
         let text = format!(
             "#{number} check `{}` completed on {}: {}",
@@ -406,6 +480,54 @@ impl<G: GitStore> SimForge<G> {
         );
         self.emit(Hint::PullRequest(number), text.clone());
         Some(text)
+    }
+
+    /// Creates a check run (late), unless its pull request was closed meanwhile.
+    fn create_run(
+        &mut self,
+        number: u64,
+        run: CheckRun,
+        conclusion: Option<Conclusion>,
+        duration: Time,
+    ) -> Option<String> {
+        let pr = self.prs.get_mut(&number)?;
+        if pr.closed {
+            return None;
+        }
+        let (seq, name, head) = (run.seq, run.name.clone(), run.head_sha.clone());
+        pr.checks.push(run);
+        let text = format!("#{number} check `{name}` started late on {}", short(&head));
+        self.emit(Hint::PullRequest(number), text.clone());
+        if let Some(c) = conclusion {
+            let at = self.now() + duration;
+            self.push_pending(
+                at,
+                Pending::CheckDone {
+                    number,
+                    seq,
+                    conclusion: c,
+                },
+            );
+        }
+        Some(text)
+    }
+
+    /// Cancels the running checks of a (closed) pull request.
+    fn cancel_runs(&mut self, number: u64) {
+        if let Some(pr) = self.prs.get_mut(&number) {
+            for r in pr.checks.iter_mut().filter(|r| r.conclusion.is_none()) {
+                r.conclusion = Some(Conclusion::Cancelled);
+            }
+        }
+    }
+
+    /// Queue drafts on `base` that are open or still running CI after being closed (I4).
+    pub fn drafts_with_ci(&self, base: &str) -> usize {
+        self.prs
+            .values()
+            .filter(|p| p.author == BOT && p.base == base)
+            .filter(|p| !p.closed || p.checks.iter().any(|c| c.conclusion.is_none()))
+            .count()
     }
 
     /// Whether pull request `n`'s changes are all in `tree`.
@@ -477,6 +599,31 @@ impl<G: GitStore> SimForge<G> {
             } else {
                 script.conclude(&tree, |n| self.present(n, &tree), draw)
             };
+            let timing = &self.ci_timing;
+            let mut duration = script.duration;
+            let mut create = 0;
+            if timing.jitter > 0.0 || timing.max_create_delay > 0 {
+                let key = format!("{tree_id}/{}/{seq}", script.check);
+                let j = keyed_unit(timing.seed, &format!("{key}/jitter")) * 2.0 - 1.0;
+                duration = ((duration as f64) * (1.0 + timing.jitter * j))
+                    .round()
+                    .max(1.0) as Time;
+                let c = keyed_unit(timing.seed, &format!("{key}/create"));
+                create = (c * (timing.max_create_delay + 1) as f64) as Time;
+            }
+            if create > 0 {
+                let at = self.now() + create;
+                self.push_pending(
+                    at,
+                    Pending::CreateRun {
+                        number,
+                        run,
+                        conclusion,
+                        duration,
+                    },
+                );
+                continue;
+            }
             self.prs.get_mut(&number).expect("pr").checks.push(run);
             self.emit(
                 Hint::PullRequest(number),
@@ -487,7 +634,7 @@ impl<G: GitStore> SimForge<G> {
                 ),
             );
             if let Some(c) = conclusion {
-                let at = self.now() + script.duration;
+                let at = self.now() + duration;
                 self.push_pending(
                     at,
                     Pending::CheckDone {
@@ -648,6 +795,7 @@ impl<G: GitStore> SimForge<G> {
                         let p = self.prs.get_mut(&n).expect("pr");
                         p.merged = true;
                         p.closed = true;
+                        p.merge_commit_sha = Some(c.clone());
                         self.emit(
                             Hint::Branch(pr.base.clone()),
                             format!("push to {}", pr.base),
@@ -829,6 +977,7 @@ impl<G: GitStore> SimForge<G> {
                         in_place: false,
                         base_sha: base_sha.clone(),
                         prefix,
+                        heads: prs.iter().map(|p| (p.number, p.head_sha.clone())).collect(),
                         head: cur.clone(),
                         tree: tree.clone(),
                         closed: false,
@@ -849,7 +998,10 @@ impl<G: GitStore> SimForge<G> {
                 number,
                 head_sha,
             } => {
-                if let Some(pr) = self.prs.get(number).cloned() {
+                // Idempotent: a repeated announcement (after a restart) keeps the first record.
+                if let Some(pr) = self.prs.get(number).cloned()
+                    && !self.cars.contains_key(car)
+                {
                     let base_sha = self.read_branch(&pr.base).unwrap_or_default();
                     let tree = self.repo.tree_id_of(head_sha);
                     self.cars.insert(
@@ -863,6 +1015,7 @@ impl<G: GitStore> SimForge<G> {
                             in_place: true,
                             base_sha,
                             prefix: vec![(*number, head_sha.clone(), tree.clone())],
+                            heads: vec![(*number, head_sha.clone())],
                             head: head_sha.clone(),
                             tree,
                             closed: false,
@@ -877,16 +1030,58 @@ impl<G: GitStore> SimForge<G> {
                 {
                     self.emit(Hint::Branch(b.clone()), format!("delete {b}"));
                 }
-                if let Some(d) = draft
-                    && let Some(p) = self.prs.get_mut(d)
-                    && p.author == BOT
-                {
+                // The named draft and any open queue draft on the branch (the engine may not
+                // know the draft's number after a lost reply).
+                let drafts: Vec<u64> = self
+                    .prs
+                    .values()
+                    .filter(|p| {
+                        p.author == BOT
+                            && (Some(p.number) == *draft
+                                || branch.as_ref().is_some_and(|b| *b == p.head_ref))
+                    })
+                    .map(|p| p.number)
+                    .collect();
+                let mut running = false;
+                for d in drafts {
+                    let p = self.prs.get_mut(&d).expect("draft");
                     p.closed = true;
+                    running |= p.checks.iter().any(|c| c.conclusion.is_none());
                 }
                 if let Some(r) = self.cars.get_mut(car) {
                     r.closed = true;
                 }
-                vec![]
+                // Closing the draft cancels its CI (as `cancel-in-progress` setups do); the
+                // forge confirms once nothing runs any more.
+                let delay = if running && self.ci_timing.max_cancel_delay > 0 {
+                    let u = keyed_unit(self.ci_timing.seed, &format!("cancel/{car}"));
+                    1 + (u * self.ci_timing.max_cancel_delay as f64) as Time
+                } else {
+                    0
+                };
+                let numbers: Vec<u64> = self
+                    .prs
+                    .values()
+                    .filter(|p| {
+                        p.author == BOT
+                            && (Some(p.number) == *draft
+                                || branch.as_ref().is_some_and(|b| *b == p.head_ref))
+                    })
+                    .map(|p| p.number)
+                    .collect();
+                if delay == 0 {
+                    for n in numbers {
+                        self.cancel_runs(n);
+                    }
+                    vec![Event::CarClosed { car: *car }]
+                } else {
+                    let at = self.now() + delay;
+                    for n in numbers {
+                        self.push_pending(at, Pending::Cancel(n));
+                    }
+                    self.schedule_reply(at, Event::CarClosed { car: *car });
+                    vec![]
+                }
             }
             Decision::Refresh {
                 token,
@@ -966,6 +1161,7 @@ impl<G: GitStore> SimForge<G> {
             let pr = self.prs.get_mut(&p.number).expect("pr");
             pr.merged = true;
             pr.closed = true;
+            pr.merge_commit_sha = Some(c.clone());
             commits.push(LandedCommit {
                 number: p.number,
                 sha: c.clone(),

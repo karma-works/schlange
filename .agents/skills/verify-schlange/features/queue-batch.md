@@ -25,7 +25,7 @@ Without settings, the batch size is 1 and the wait time 30 seconds.
 
 ## Sub-features
 
-- `size`: built for a fixed size. A `{min, max}` range is built as: size = `ceil(waiting / max_parallel_checks)` clamped to `[min, max]`, waiting only while fewer than `min` are waiting.
+- `size`: built for a fixed size. A `{min, max}` range is built as: size = `ceil(waiting / free slots)` clamped to `[min, max]` (free slots: `max_parallel_checks` minus the cars and the cars still being closed), waiting only while fewer than `min` are waiting. The documented example holds: five checks, 1..2, three queued → three batches of one, ten queued → five batches of two.
 - `wait-time`: built. Duration text parsed (`5 minutes`, `1 min`, seconds); the timer runs on the virtual clock from the earliest `waiting_since` of the batch; a pull request put back after a discarded car keeps its original wait start, so it is not delayed twice.
 - `default`: built. Size 1, wait 30 seconds (`QueueRule::new`).
 - `grouping`: missing. Mergify groups by scopes and changed directories within a window; Schlange takes the next pull requests in queue order.
@@ -42,7 +42,8 @@ Preconditions:
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
 - **Wait, then a partial batch; a full batch at once.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml`. Three pull requests are queued at +0:05 and `build car … (checks #1 #2 #3)` appears at +0:10 (after 5 minutes); five queued at +0:35 start at once: `(checks #4 #5 #6 #7 #8)` at +0:35. Each batch lands as one squash commit per pull request. Exit 0.
-- **Dynamic size.** `cargo test -p schlange-forge --test dsl dynamic_batch_size_spreads_over_slots`.
+- **Dynamic size.** `cargo test -p schlange-forge --test regressions dynamic_batch_size_matches_the_documented_example` (the full documented example), `cargo test -p schlange-core batch_size` (the formula), `cargo test -p schlange-forge --test dsl dynamic_batch_size_spreads_over_slots`.
+- **Wait timer.** `cargo test -p schlange-forge --test regressions batch_wait_timer_starts_with_the_first_pull_request`.
 
 ## Gotchas
 

@@ -93,6 +93,7 @@ impl Sim {
                 expect_base: BTreeMap::new(),
                 expect_log: vec![],
                 faults: Some(Faults::standard(1)),
+                forge_faults: None,
                 flake_seed: 0,
                 max_time: 7 * 86400,
             },
@@ -191,6 +192,12 @@ impl Sim {
 
     pub fn faults(mut self, faults: Option<Faults>) -> Self {
         self.s.faults = faults;
+        self
+    }
+
+    /// Forge faults for the disturbed run (I5).
+    pub fn forge_faults(mut self, f: Option<crate::faults::ForgeFaults>) -> Self {
+        self.s.forge_faults = f;
         self
     }
 

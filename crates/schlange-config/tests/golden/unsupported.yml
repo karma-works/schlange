@@ -1,4 +1,5 @@
-# Valid for Mergify; uses features Schlange has not built (exit 2 with --strict).
+# Valid for Mergify; uses features Schlange has not built (exit 2 with --strict): whole
+# features that are missing, and not-built entries of partial features.
 shared:
   ci: &ci
     - check-success = ci
@@ -6,6 +7,10 @@ queue_rules:
   - name: default
     merge_method: rebase
     merge_conditions: *ci
+  - name: unset-method
+    queue_conditions:
+      - -conflict
+      - dependabot-dependency-name = serde
 priority_rules:
   - name: hotfix
     conditions:
@@ -18,3 +23,10 @@ pull_request_rules:
     actions:
       label:
         add: [ready]
+  - name: off
+    disabled:
+      reason: not now
+    conditions:
+      - body ~= urgent
+    actions:
+      queue:

@@ -67,6 +67,10 @@ pub struct PullRequest {
     /// Tree id of the head commit, when the forge reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_tree: Option<String>,
+    /// The commit that merged the pull request, once merged (`merge_commit_sha` on GitHub).
+    /// The engine needs it to recognise its own landing after a lost reply (MQ-35).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_commit_sha: Option<String>,
 }
 
 impl PullRequest {
@@ -89,6 +93,7 @@ impl PullRequest {
             behind_base: false,
             base_tip: None,
             head_tree: None,
+            merge_commit_sha: None,
         }
     }
 

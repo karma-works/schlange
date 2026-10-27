@@ -1,5 +1,6 @@
 //! Stage 4: semantics the schema cannot express. Only rules the documentation states are
-//! checked: unique rule names, references to existing queues, readable durations.
+//! checked: unique rule names, references to existing queues, readable durations, and the
+//! `merge_method` combinations Mergify rejects.
 
 use std::collections::BTreeMap;
 
@@ -99,6 +100,8 @@ pub fn check(config: &Value, spans: &Spans, findings: &mut Vec<Finding>) {
     if let Some(d) = config.pointer("/defaults/queue_rule") {
         rules.push(("/defaults/queue_rule".into(), d));
     }
+    merge_method_rules(config, spans, findings);
+
     for (base, rule) in rules {
         for key in DURATIONS {
             let Some(Value::String(text)) = rule.get(*key) else {
@@ -124,6 +127,97 @@ pub fn check(config: &Value, spans: &Spans, findings: &mut Vec<Finding>) {
                 ),
                 Some(_) => {}
             }
+        }
+    }
+}
+
+/// Merge methods that land the queue branch itself; only they can carry a commit pushed to it.
+const BRANCH_MERGING_METHODS: &[&str] = &["merge-batch", "fast-forward"];
+
+/// A queue rule option with its pointer, falling back to `defaults.queue_rule`.
+fn option<'a>(
+    config: &'a Value,
+    rule: &'a Value,
+    base: &str,
+    key: &str,
+) -> Option<(&'a Value, String)> {
+    match rule.get(key) {
+        Some(v) => Some((v, format!("{base}/{key}"))),
+        None => config
+            .pointer(&format!("/defaults/queue_rule/{key}"))
+            .map(|v| (v, format!("/defaults/queue_rule/{key}"))),
+    }
+}
+
+/// Combinations of `merge_method` with other options that the documentation says are
+/// rejected (merge strategies and batches pages):
+/// - `allow_queue_branch_edit: true` needs `merge-batch` or `fast-forward`, set explicitly;
+/// - `fast-forward` works in serial mode only;
+/// - `fast-forward` with `max_checks_retries` > 0 needs `max_parallel_checks` 1.
+fn merge_method_rules(config: &Value, spans: &Spans, findings: &mut Vec<Finding>) {
+    let mode = config
+        .pointer("/merge_queue/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("serial");
+    let parallel_checks = config
+        .pointer("/merge_queue/max_parallel_checks")
+        .and_then(Value::as_u64)
+        .unwrap_or(5);
+    for (i, rule) in items(config, "queue_rules").iter().enumerate() {
+        let base = format!("/queue_rules/{i}");
+        let method = option(config, rule, &base, "merge_method")
+            .and_then(|(v, p)| v.as_str().map(|m| (m, p)));
+        let method_name = method.as_ref().map(|(m, _)| *m);
+
+        if let Some((Value::Bool(true), pointer)) =
+            option(config, rule, &base, "allow_queue_branch_edit")
+            && !method_name.is_some_and(|m| BRANCH_MERGING_METHODS.contains(&m))
+        {
+            let found = match method_name {
+                Some(m) => format!("found `{m}`"),
+                None => "merge_method is not set, and the repository default is never one of them"
+                    .to_string(),
+            };
+            push(
+                findings,
+                spans,
+                pointer,
+                format!(
+                    "allow_queue_branch_edit: true needs merge_method `merge-batch` or \
+                     `fast-forward` ({found}); other methods merge each pull request at its own \
+                     head, so an edit of the queue branch could never land"
+                ),
+            );
+        }
+
+        let Some(("fast-forward", pointer)) = method else {
+            continue;
+        };
+        if mode != "serial" {
+            push(
+                findings,
+                spans,
+                pointer.clone(),
+                format!(
+                    "merge_method `fast-forward` works in serial mode only, but merge_queue.mode \
+                     is `{mode}`"
+                ),
+            );
+        }
+        let retries = option(config, rule, &base, "max_checks_retries")
+            .and_then(|(v, _)| v.as_u64())
+            .unwrap_or(0);
+        if retries > 0 && parallel_checks > 1 {
+            push(
+                findings,
+                spans,
+                pointer,
+                format!(
+                    "merge_method `fast-forward` with max_checks_retries {retries} needs \
+                     merge_queue.max_parallel_checks 1 (found {parallel_checks}): a retried batch \
+                     gets a new head, so the batches checked on top of it cannot be fast-forwarded"
+                ),
+            );
         }
     }
 }
