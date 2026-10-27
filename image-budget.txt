@@ -1,3 +1,9 @@
 # Budget for the container image in bytes (scripts/image-size.sh). First build on 2026-10-27:
-# 5946638 bytes (5.67 MiB). Budget 7 MiB leaves room for SQLite and rustls; target stays < 15 MB.
-7340032
+# 5946638 bytes (5.67 MiB), binary 3947416 bytes.
+# Phase 1c (GitHub adapter) on 2026-10-27: 9122894 bytes (8.70 MiB), binary 6048832 bytes.
+# The growth is HTTPS to GitHub: ring (RSA for the app JWT, the TLS ciphers, P-256 tables,
+# ~390 KB), rustls + webpki (~240 KB), ureq + http (~130 KB), the adapter itself (~175 KB) and
+# the generic code they pull in. ring + rustls is the smallest TLS stack without OpenSSL
+# (aws-lc-rs is larger); no root store is bundled (SSL_CERT_FILE). Budget raised to 10 MiB,
+# which leaves room for SQLite; the target stays < 15 MB.
+10485760
