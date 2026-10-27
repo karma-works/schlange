@@ -309,7 +309,7 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
             parsed.summary = format!("{} #{n}", parsed.summary);
             parsed.event = match action.as_deref().unwrap_or("") {
                 "opened" | "reopened" => Some(Event::PullRequestOpened {
-                    pull_request: pull_request_of(p),
+                    pull_request: Box::new(pull_request_of(p)),
                 }),
                 "synchronize" => Some(Event::PullRequestSynchronized {
                     number: n,

@@ -1,0 +1,127 @@
++0:00:00  action    #1 opened by human on main, files: one.txt
++0:00:00  action    #2 opened by human on main, files: two.txt
++0:00:00  action    #4 opened by human on main, files: four.txt
++0:00:10  action    alice commented on #1: @mergifyio queue
++0:00:10  webhook   #1 comment 1 by alice
++0:00:10  decision  react +1 to comment 1 on #1
++0:00:10  decision  status comment #1: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:00:30  action    bob commented on #1: @Mergifyio queue
++0:00:30  webhook   #1 comment 3 by bob
++0:00:30  decision  react +1 to comment 3 on #1
++0:00:30  decision  reply #1: @bob, a queue command by @alice is already waiting for this pull request; this one is ignored.
++0:00:50  action    bob commented on #2: @mergify queue
++0:00:50  webhook   #2 comment 5 by bob
++0:00:50  decision  react +1 to comment 5 on #2
++0:00:50  decision  status comment #2: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:01:00  action    #2 pushed by mallory, head 6f19f94
++0:01:00  webhook   #2 synchronize
++0:01:00  decision  reply #2: The queue command by @bob is cancelled: @mallory pushed new commits (6f19f94) after it. The command vouched for the commits it saw; review the new ones and comment `@mergifyio queue` again.
++0:02:00  ci        #1 check `quick` completed on 7d4ee48: success
++0:02:00  ci        #2 check `quick` completed on 5ce265e: success
++0:02:00  ci        #4 check `quick` completed on 4488c2f: success
++0:02:00  webhook   #1 check `quick` completed on 7d4ee48: success
++0:02:00  decision  enqueue #1 into `default` (rule `queue command by @alice`)
++0:02:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:02:00  reply     car 2 built at 6f9d887, draft #1000
++0:02:00  decision  labels #1 +queued
++0:02:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @alice) — Being checked.
++0:02:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @alice) — Being checked in draft pull request #1000.
++0:02:00  webhook   #4 check `quick` completed on 4488c2f: success
++0:02:00  decision  controls comment #4: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
++0:03:00  ci        #2 check `quick` completed on 6f19f94: success
++0:03:00  webhook   #2 check `quick` completed on 6f19f94: success
++0:03:00  decision  controls comment #2: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
++0:05:00  action    #3 opened by bot on main, files: three.txt
++0:07:00  ci        #3 check `quick` completed on b30f550: success
++0:07:00  webhook   #3 check `quick` completed on b30f550: success
++0:07:00  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
++0:07:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #1 #3 (checks #3)
++0:07:00  reply     car 4 built at dc0d301, draft #1001
++0:07:00  decision  labels #3 +queued
++0:07:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked.
++0:07:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:07:30  action    carol commented on #3: @mergifyio dequeue
++0:07:30  webhook   #3 comment 11 by carol
++0:07:30  decision  react +1 to comment 11 on #3
++0:07:30  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
++0:07:30  decision  dequeue #3 from `default`: PR_MANUALLY_DEQUEUED: dequeued by @carol with a command
++0:07:30  decision  labels #3 +dequeued -queued
++0:07:30  decision  status comment #3: **Merge queue** · left the queue — Reason: PR_MANUALLY_DEQUEUED: dequeued by @carol with a command — - [ ] Put this pull request back into the queue
++0:09:00  action    mallory commented on #4: @mergifyio queue
++0:09:00  webhook   #4 comment 12 by mallory
++0:09:00  decision  react +1 to comment 12 on #4
++0:09:00  decision  reply #4: @mallory, you may not run `queue` on this pull request: condition 1 of the `queue` restriction is not met.
++0:10:00  action    carol commented on #4: @mergifyio rebase
++0:10:00  webhook   #4 comment 14 by carol
++0:10:00  decision  react +1 to comment 14 on #4
++0:10:00  decision  reply #4: @carol, `rebase` is a known command, but Schlange does not support it yet; nothing was done.
++0:11:00  action    carol commented on #4: @mergifyio refresh
++0:11:00  webhook   #4 comment 16 by carol
++0:11:00  decision  react +1 to comment 16 on #4
++0:11:00  decision  read #4 before acting
++0:11:00  decision  reply #4: @carol, this pull request is read again and re-evaluated.
++0:12:00  action    carol commented on #4: @mergifyio dequeue
++0:12:00  ci        #1000 check `full` completed on 6f9d887: success
++0:12:00  webhook   #4 comment 18 by carol
++0:12:00  decision  react +1 to comment 18 on #4
++0:12:00  decision  reply #4: @carol, this pull request is not queued; nothing to do.
++0:12:00  webhook   #1000 check `full` completed on 6f9d887: success
++0:12:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:12:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:12:00  message   #1: Pull request 1 (#1)
++0:12:00  reply     car 2 landed #1 as 7d4ee48
++0:12:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:12:00  decision  #1 merged as 7d4ee48
++0:12:00  decision  labels #1 -queued
++0:12:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 7d4ee48.
++0:13:00  action    carol commented on #4: @mergifyio frobnicate
++0:13:00  webhook   #4 comment 20 by carol
++0:13:00  decision  react +1 to comment 20 on #4
++0:13:00  decision  reply #4: @carol, `frobnicate` is not a command Schlange knows. The queue understands `queue [name]`, `dequeue` and `refresh`.
++0:30:00  action    alice commented on #3: @mergifyio queue
++0:30:00  webhook   #3 comment 22 by alice
++0:30:00  decision  react +1 to comment 22 on #3
++0:30:00  decision  enqueue #3 into `default` (rule `queue command by @alice`)
++0:30:00  decision  build car 8 on mergify/merge-queue/0fe36e3333: base 7d4ee48 + #3 (checks #3)
++0:30:00  reply     car 8 built at b8c7da1, draft #1002
++0:30:00  decision  labels #3 +queued -dequeued
++0:30:00  decision  status comment #3: **Merge queue** · queue `default` (queued by @alice) — Being checked.
++0:30:00  decision  status comment #3: **Merge queue** · queue `default` (queued by @alice) — Being checked in draft pull request #1002.
++0:40:00  action    #5 opened by human on main, files: five.txt
++0:40:00  ci        #1002 check `full` completed on b8c7da1: success
++0:40:00  webhook   #1002 check `full` completed on b8c7da1: success
++0:40:00  decision  read #3 #1002 main mergify/merge-queue/0fe36e3333 before acting
++0:40:00  decision  land car 8: squash #3 onto main if it is still 7d4ee48
++0:40:00  message   #3: Pull request 3 (#3)
++0:40:00  reply     car 8 landed #3 as 1477208
++0:40:00  decision  close car 8, delete mergify/merge-queue/0fe36e3333, close #1002
++0:40:00  decision  #3 merged as 1477208
++0:40:00  decision  labels #3 -queued
++0:40:00  decision  status comment #3: **Merge queue** · merged — Merged by the queue as 1477208.
++0:40:10  action    alice commented on #5: @mergifyio queue
++0:40:10  webhook   #5 comment 23 by alice
++0:40:10  decision  react +1 to comment 23 on #5
++0:40:10  decision  status comment #5: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:40:30  action    bob commented on #5: @mergifyio queue urgent
++0:40:30  webhook   #5 comment 25 by bob
++0:40:30  decision  react +1 to comment 25 on #5
++0:40:30  decision  reply #5: @bob, the waiting queue command now targets queue `urgent`.
++0:40:30  decision  status comment #5: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters queue `urgent` once its queue conditions hold.
++0:42:00  ci        #5 check `quick` completed on 7c0e03b: success
++0:42:00  webhook   #5 check `quick` completed on 7c0e03b: success
++0:42:00  decision  enqueue #5 into `urgent` (rule `queue command by @bob`)
++0:42:00  decision  build car 11 on mergify/merge-queue/7d7b1cef54: base 1477208 + #5 (checks #5)
++0:42:00  reply     car 11 built at 361acc6, draft #1003
++0:42:00  decision  labels #5 +queued
++0:42:00  decision  status comment #5: **Merge queue** · queue `urgent` (queued by @bob) — Being checked.
++0:42:00  decision  status comment #5: **Merge queue** · queue `urgent` (queued by @bob) — Being checked in draft pull request #1003.
++0:52:00  ci        #1003 check `full` completed on 361acc6: success
++0:52:00  webhook   #1003 check `full` completed on 361acc6: success
++0:52:00  decision  read #5 #1003 main mergify/merge-queue/7d7b1cef54 before acting
++0:52:00  decision  land car 11: squash #5 onto main if it is still 1477208
++0:52:00  message   #5: Pull request 5 (#5)
++0:52:00  reply     car 11 landed #5 as fd9208d
++0:52:00  decision  close car 11, delete mergify/merge-queue/7d7b1cef54, close #1003
++0:52:00  decision  #5 merged as fd9208d
++0:52:00  decision  labels #5 -queued
++0:52:00  decision  status comment #5: **Merge queue** · merged — Merged by the queue as fd9208d.

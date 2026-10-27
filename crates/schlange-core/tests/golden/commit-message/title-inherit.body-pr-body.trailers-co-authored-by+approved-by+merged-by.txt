@@ -1,0 +1,11 @@
+<inherited title>
+
+The redirect lost the query string.
+
+Depends-On: #41
+
+Co-authored-by: Bob Builder <bob@example.com>
+Co-authored-by: Carol <7+carol@users.noreply.github.com>
+Approved-by: dave
+Approved-by: erin
+Merged-by: frank

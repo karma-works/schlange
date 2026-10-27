@@ -1,0 +1,33 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  webhook   #1 check `quick` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests unless their checks failed in the queue`)
++0:01:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:01:00  reply     car 2 built at ecd3e04, draft #1000
++0:01:00  decision  labels #1 +checking +queued
++0:11:00  ci        #1000 check `full` completed on ecd3e04: success
++0:11:00  webhook   #1000 check `full` completed on ecd3e04: success
++0:11:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:11:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:11:00  message   #1: Pull request 1 (#1)
++0:11:00  reply     car 2 landed #1 as 84886d8
++0:11:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:11:00  decision  #1 merged as 84886d8
++0:11:00  decision  labels #1 -checking -queued
++0:11:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 84886d8.
++0:20:00  action    #2 opened by bot on main, files: b.txt
++0:21:00  ci        #2 check `quick` completed on 638a051: success
++0:21:00  webhook   #2 check `quick` completed on 638a051: success
++0:21:00  decision  enqueue #2 into `default` (rule `queue bot pull requests unless their checks failed in the queue`)
++0:21:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 84886d8 + #2 (checks #2)
++0:21:00  reply     car 5 built at 8e454e4, draft #1001
++0:21:00  decision  labels #2 +checking +queued
++0:31:00  ci        #1001 check `full` completed on 8e454e4: failure
++0:31:00  webhook   #1001 check `full` completed on 8e454e4: failure
++0:31:00  decision  read #2 #1001 mergify/merge-queue/f2f5067500 before acting
++0:31:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1001
++0:31:00  decision  dequeue #2 from `default`: CHECKS_FAILED: merge conditions are false on #1001; failed: full
++0:31:00  decision  labels #2 +kicked-out -checking -queued
++0:31:00  decision  status comment #2: **Merge queue** · left the queue — Reason: CHECKS_FAILED: merge conditions are false on #1001; failed: full — - [ ] Put this pull request back into the queue
++0:40:00  action    #2 pushed, head 9a2bb67
++0:41:00  ci        #2 check `quick` completed on 9a2bb67: success

@@ -1,0 +1,35 @@
+# Two queues; only pull requests by `bot` are queued by a rule. Everyone else needs the
+# `queue` command, which only alice and bob may run (`commands_restrictions`); the other
+# commands keep their documented defaults (write permission).
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+  - name: urgent
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+      - label = urgent
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:
+
+commands_restrictions:
+  queue:
+    conditions:
+      - or:
+          - sender = alice
+          - sender = bob

@@ -1,0 +1,36 @@
+# Labels, status comments and queue attributes (queue-labels-comments, conditions-queue,
+# MQ-45, MQ-43). `checking_label` is on while a car checks a pull request; `dequeued_label` is
+# renamed; `status_comments: outcomes` posts only merges and dequeues. #2 fails the full suite,
+# leaves with CHECKS_FAILED and gets `kicked-out`; a later push does not bring it back, since
+# the rule asks `queue-dequeue-reason != checks-failed`.
+name: p1-labels-status
+description: Label and status comment options, and queue attributes in conditions.
+config: configs/labels.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    fail_when_contains: BROKEN
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "BROKEN\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 20m, open: 2 }
+  - { at: 40m, push: { pr: 2, files: { b.txt: "fixed\n" } } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
+expect_log:
+  - "labels #1 +checking +queued"
+  - "labels #1 -checking -queued"
+  - "status comment #1: **Merge queue** · merged"
+  - "labels #2 +kicked-out -checking -queued"
+  - "status comment #2: **Merge queue** · left the queue"

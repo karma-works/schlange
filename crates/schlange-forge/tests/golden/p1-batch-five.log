@@ -12,23 +12,44 @@
 +0:05:00  ci        #3 check `KI-Review` completed on 51e53fb: success
 +0:05:00  webhook   #1 check `KI-Review` completed on 219df9a: success
 +0:05:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #1 +queued
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn.
 +0:05:00  webhook   #2 check `KI-Review` completed on f2573df: success
 +0:05:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #2 +queued
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
 +0:05:00  webhook   #3 check `KI-Review` completed on 51e53fb: success
 +0:05:00  decision  enqueue #3 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #3 +queued
++0:05:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
 +0:10:00  webhook   timer
 +0:10:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #1 #2 #3 (checks #1 #2 #3)
 +0:10:00  reply     car 4 built at 9910032, draft #1000
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:10:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
 +0:11:00  ci        #1000 check `Risk class and data protection` completed on 9910032: success
 +0:13:00  ci        #1000 check `ci-ok` completed on 9910032: success
 +0:13:00  webhook   #1000 check `ci-ok` completed on 9910032: success
 +0:13:00  decision  read #1 #2 #3 #1000 main mergify/merge-queue/34fd968ed0 before acting
 +0:13:00  decision  land car 4: squash #1 #2 #3 onto main if it is still 5a8b940
++0:13:00  message   #1: Pull request 1 (#1)
++0:13:00  message   #2: Pull request 2 (#2)
++0:13:00  message   #3: Pull request 3 (#3)
 +0:13:00  reply     car 4 landed #1 as 219df9a, #2 as 6494d33, #3 as 4152d75
 +0:13:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1000
 +0:13:00  decision  #1 merged as 219df9a
 +0:13:00  decision  #2 merged as 6494d33
 +0:13:00  decision  #3 merged as 4152d75
++0:13:00  decision  labels #1 -queued
++0:13:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 219df9a.
++0:13:00  decision  labels #2 -queued
++0:13:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as 6494d33.
++0:13:00  decision  labels #3 -queued
++0:13:00  decision  status comment #3: **Merge queue** · merged — Merged by the queue as 4152d75.
 +0:30:00  action    #4 opened by arztagent-bot on main, files: backend/d.py
 +0:30:00  action    #5 opened by arztagent-bot on main, files: backend/e.py
 +0:30:00  action    #6 opened by arztagent-bot on main, files: backend/f.py
@@ -51,21 +72,45 @@
 +0:35:00  ci        #8 check `KI-Review` completed on 9f62507: success
 +0:35:00  webhook   #4 check `KI-Review` completed on 4241373: success
 +0:35:00  decision  enqueue #4 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:35:00  decision  labels #4 +queued
++0:35:00  decision  status comment #4: **Merge queue** · queue `default` — Waiting for its turn.
 +0:35:00  webhook   #5 check `KI-Review` completed on 3144989: success
 +0:35:00  decision  enqueue #5 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:35:00  decision  labels #5 +queued
++0:35:00  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn.
 +0:35:00  webhook   #6 check `KI-Review` completed on aa736f4: success
 +0:35:00  decision  enqueue #6 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:35:00  decision  labels #6 +queued
++0:35:00  decision  status comment #6: **Merge queue** · queue `default` — Waiting for its turn.
 +0:35:00  webhook   #7 check `KI-Review` completed on 281063d: success
 +0:35:00  decision  enqueue #7 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:35:00  decision  labels #7 +queued
++0:35:00  decision  status comment #7: **Merge queue** · queue `default` — Waiting for its turn.
 +0:35:00  webhook   #8 check `KI-Review` completed on 9f62507: success
 +0:35:00  decision  enqueue #8 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:35:00  decision  build car 11 on mergify/merge-queue/7d7b1cef54: base 4152d75 + #4 #5 #6 #7 #8 (checks #4 #5 #6 #7 #8)
 +0:35:00  reply     car 11 built at 42e5cd2, draft #1001
++0:35:00  decision  status comment #4: **Merge queue** · queue `default` — Being checked.
++0:35:00  decision  status comment #5: **Merge queue** · queue `default` — Being checked.
++0:35:00  decision  status comment #6: **Merge queue** · queue `default` — Being checked.
++0:35:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked.
++0:35:00  decision  labels #8 +queued
++0:35:00  decision  status comment #8: **Merge queue** · queue `default` — Being checked.
++0:35:00  decision  status comment #4: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:35:00  decision  status comment #5: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:35:00  decision  status comment #6: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:35:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:35:00  decision  status comment #8: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
 +0:36:00  ci        #1001 check `Risk class and data protection` completed on 42e5cd2: success
 +0:38:00  ci        #1001 check `ci-ok` completed on 42e5cd2: success
 +0:38:00  webhook   #1001 check `ci-ok` completed on 42e5cd2: success
 +0:38:00  decision  read #4 #5 #6 #7 #8 #1001 main mergify/merge-queue/7d7b1cef54 before acting
 +0:38:00  decision  land car 11: squash #4 #5 #6 #7 #8 onto main if it is still 4152d75
++0:38:00  message   #4: Pull request 4 (#4)
++0:38:00  message   #5: Pull request 5 (#5)
++0:38:00  message   #6: Pull request 6 (#6)
++0:38:00  message   #7: Pull request 7 (#7)
++0:38:00  message   #8: Pull request 8 (#8)
 +0:38:00  reply     car 11 landed #4 as 4241373, #5 as e86b115, #6 as 9db7ebb, #7 as bb9312e, #8 as 012dbb8
 +0:38:00  decision  close car 11, delete mergify/merge-queue/7d7b1cef54, close #1001
 +0:38:00  decision  #4 merged as 4241373
@@ -73,3 +118,13 @@
 +0:38:00  decision  #6 merged as 9db7ebb
 +0:38:00  decision  #7 merged as bb9312e
 +0:38:00  decision  #8 merged as 012dbb8
++0:38:00  decision  labels #4 -queued
++0:38:00  decision  status comment #4: **Merge queue** · merged — Merged by the queue as 4241373.
++0:38:00  decision  labels #5 -queued
++0:38:00  decision  status comment #5: **Merge queue** · merged — Merged by the queue as e86b115.
++0:38:00  decision  labels #6 -queued
++0:38:00  decision  status comment #6: **Merge queue** · merged — Merged by the queue as 9db7ebb.
++0:38:00  decision  labels #7 -queued
++0:38:00  decision  status comment #7: **Merge queue** · merged — Merged by the queue as bb9312e.
++0:38:00  decision  labels #8 -queued
++0:38:00  decision  status comment #8: **Merge queue** · merged — Merged by the queue as 012dbb8.

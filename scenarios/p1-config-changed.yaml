@@ -1,0 +1,79 @@
+# The configuration lives in `.mergify.yml` on the default branch (config-file,
+# merge-protections-builtin, MQ-19, MQ-52).
+# - #1 edits the configuration into one that does not validate (two queues named `default`):
+#   the check `Configuration changed` fails and the protection holds #1.
+# - #2 loosens the configuration (drops `-label = halt`) and carries the label `halt` itself:
+#   its own copy never evaluates it, so it stays out until the label goes (MQ-52). Its check
+#   passes; it lands.
+# - #3 carries `halt` too and waits under the old configuration. Once #2 has landed, the new
+#   configuration applies to every pull request and #3 is queued (MQ-19).
+# - #4 adds a second configuration file: two files are an error, the check fails.
+name: p1-config-changed
+description: A changed configuration is checked, applies only after it lands, and then to everyone.
+config: configs/in-repo.yml
+config_in_repo: true
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - number: 1
+    author: bot
+    title: Break the configuration
+    files:
+      .mergify.yml: |
+        queue_rules:
+          - name: default
+          - name: default
+  - number: 2
+    author: bot
+    title: Loosen the queue conditions
+    labels: [halt]
+    files:
+      .mergify.yml: |
+        queue_rules:
+          - name: default
+            merge_method: squash
+            queue_conditions:
+              - base = main
+              - check-success = quick
+            merge_conditions:
+              - check-success = full
+        pull_request_rules:
+          - name: queue bot pull requests
+            conditions:
+              - author = bot
+            actions:
+              queue:
+  - { number: 3, author: bot, labels: [halt], files: { three.txt: "3\n" } }
+  - number: 4
+    author: bot
+    title: A second configuration file
+    files:
+      .github/mergify.yml: |
+        queue_rules:
+          - name: default
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 10m, unlabel: { pr: 2, name: halt } }
+
+expect:
+  - { pr: 1, state: open, held: configuration-changed }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: open, held: "more than one configuration file" }
+expect_merged_order: [2, 3]
+expect_log:
+  - "check `Configuration changed` on #1: failure"
+  - "check `Configuration changed` on #2: success"
+  - "check `Configuration changed` on #4: failure"
+  - "the configuration on the default branch changed; using it"

@@ -1,0 +1,5 @@
+Fix the login redirect (#42)
+
+Approved-by: dave
+Approved-by: erin
+Merged-by: frank

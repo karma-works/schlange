@@ -1,0 +1,9 @@
+Fix the login redirect (#42)
+
+<inherited body>
+
+Co-authored-by: Bob Builder <bob@example.com>
+Co-authored-by: Carol <7+carol@users.noreply.github.com>
+Approved-by: dave
+Approved-by: erin
+Merged-by: frank

@@ -1,0 +1,37 @@
+# Built-in protection `Merge-After` (MQ-46, W-13). The simulation's time 0 is
+# 2026-01-01T00:00:00Z. #1 may merge after 01:00 UTC (written as 02:00 at +01:00): it waits
+# with the reason in the state and is queued on the timer. #2's value is not a timestamp and
+# holds it for good; #3 names an IANA zone, which Schlange does not convert, and holds it
+# too (it never merges early).
+name: p2-merge-after
+description: Merge-After holds a pull request until its time; an unreadable value blocks it.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, body: "Release window.\nMerge-After: 2026-01-01T02:00:00+01:00\n", files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, body: "Merge-After: after lunch", files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, body: "Merge-After: 2026-01-01T02:00[Europe/Paris]", files: { c.txt: "c\n" } }
+  - { number: 4, author: bot, body: "Merge-After: 2025-12-31", files: { d.txt: "d\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: open, held: "is not a valid timestamp" }
+  - { pr: 3, state: open, held: "Europe/Paris" }
+  - { pr: 4, state: merged }
+expect_merged_order: [4, 1]
+expect_log:
+  - "enqueue #1 into `default`"

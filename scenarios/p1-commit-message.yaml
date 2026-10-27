@@ -1,0 +1,47 @@
+# The squash commit message (queue-commit-message, MQ-20).
+# - #1, queued by alice's command in a queue with `commit_message_format` (pr-title, pr-body,
+#   all trailers): carol pushed a commit too (co-author), dave and erin approved, alice queued
+#   it (Merged-by).
+# - #2, queued by its rule in the same queue: Merged-by is the queue's app.
+# - #3, in a queue without `commit_message_format`: the forge's own message ("inherit"; in the
+#   simulation the title `<title> (#n)` and, with more than one commit, one `* <message>` line
+#   per commit).
+name: p1-commit-message
+description: commit_message_format decides title, body and trailers; inherit leaves them to the forge.
+config: configs/commit-message.yml
+permissions: { alice: write }
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - number: 1
+    author: human
+    title: Fix the login redirect
+    body: "The redirect lost the query string."
+    approvals: [dave, erin]
+    files: { login.txt: "fixed\n" }
+  - { number: 2, author: bot, title: Bump a library, files: { lib.txt: "2\n" } }
+  - { number: 3, author: bot, title: Plain change, labels: [plain], files: { plain.txt: "3\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 30s, push: { pr: 1, by: carol, files: { login.txt: "fixed with a test\n" } } }
+  - { at: 5m, comment: { pr: 1, by: alice, body: "@mergifyio queue" } }
+  - { at: 20m, open: 2 }
+  - { at: 40m, open: 3 }
+  - { at: 41m, push: { pr: 3, files: { plain.txt: "3 again\n" } } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged, queue: plain }
+expect_log:
+  - "#1: Fix the login redirect (#1) ⏎  ⏎ The redirect lost the query string. ⏎  ⏎ Co-authored-by: carol <carol@users.noreply.example> ⏎ Approved-by: dave ⏎ Approved-by: erin ⏎ Merged-by: alice"
+  - "#2: Bump a library (#2) ⏎  ⏎ Merged-by: schlange[bot]"
+  - "#3: Plain change (#3) ⏎  ⏎ * Plain change (#3) ⏎ * push 1 to #3"

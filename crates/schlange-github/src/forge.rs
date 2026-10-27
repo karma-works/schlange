@@ -80,6 +80,8 @@ enum Cosmetic {
         title: String,
         summary: String,
     },
+    /// Labels, comments, reactions and protection checks the engine decided.
+    Show(schlange_core::engine::Cosmetic),
 }
 
 /// Is `name` a queue branch: `prefix` plus exactly ten lower-case hex characters?
@@ -604,6 +606,10 @@ impl GithubForge {
                 vec![]
             }
             Decision::WakeAt { .. } => vec![],
+            Decision::Cosmetic { cosmetic } => {
+                self.cosmetics.push_back(Cosmetic::Show(cosmetic.clone()));
+                vec![]
+            }
         }
     }
 
@@ -951,7 +957,14 @@ impl GithubForge {
                     self.queue_checks.remove(number);
                 }
             }
+            Cosmetic::Show(c) => self.show(c)?,
         }
+        Ok(())
+    }
+}
+
+impl GithubForge {
+    fn show(&mut self, _c: &schlange_core::engine::Cosmetic) -> Result<(), Error> {
         Ok(())
     }
 }
