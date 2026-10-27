@@ -78,7 +78,18 @@ enum SimCommand {
         file: PathBuf,
         #[arg(long)]
         json: bool,
+        /// `sim`: git in memory. `localgit`: real git repositories in a temporary directory,
+        /// every check a process in a checkout (needs git ≥ 2.38 and a build with the
+        /// `localgit` feature).
+        #[arg(long, value_enum, default_value_t = ForgeKind::Sim)]
+        forge: ForgeKind,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ForgeKind {
+    Sim,
+    Localgit,
 }
 
 fn print_json<T: Serialize>(value: &T) {
@@ -133,8 +144,12 @@ fn validate(file: &Path, schema_path: Option<&Path>, json_out: bool, strict: boo
     ExitCode::from(report.exit_code)
 }
 
-fn sim_run(file: &Path, json_out: bool) -> ExitCode {
-    match schlange_forge::scenario::run_file(file) {
+fn sim_run(file: &Path, json_out: bool, forge: ForgeKind) -> ExitCode {
+    let result = match forge {
+        ForgeKind::Sim => schlange_forge::scenario::run_file(file).map_err(|e| e.to_string()),
+        ForgeKind::Localgit => schlange_forge::run_file_localgit(file),
+    };
+    match result {
         Ok(report) => {
             if json_out {
                 print_json(&report);
@@ -143,7 +158,7 @@ fn sim_run(file: &Path, json_out: bool) -> ExitCode {
             }
             ExitCode::from(if report.passed { 0 } else { 1 })
         }
-        Err(e) => env_error(json_out, &e.to_string()),
+        Err(e) => env_error(json_out, &e),
     }
 }
 
@@ -319,8 +334,8 @@ fn main() -> ExitCode {
                 },
         } => validate(&file, schema.as_deref(), json, strict),
         Command::Sim {
-            command: SimCommand::Run { file, json },
-        } => sim_run(&file, json),
+            command: SimCommand::Run { file, json, forge },
+        } => sim_run(&file, json, forge),
         Command::SupportMatrix { json } => support_matrix(json),
         Command::Doctor { json, schema } => doctor(json, schema.as_deref()),
     }

@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The `localgit` forge (real git repositories via the git CLI) for tests and `sim run --forge
+# localgit`. No extra crates; the release binary leaves it out (see crates/schlange).
+default = ["localgit"]
+localgit = []
+
 [lints]
 workspace = true
 
