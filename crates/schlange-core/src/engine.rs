@@ -186,6 +186,10 @@ pub enum Decision {
         car: u64,
         number: u64,
         head_sha: String,
+        /// Direct merge: the pull request's own CI already meets the merge conditions; it
+        /// lands without a queue run (docs: merge-queue/direct-merge).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        direct: bool,
     },
     /// Close the draft pull request (and any open draft on `branch`), delete the queue branch
     /// and stop the draft's CI. Reply: `CarClosed`. Idempotent.

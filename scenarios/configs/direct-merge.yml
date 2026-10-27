@@ -1,0 +1,18 @@
+# Single-step CI (no merge_conditions), two parallel checks: in-place checks do not apply, so
+# the queue tests through draft pull requests, unless it can merge directly.
+merge_queue:
+  max_parallel_checks: 2
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = ci
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

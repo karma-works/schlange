@@ -1679,6 +1679,7 @@ pub(crate) fn expire_all(state: &mut State, out: &mut Vec<Decision>) {
                     car: c.id,
                     number,
                     head_sha,
+                    direct: false,
                 });
             }
         }
@@ -1968,12 +1969,26 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     let no_cars = train.cars.is_empty();
     let id = state.next_id();
     let pr = state.pull_requests.get(&batch[0]).cloned();
-    let in_place = in_place_allowed(rules, rule)
-        && no_cars
-        && batch.len() == 1
+    let up_to_date = pr.as_ref().is_some_and(|p| {
+        !p.behind_base && p.base_tip.as_ref() == Some(&base_sha) && p.head_tree.is_some()
+    });
+    let alone = no_cars && batch.len() == 1;
+    let in_place = in_place_allowed(rules, rule) && alone && up_to_date;
+    // Direct merge, already-up-to-date case (docs: merge-queue/direct-merge): the pull request
+    // is alone at the front, contains the base tip, the queue would test through a draft
+    // (not in place), its CI is single-step, the method is not `merge-batch`, and its own CI
+    // already meets the merge conditions. Then a queue run would test the same change on the
+    // same base again: it is checked where it is and lands. (The scope case is not built.)
+    let direct = !in_place
+        && alone
+        && up_to_date
+        && !rule.two_step()
+        && rule.merge_method.as_deref() != Some("merge-batch")
         && pr.as_ref().is_some_and(|p| {
-            !p.behind_base && p.base_tip.as_ref() == Some(&base_sha) && p.head_tree.is_some()
+            let ctx = crate::engine::context(state, p.number);
+            eval::eval_list(merge_conditions(rule), p, &ctx, &mut Vec::new()).0
         });
+    let in_place = in_place || direct;
     let mut car = Car {
         id,
         queue: queue.clone(),
@@ -2003,6 +2018,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
             car: id,
             number: pr.number,
             head_sha: pr.head_sha,
+            direct,
         });
     } else {
         let branch = branch_name(&rule.queue_branch_prefix, base, id);

@@ -1371,6 +1371,7 @@ impl<G: GitStore> SimForge<G> {
                 car,
                 number,
                 head_sha,
+                ..
             } => {
                 // Idempotent: a repeated announcement (after a restart) keeps the first record.
                 if let Some(pr) = self.prs.get(number).cloned()

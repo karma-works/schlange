@@ -1,0 +1,30 @@
+# Direct merge, already-up-to-date case (docs: merge-queue/direct-merge; critic 1abc R5): #1 is
+# alone at the front of the queue, contains the tip of main and its own CI is green, the queue
+# tests through draft pull requests (two parallel checks, so no in-place checks), its CI is
+# single-step and the merge method is squash. It merges without a draft and without a queue CI
+# run. #2 is behind main (a direct push to main while its CI runs): it takes the normal path with a
+# draft pull request.
+name: p2-direct-merge
+description: An up-to-date pull request with green CI merges directly; a behind one goes through a draft.
+config: configs/direct-merge.yml
+
+ci:
+  - check: ci
+    duration: 2m
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 10m, open: 2 }
+  - { at: 11m, push_base: { files: { hotfix.txt: "h\n" } } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_log:
+  - "car 2: merge #1 directly"
+  - "+ #2 (checks #2)"

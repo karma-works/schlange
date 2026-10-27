@@ -192,7 +192,7 @@ pub struct Simulation<G: GitStore = Repo> {
 
 pub const LIMITATIONS: [&str; 6] = [
     "merge methods other than squash, queue modes parallel/isolated, priorities, scopes: not built",
-    "skip_intermediate_results, direct merge, batch_pull_request: not built",
+    "skip_intermediate_results, direct merge behind the base (scopes), batch_pull_request: not built",
     "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
     "in place: only for an up-to-date pull request; Mergify would update it first",
     "commands backport, copy, rebase, squash, update: recognised and answered, actions not built",
@@ -257,6 +257,12 @@ fn describe(d: &Decision) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         ),
+        Decision::CheckInPlace {
+            car,
+            number,
+            direct: true,
+            ..
+        } => format!("car {car}: merge #{number} directly (up to date, its own CI green)"),
         Decision::CheckInPlace { car, number, .. } => {
             format!("car {car}: check #{number} in place")
         }
