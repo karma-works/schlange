@@ -73,6 +73,14 @@ pub struct InventoryEntry {
     pub kind: String,
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub ty: Option<String>,
+    /// A default's value (`null` included); absent for other kinds.
+    #[serde(default = "no_value")]
+    pub value: serde_json::Value,
+}
+
+/// Placeholder for an entry without a value: never "off".
+fn no_value() -> serde_json::Value {
+    serde_json::Value::String(String::new())
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -392,6 +400,7 @@ mod tests {
                     id: id.into(),
                     kind: "attr".into(),
                     ty: None,
+                    value: serde_json::Value::Null,
                 })
                 .to_vec(),
         };

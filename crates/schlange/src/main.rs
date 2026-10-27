@@ -2,7 +2,7 @@
 //! the simulated forge, the support matrix, the doctor, and `serve` (the GitHub App).
 //!
 //! Exit codes: 0 ok, 1 invalid or failed, 2 valid for Mergify but not supported (`--strict`),
-//! 3 environment problem (missing schema, unreadable file).
+//! 3 environment problem (missing schema, unreadable file), 64 usage error.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -56,6 +56,10 @@ enum Command {
         /// Skip the checks that call GitHub (the container health check uses this).
         #[arg(long)]
         offline: bool,
+        /// The configuration to check (default: `.mergify.yml` and the other configuration
+        /// names in the working directory).
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[command(flatten)]
         github: GithubArgs,
     },
@@ -323,10 +327,93 @@ struct Check {
     detail: String,
 }
 
+/// The doctor's check of the repository's configuration: the file given, or the one the
+/// configuration search finds in the working directory; validated with the schema when one is
+/// found (stages 1 to 5), without it otherwise (stages 1, 3 and 4).
+fn config_check(explicit: Option<&Path>, cwd: &Path, schema: Option<&Schema>) -> Check {
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let located = schlange_config::config_file::locate(|n| cwd.join(n).is_file());
+            if let Some(e) = located.error() {
+                return Check {
+                    name: "configuration",
+                    status: "FAIL",
+                    detail: e,
+                };
+            }
+            match located {
+                schlange_config::config_file::Located::One(n) => cwd.join(n),
+                _ => {
+                    return Check {
+                        name: "configuration",
+                        status: "SKIP",
+                        detail: format!("no configuration file in {}", cwd.display()),
+                    };
+                }
+            }
+        }
+    };
+    let shown = path.display().to_string();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return Check {
+                name: "configuration",
+                status: "FAIL",
+                detail: format!("cannot read {shown}: {e}"),
+            };
+        }
+    };
+    use schlange_config::validate::Severity;
+    let (findings, how) = match (schema, features()) {
+        (Some(s), Ok(map)) => (
+            schlange_config::validate(&shown, &text, s, &map, false).findings,
+            "",
+        ),
+        _ => (
+            schlange_config::config_file::validate_without_schema(&shown, &text),
+            " (without the Mergify schema)",
+        ),
+    };
+    let errors: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Error)
+        .map(|f| f.message.as_str())
+        .collect();
+    let unsupported = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Unsupported)
+        .count();
+    if !errors.is_empty() {
+        Check {
+            name: "configuration",
+            status: "FAIL",
+            detail: format!("{shown} is invalid{how}: {}", errors.join("; ")),
+        }
+    } else if unsupported > 0 {
+        Check {
+            name: "configuration",
+            status: "WARN",
+            detail: format!(
+                "{shown} is valid{how}; {unsupported} findings not supported by Schlange yet \
+                 (`schlange config validate {shown}` lists them)"
+            ),
+        }
+    } else {
+        Check {
+            name: "configuration",
+            status: "OK",
+            detail: format!("{shown} is valid{how}"),
+        }
+    }
+}
+
 fn doctor(
     json_out: bool,
     schema_path: Option<&Path>,
     offline: bool,
+    config: Option<&Path>,
     github: &GithubArgs,
 ) -> ExitCode {
     let mut checks = vec![Check {
@@ -346,24 +433,24 @@ fn doctor(
             for f in &map.features {
                 *by_prio.entry(format!("{:?}", f.priority)).or_default() += 1;
             }
-            let supported = map
-                .features
-                .iter()
-                .filter(|f| f.status.is_supported())
-                .count();
+            // `partial` is not "supported": only part of such a feature is built.
+            let count = |s: Status| map.features.iter().filter(|f| f.status == s).count();
             checks.push(Check {
                 name: "support-matrix",
                 status: if problems.is_empty() { "OK" } else { "FAIL" },
                 detail: if problems.is_empty() {
                     format!(
-                        "{} features ({}), {} supported; {} inventory entries",
+                        "{} features ({}): {} conformant, {} partial, {} missing; {} inventory \
+                         entries",
                         map.features.len(),
                         by_prio
                             .iter()
                             .map(|(k, v)| format!("{k} {v}"))
                             .collect::<Vec<_>>()
                             .join(", "),
-                        supported,
+                        count(Status::Conformant),
+                        count(Status::Partial),
+                        count(Status::Missing),
                         map.inventory.total
                     )
                 } else {
@@ -378,6 +465,7 @@ fn doctor(
         }),
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut loaded = None;
     checks.push(match schema::locate(schema_path, &cwd) {
         None => Check {
             name: "schema",
@@ -385,11 +473,14 @@ fn doctor(
             detail: "no Mergify schema found; `config validate` needs --schema (not embedded until its licence is cleared)".into(),
         },
         Some(p) => match Schema::load(&p) {
-            Ok(_) => Check {
-                name: "schema",
-                status: "OK",
-                detail: p.display().to_string(),
-            },
+            Ok(s) => {
+                loaded = Some(s);
+                Check {
+                    name: "schema",
+                    status: "OK",
+                    detail: p.display().to_string(),
+                }
+            }
             Err(e) => Check {
                 name: "schema",
                 status: "FAIL",
@@ -397,6 +488,7 @@ fn doctor(
             },
         },
     });
+    checks.push(config_check(config, &cwd, loaded.as_ref()));
     const GITHUB_CHECKS: [&str; 5] = [
         "github-app",
         "app-permissions",
@@ -522,8 +614,33 @@ fn serve(a: ServeArgs) -> ExitCode {
     }
 }
 
+/// Parses the command line. A usage error exits 64 (`EX_USAGE`), never 2, which means "valid
+/// but unsupported"; with `--json` among the arguments the error is JSON on stdout. Help and
+/// version print and exit 0.
+fn parse_cli() -> Result<Cli, ExitCode> {
+    Cli::try_parse().map_err(|e| {
+        use clap::error::ErrorKind;
+        if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+            let _ = e.print();
+            return ExitCode::SUCCESS;
+        }
+        if std::env::args().any(|a| a == "--json") {
+            print_json(&json!({
+                "error": e.render().to_string().trim_end(),
+                "exit_code": exit::USAGE,
+            }));
+        } else {
+            let _ = e.print();
+        }
+        ExitCode::from(exit::USAGE)
+    })
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match parse_cli() {
+        Ok(cli) => cli,
+        Err(code) => return code,
+    };
     match cli.command {
         Command::Config {
             command:
@@ -542,8 +659,9 @@ fn main() -> ExitCode {
             json,
             schema,
             offline,
+            config,
             github,
-        } => doctor(json, schema.as_deref(), offline, &github),
+        } => doctor(json, schema.as_deref(), offline, config.as_deref(), &github),
         Command::Serve {
             github,
             webhook_secret,

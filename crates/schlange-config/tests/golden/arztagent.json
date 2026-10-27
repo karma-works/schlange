@@ -10,20 +10,6 @@
       "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
       "feature": "queue-branch-protection"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.queue_branch_merge_method` is in effect but not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
-      "feature": "queue-merge-methods-other"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.update_method` is in effect but not supported by Schlange yet (feature queue-update-method, P2, missing: feature not built)",
-      "feature": "queue-update-method"
     }
   ],
   "support": [
@@ -284,13 +270,6 @@
       "supported": true
     },
     {
-      "id": "default:merge_queue.checking_label",
-      "feature": "queue-labels-comments",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
       "id": "default:merge_queue.dequeued_label",
       "feature": "queue-labels-comments",
       "priority": "P1",
@@ -333,13 +312,6 @@
       "supported": true
     },
     {
-      "id": "default:merge_queue.skip_intermediate_results",
-      "feature": "queue-speculation",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
       "id": "default:merge_queue.status_comments",
       "feature": "queue-labels-comments",
       "priority": "P1",
@@ -347,36 +319,8 @@
       "supported": true
     },
     {
-      "id": "default:pull_request_rules.actions.queue.name",
-      "feature": "action-queue",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:pull_request_rules.description",
-      "feature": "pull-request-rules",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
       "id": "default:queue_rules.allow_inplace_checks",
       "feature": "queue-draft-pr",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.allow_queue_branch_edit",
-      "feature": "queue-branch-edit",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.batch_max_failure_resolution_attempts",
-      "feature": "queue-bisection",
       "priority": "P1",
       "status": "partial",
       "supported": true
@@ -406,66 +350,11 @@
       "supported": true
     },
     {
-      "id": "default:queue_rules.commit_message_template",
-      "feature": "queue-commit-message",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.draft_bot_account",
-      "feature": "queue-bot-accounts",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.max_checks_retries",
-      "feature": "queue-checks-timeout",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.merge_bot_account",
-      "feature": "queue-bot-accounts",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.queue_branch_merge_method",
-      "feature": "queue-merge-methods-other",
-      "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
-    },
-    {
       "id": "default:queue_rules.queue_branch_prefix",
       "feature": "queue-draft-pr",
       "priority": "P1",
       "status": "partial",
       "supported": true
-    },
-    {
-      "id": "default:queue_rules.update_bot_account",
-      "feature": "queue-bot-accounts",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.update_method",
-      "feature": "queue-update-method",
-      "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
     },
     {
       "id": "enum:merge_method:squash",

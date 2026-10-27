@@ -1,4 +1,2 @@
 arztagent.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
-arztagent.yml: unsupported[support] feature queue-merge-methods-other (P2, missing): default:queue_rules.queue_branch_merge_method
-arztagent.yml: unsupported[support] feature queue-update-method (P2, missing): default:queue_rules.update_method
-arztagent.yml: valid for Mergify; 3 entries not supported by Schlange yet (--strict makes this exit 2)
+arztagent.yml: valid for Mergify; 1 entries not supported by Schlange yet (--strict makes this exit 2)

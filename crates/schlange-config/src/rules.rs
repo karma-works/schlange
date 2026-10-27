@@ -361,13 +361,26 @@ impl Rules {
                 .and_then(|a| a.as_object())
                 .and_then(|a| a.get("queue"))
                 .map(|q| q.get("name").and_then(Value::as_str).map(str::to_string));
+            // `conditions` is required: an empty list or `true` matches every pull request; a
+            // missing key or a key without a value is an invalid configuration, never "match
+            // all" (docs: workflow/rule syntax).
+            let conds = match r.get("conditions") {
+                None | Some(Value::Null) => {
+                    return Err(shape(
+                        &format!("{p}/conditions"),
+                        "a pull request rule needs `conditions` (an empty list or `true` \
+                         matches every pull request)",
+                    ));
+                }
+                Some(v) => conditions::parse_list(v, &format!("{p}/conditions"), &mut errors),
+            };
+            let name = name(r, &p)?;
+            if r.get("disabled").is_some_and(|d| !d.is_null()) {
+                continue; // a disabled rule does not run
+            }
             rules.pull_request_rules.push(PullRequestRule {
-                name: name(r, &p)?,
-                conditions: conditions::parse_list(
-                    r.get("conditions").unwrap_or(&Value::Null),
-                    &format!("{p}/conditions"),
-                    &mut errors,
-                ),
+                name,
+                conditions: conds,
                 queue,
             });
         }
@@ -656,6 +669,40 @@ mod tests {
             c.checks_timeout,
             ChecksTimeout::Fixed(60),
             "clamped to 60 s"
+        );
+    }
+
+    /// Docs (workflow/rule syntax): `conditions` is required; an empty list or `true` matches
+    /// every pull request, a missing key or a key without a value is rejected. Critic 1abc:
+    /// `serve` treated a rule without `conditions` as matching every pull request.
+    #[test]
+    fn pull_request_rule_conditions_are_required() {
+        let base = "queue_rules:\n  - name: default\npull_request_rules:\n  - name: r\n";
+        for missing in ["", "    conditions:\n"] {
+            let yaml = format!("{base}{missing}    actions:\n      queue:\n");
+            let err = Rules::from_yaml(&yaml).expect_err(&yaml);
+            assert!(err.to_string().contains("conditions"), "{err}");
+        }
+        for all in ["    conditions: []\n", "    conditions: true\n"] {
+            let yaml = format!("{base}{all}    actions:\n      queue:\n");
+            let r = Rules::from_yaml(&yaml).unwrap();
+            assert!(
+                r.pull_request_rules[0]
+                    .conditions
+                    .iter()
+                    .all(|c| *c == Condition::Always),
+                "{all}"
+            );
+        }
+        // A disabled rule does not run.
+        let yaml = format!(
+            "{base}    disabled:\n      reason: off\n    conditions: []\n    actions:\n      queue:\n"
+        );
+        assert!(
+            Rules::from_yaml(&yaml)
+                .unwrap()
+                .pull_request_rules
+                .is_empty()
         );
     }
 }

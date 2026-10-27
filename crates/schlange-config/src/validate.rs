@@ -18,6 +18,8 @@ pub mod exit {
     pub const UNSUPPORTED: u8 = 2;
     /// No schema, unreadable file or other environment problem.
     pub const ENVIRONMENT: u8 = 3;
+    /// A usage error on the command line (`EX_USAGE`).
+    pub const USAGE: u8 = 64;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

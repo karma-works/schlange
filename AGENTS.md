@@ -102,6 +102,7 @@ in `.mergify.yml` on the default branch (`config_in_repo: true`); `expect` takes
 | 1 | invalid configuration / scenario failed / doctor FAIL |
 | 2 | valid for Mergify but uses features Schlange does not support (`config validate --strict`) |
 | 3 | environment problem: no schema, unreadable file, broken scenario |
+| 64 | usage error on the command line (`EX_USAGE`); JSON on stdout with `--json` |
 
 ## Git
 

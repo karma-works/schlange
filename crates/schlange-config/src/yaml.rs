@@ -87,6 +87,18 @@ struct Recorder {
     errors: Vec<YamlError>,
     /// Depth of nested collections inside a complex (non-scalar) key; ignored.
     skip: usize,
+    /// Plain (unquoted) values that YAML 1.1 reads as booleans (`yes`, `on`, `off`, ...).
+    bools: Vec<(String, bool)>,
+}
+
+/// YAML 1.1 booleans as Mergify's YAML loader (PyYAML) resolves plain scalars; YAML 1.2, which
+/// the parser follows, knows only `true` and `false`.
+fn yaml11_bool(s: &str) -> Option<bool> {
+    match s {
+        "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Some(true),
+        "no" | "No" | "NO" | "off" | "Off" | "OFF" => Some(false),
+        _ => None,
+    }
 }
 
 impl Recorder {
@@ -155,9 +167,14 @@ impl MarkedEventReceiver for Recorder {
             return;
         }
         match ev {
-            Event::Scalar(ref value, ..) => {
+            Event::Scalar(ref value, style, ..) => {
                 if let Some(p) = self.next_slot(Some(value), mark) {
-                    self.spans.values.insert(p, Position::from(mark));
+                    self.spans.values.insert(p.clone(), Position::from(mark));
+                    if style == yaml_rust2::scanner::TScalarStyle::Plain
+                        && let Some(b) = yaml11_bool(value)
+                    {
+                        self.bools.push((p, b));
+                    }
                 }
             }
             Event::Alias(_) => {
@@ -238,11 +255,18 @@ pub fn parse(source: &str) -> Result<(Value, Spans), Vec<YamlError>> {
             message: format!("YAML value cannot be represented as JSON: {e}"),
         }]
     })?;
-    let json = if json.is_null() {
+    let mut json = if json.is_null() {
         Value::Object(Default::default())
     } else {
         json
     };
+    for (pointer, b) in &recorder.bools {
+        if let Some(slot) = json.pointer_mut(pointer)
+            && slot.is_string()
+        {
+            *slot = Value::Bool(*b);
+        }
+    }
     Ok((json, recorder.spans))
 }
 
@@ -274,6 +298,22 @@ mod tests {
                 column: 19
             })
         );
+    }
+
+    /// Mergify loads its configuration with YAML 1.1 rules: unquoted `yes`, `on`, `no`, `off`
+    /// are booleans; quoted they stay strings (critic 1abc).
+    #[test]
+    fn yaml_1_1_booleans() {
+        let (v, _) =
+            parse("a: yes\nb: 'yes'\nc: On\nd: no\ne: OFF\nf: [on, \"off\"]\ng: y\n").unwrap();
+        assert_eq!(v["a"], true);
+        assert_eq!(v["b"], "yes");
+        assert_eq!(v["c"], true);
+        assert_eq!(v["d"], false);
+        assert_eq!(v["e"], false);
+        assert_eq!(v["f"][0], true);
+        assert_eq!(v["f"][1], "off");
+        assert_eq!(v["g"], "y", "PyYAML does not read y/n as booleans");
     }
 
     #[test]

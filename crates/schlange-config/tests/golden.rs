@@ -95,3 +95,47 @@ fn arztagent_is_valid_and_strict_exit_codes() {
     let strict = validate("unsupported.yml", &unsupported, &schema, &features, true);
     assert_eq!(strict.exit_code, exit::UNSUPPORTED);
 }
+
+/// Critic 1abc: `--strict` exits 2 only when the configuration uses something Schlange does
+/// not support. A default or a value that switches a feature off is not a use; one that
+/// switches it on is.
+#[test]
+fn strict_exits_2_only_for_real_gaps() {
+    let schema = schema();
+    let features = FeatureMap::embedded().unwrap();
+    let strict = |src: &str| validate("t.yml", src, &schema, &features, true);
+    assert_eq!(strict("{}\n").exit_code, exit::VALID);
+    let off = strict("merge_queue:\n  skip_intermediate_results: false\n");
+    assert_eq!(off.exit_code, exit::VALID, "{}", off.to_text());
+    let on = strict("merge_queue:\n  skip_intermediate_results: true\n");
+    assert_eq!(on.exit_code, exit::UNSUPPORTED, "{}", on.to_text());
+    let plain = strict(
+        "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n\
+         pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
+    );
+    // Off-valued defaults (`update_method: null`, `queue_branch_merge_method: null`) are not
+    // uses. The one gap left is real: Mergify's default `branch_protection_injection_mode:
+    // queue` adds the checks branch protection requires to the queue conditions; Schlange
+    // does not read branch protection yet.
+    let gaps: Vec<&str> = plain
+        .support
+        .iter()
+        .filter(|r| !r.supported)
+        .map(|r| r.id.as_str())
+        .collect();
+    assert_eq!(
+        gaps,
+        vec!["default:queue_rules.branch_protection_injection_mode"],
+        "{}",
+        plain.to_text()
+    );
+    let none = strict(
+        "queue_rules:\n  - name: default\n    branch_protection_injection_mode: none\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n",
+    );
+    assert_eq!(
+        none.exit_code,
+        exit::UNSUPPORTED,
+        "`none` is the missing feature's own value: {}",
+        none.to_text()
+    );
+}

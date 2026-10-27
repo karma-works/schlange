@@ -30,6 +30,7 @@ pub fn collect_uses(
 
     for entry in &map.inventory.entries {
         if let Some(path) = entry.id.strip_prefix("default:")
+            && (!is_off(&entry.value) || null_chooses(path))
             && default_in_effect(config, path)
         {
             uses.entry(entry.id.clone()).or_insert(None);
@@ -86,6 +87,25 @@ fn missing_somewhere(value: &Value, segs: &[&str]) -> bool {
     }
 }
 
+/// Options whose `null` default is a choice, not "off": a merge method left unset means the
+/// repository's first allowed method (schema), which may not be the one Schlange uses.
+fn null_chooses(path: &str) -> bool {
+    path.ends_with(".merge_method") || path.ends_with(".method")
+}
+
+/// A value that leaves a feature switched off: `null`, `false`, `0`, an empty list or map. A
+/// default or an explicit option with such a value does not use the feature (value-level: an
+/// option written as `false` is not a gap, the same option written as `true` is).
+pub fn is_off(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Bool(false) => true,
+        Value::Number(n) => n.as_f64() == Some(0.0),
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.is_empty(),
+        Value::String(_) | Value::Bool(true) => false,
+    }
+}
+
 fn add(uses: &mut BTreeMap<String, Option<String>>, map: &FeatureMap, id: String, pointer: &str) {
     if map.contains(&id) {
         uses.entry(id).or_insert_with(|| Some(pointer.to_string()));
@@ -109,7 +129,9 @@ fn walk(
                     format!("{path}.{key}")
                 };
                 let child_ptr = format!("{pointer}/{}", crate::yaml::escape(key));
-                add(uses, map, format!("config:{child_path}"), &child_ptr);
+                if !is_off(child) || path.ends_with("actions") {
+                    add(uses, map, format!("config:{child_path}"), &child_ptr);
+                }
                 if path.ends_with("actions") {
                     add(uses, map, format!("action:{key}"), &child_ptr);
                 }
