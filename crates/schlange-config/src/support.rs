@@ -131,6 +131,9 @@ fn walk(
                 let child_ptr = format!("{pointer}/{}", crate::yaml::escape(key));
                 if !is_off(child) || path.ends_with("actions") {
                     add(uses, map, format!("config:{child_path}"), &child_ptr);
+                } else if child.is_null() && null_chooses(&child_path) {
+                    // An explicit `null` merge method is the default: the repository picks.
+                    add(uses, map, format!("default:{child_path}"), &child_ptr);
                 }
                 if path.ends_with("actions") {
                     add(uses, map, format!("action:{key}"), &child_ptr);

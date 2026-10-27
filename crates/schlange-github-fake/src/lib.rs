@@ -560,24 +560,39 @@ impl St {
     }
 
     /// Whether `tree` was built by the queue (via `POST /merges`) on a branch whose open
-    /// draft pull request has only green checks (I0 on the fake).
+    /// draft pull request has only green checks, or is the head tree of an open pull request
+    /// whose own checks are all green (checked in place, or merged directly because it was up
+    /// to date; KONZEPT I0 "or in place") (I0 on the fake).
     pub fn tree_tested_green(&self, tree: &str) -> bool {
-        self.queue_commits.iter().any(|(sha, branch)| {
-            self.repo.tree_id_of(sha) == tree
-                && self.prs.values().any(|p| {
-                    p.open
-                        && p.head_ref == *branch
-                        && p.user == format!("{}[bot]", self.cfg.app_slug)
-                        && self.repo.is_ancestor(sha, &p.head_sha)
-                        && {
-                            let runs = self.latest_runs(&p.head_sha);
-                            !runs.is_empty()
-                                && runs
-                                    .values()
-                                    .all(|r| r.conclusion.as_deref() == Some("success"))
-                        }
-                })
-        })
+        let in_place = self.prs.values().any(|p| {
+            p.open
+                && p.user != format!("{}[bot]", self.cfg.app_slug)
+                && self.repo.tree_id_of(&p.head_sha) == tree
+                && {
+                    let runs = self.latest_runs(&p.head_sha);
+                    !runs.is_empty()
+                        && runs
+                            .values()
+                            .all(|r| r.conclusion.as_deref() == Some("success"))
+                }
+        });
+        in_place
+            || self.queue_commits.iter().any(|(sha, branch)| {
+                self.repo.tree_id_of(sha) == tree
+                    && self.prs.values().any(|p| {
+                        p.open
+                            && p.head_ref == *branch
+                            && p.user == format!("{}[bot]", self.cfg.app_slug)
+                            && self.repo.is_ancestor(sha, &p.head_sha)
+                            && {
+                                let runs = self.latest_runs(&p.head_sha);
+                                !runs.is_empty()
+                                    && runs
+                                        .values()
+                                        .all(|r| r.conclusion.as_deref() == Some("success"))
+                            }
+                    })
+            })
     }
 }
 
