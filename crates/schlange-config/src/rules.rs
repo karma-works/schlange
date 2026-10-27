@@ -2,6 +2,8 @@
 //! conditions and queue options, the `merge_queue` settings, and pull request rules with the
 //! `queue` action. Defaults follow Mergify's schema (`queue_rules.*`, `merge_queue.*`).
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use crate::conditions::{self, Condition, ParseError};
@@ -53,6 +55,54 @@ pub struct QueueRule {
     pub queue_branch_prefix: String,
     pub allow_queue_branch_edit: bool,
     pub max_checks_retries: u32,
+    /// `commit_message_format`; `None` (the default) leaves title and body to the forge.
+    pub commit_message_format: Option<CommitMessageFormat>,
+    /// The deprecated Jinja2 `commit_message_template`. Schlange does not render it (the
+    /// support matrix reports it as unsupported); it is kept so a host can see it is set.
+    pub commit_message_template: Option<String>,
+}
+
+/// `commit_message_format.title`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleFormat {
+    /// The forge builds the title (GitHub: the repository's squash merge setting).
+    Inherit,
+    /// The pull request's title, with ` (#<number>)` appended.
+    PrTitle,
+}
+
+/// `commit_message_format.body`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyFormat {
+    Inherit,
+    PrBody,
+    Empty,
+}
+
+/// One `commit_message_format.trailers` entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Trailer {
+    CoAuthoredBy,
+    ApprovedBy,
+    MergedBy,
+}
+
+/// `commit_message_format` of a queue rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitMessageFormat {
+    pub title: TitleFormat,
+    pub body: BodyFormat,
+    pub trailers: Vec<Trailer>,
+}
+
+impl Default for CommitMessageFormat {
+    fn default() -> Self {
+        CommitMessageFormat {
+            title: TitleFormat::Inherit,
+            body: BodyFormat::Inherit,
+            trailers: vec![],
+        }
+    }
 }
 
 impl QueueRule {
@@ -70,6 +120,8 @@ impl QueueRule {
             queue_branch_prefix: "mergify/merge-queue/".into(),
             allow_queue_branch_edit: false,
             max_checks_retries: 0,
+            commit_message_format: None,
+            commit_message_template: None,
         }
     }
 
@@ -89,6 +141,25 @@ pub struct MergeQueueSettings {
     /// `always` (default) or `never`.
     pub reset_on_external_merge: String,
     pub skip_intermediate_results: bool,
+    /// Label while queued; default `queued`, `None` for no label.
+    pub queued_label: Option<String>,
+    /// Label while the queue checks the pull request in a batch; default none.
+    pub checking_label: Option<String>,
+    /// Label after it left the queue without being merged; default `dequeued`.
+    pub dequeued_label: Option<String>,
+    pub status_comments: StatusComments,
+    /// The "queue this pull request" and "requeue" checkboxes; default on.
+    pub queue_controls_comment: bool,
+}
+
+/// `merge_queue.status_comments`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusComments {
+    /// Every queue event (the default).
+    All,
+    /// Only final outcomes: merged or dequeued.
+    Outcomes,
+    None,
 }
 
 impl Default for MergeQueueSettings {
@@ -98,6 +169,62 @@ impl Default for MergeQueueSettings {
             mode: "serial".into(),
             reset_on_external_merge: "always".into(),
             skip_intermediate_results: false,
+            queued_label: Some("queued".into()),
+            checking_label: None,
+            dequeued_label: Some("dequeued".into()),
+            status_comments: StatusComments::All,
+            queue_controls_comment: true,
+        }
+    }
+}
+
+/// The commands `commands_restrictions` names, in the schema's order.
+pub const COMMANDS: [&str; 9] = [
+    "backport", "copy", "dequeue", "queue", "rebase", "refresh", "requeue", "squash", "update",
+];
+
+/// Who may run a command: a condition list per command. Starts from the documented defaults
+/// (`sender-permission >= write`; for `rebase`, `refresh`, `squash` and `update` also the
+/// author of a pull request that comes from a fork); the configuration replaces them per
+/// command. An empty list (`conditions: true`) lets anyone run the command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandsRestrictions {
+    pub by_command: BTreeMap<String, Vec<Condition>>,
+}
+
+impl CommandsRestrictions {
+    /// The documented default restriction of a command.
+    pub fn default_for(command: &str) -> Vec<Condition> {
+        let value = match command {
+            "rebase" | "refresh" | "squash" | "update" => serde_json::json!([{ "or": [
+                "sender-permission >= write",
+                { "and": ["sender = {{author}}", "from-fork"] }
+            ] }]),
+            _ => serde_json::json!(["sender-permission >= write"]),
+        };
+        let mut errors = Vec::new();
+        let list = conditions::parse_list(&value, "", &mut errors);
+        debug_assert!(errors.is_empty(), "{errors:?}");
+        list
+    }
+
+    /// The conditions for a command; a command the schema does not name gets the default of
+    /// `queue` (write permission).
+    pub fn conditions(&self, command: &str) -> Vec<Condition> {
+        self.by_command
+            .get(command)
+            .cloned()
+            .unwrap_or_else(|| Self::default_for("queue"))
+    }
+}
+
+impl Default for CommandsRestrictions {
+    fn default() -> Self {
+        CommandsRestrictions {
+            by_command: COMMANDS
+                .iter()
+                .map(|c| (c.to_string(), Self::default_for(c)))
+                .collect(),
         }
     }
 }
@@ -115,6 +242,7 @@ pub struct Rules {
     pub merge_queue: MergeQueueSettings,
     pub queue_rules: Vec<QueueRule>,
     pub pull_request_rules: Vec<PullRequestRule>,
+    pub commands_restrictions: CommandsRestrictions,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -174,6 +302,56 @@ impl Rules {
             }
             if let Some(b) = mq.get("skip_intermediate_results").and_then(Value::as_bool) {
                 s.skip_intermediate_results = b;
+            }
+            for (key, slot) in [
+                ("queued_label", &mut s.queued_label),
+                ("checking_label", &mut s.checking_label),
+                ("dequeued_label", &mut s.dequeued_label),
+            ] {
+                match mq.get(key) {
+                    None => {}
+                    Some(Value::Null) => *slot = None,
+                    Some(Value::String(l)) => *slot = Some(l.clone()),
+                    Some(_) => {
+                        return Err(shape(
+                            &format!("/merge_queue/{key}"),
+                            "must be a label or null",
+                        ));
+                    }
+                }
+            }
+            match mq.get("status_comments").and_then(Value::as_str) {
+                None => {}
+                Some("all") => s.status_comments = StatusComments::All,
+                Some("outcomes") => s.status_comments = StatusComments::Outcomes,
+                Some("none") => s.status_comments = StatusComments::None,
+                Some(_) => {
+                    return Err(shape(
+                        "/merge_queue/status_comments",
+                        "must be all, outcomes or none",
+                    ));
+                }
+            }
+            if let Some(b) = mq.get("queue_controls_comment").and_then(Value::as_bool) {
+                s.queue_controls_comment = b;
+            }
+        }
+        if let Some(cr) = value.get("commands_restrictions").filter(|v| !v.is_null()) {
+            let Some(map) = cr.as_object() else {
+                return Err(shape("/commands_restrictions", "must be a mapping"));
+            };
+            for (command, restriction) in map {
+                let p = format!("/commands_restrictions/{command}/conditions");
+                let conds = match restriction.get("conditions") {
+                    // `true` is shorthand for an empty list: anyone may run the command.
+                    Some(Value::Bool(true)) => Vec::new(),
+                    Some(v) => conditions::parse_list(v, &p, &mut errors),
+                    None => CommandsRestrictions::default_for(command),
+                };
+                rules
+                    .commands_restrictions
+                    .by_command
+                    .insert(command.clone(), conds);
             }
         }
         for (i, r) in array(value, "pull_request_rules")?.iter().enumerate() {
@@ -286,7 +464,56 @@ fn queue_options(q: &Value, p: &str, rule: &mut QueueRule) -> Result<(), RulesEr
     if let Some(n) = uint(q, "max_checks_retries", p)? {
         rule.max_checks_retries = n;
     }
+    if let Some(f) = q.get("commit_message_format").filter(|v| !v.is_null()) {
+        rule.commit_message_format = Some(commit_message_format(
+            f,
+            &format!("{p}/commit_message_format"),
+        )?);
+    }
+    rule.commit_message_template = q
+        .get("commit_message_template")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Ok(())
+}
+
+fn commit_message_format(v: &Value, p: &str) -> Result<CommitMessageFormat, RulesError> {
+    let mut f = CommitMessageFormat::default();
+    match v.get("title").and_then(Value::as_str) {
+        None | Some("inherit") => {}
+        Some("pr-title") => f.title = TitleFormat::PrTitle,
+        Some(_) => return Err(shape(&format!("{p}/title"), "must be inherit or pr-title")),
+    }
+    match v.get("body").and_then(Value::as_str) {
+        None | Some("inherit") => {}
+        Some("pr-body") => f.body = BodyFormat::PrBody,
+        Some("empty") => f.body = BodyFormat::Empty,
+        Some(_) => {
+            return Err(shape(
+                &format!("{p}/body"),
+                "must be inherit, pr-body or empty",
+            ));
+        }
+    }
+    if let Some(list) = v.get("trailers").and_then(Value::as_array) {
+        for (i, t) in list.iter().enumerate() {
+            let trailer = match t.as_str() {
+                Some("co-authored-by") => Trailer::CoAuthoredBy,
+                Some("approved-by") => Trailer::ApprovedBy,
+                Some("merged-by") => Trailer::MergedBy,
+                _ => {
+                    return Err(shape(
+                        &format!("{p}/trailers/{i}"),
+                        "must be co-authored-by, approved-by or merged-by",
+                    ));
+                }
+            };
+            if !f.trailers.contains(&trailer) {
+                f.trailers.push(trailer);
+            }
+        }
+    }
+    Ok(f)
 }
 
 fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value], RulesError> {
@@ -383,6 +610,37 @@ mod tests {
         assert_eq!(q.queue_branch_prefix, "mergify/merge-queue/");
         assert!(q.two_step());
         assert_eq!(rules.merge_queue, MergeQueueSettings::default());
+        // Arztagent restricts `queue` to two humans; the other commands keep their defaults.
+        let r = &rules.commands_restrictions;
+        assert!(matches!(&r.conditions("queue")[..], [Condition::Or(v)] if v.len() == 2));
+        assert_eq!(
+            r.conditions("dequeue"),
+            CommandsRestrictions::default_for("dequeue")
+        );
+        assert!(
+            matches!(&r.conditions("refresh")[..], [Condition::Or(v)] if v.len() == 2),
+            "refresh also accepts the author of a fork pull request"
+        );
+    }
+
+    #[test]
+    fn cosmetics_restrictions_and_commit_format() {
+        let src = "merge_queue:\n  queued_label: null\n  checking_label: checking\n  status_comments: outcomes\n  queue_controls_comment: false\n\
+                   commands_restrictions:\n  refresh:\n    conditions: true\n  queue:\n    conditions:\n      - sender = a\n\
+                   queue_rules:\n  - name: q\n    commit_message_format:\n      title: pr-title\n      body: empty\n      trailers: [merged-by, co-authored-by, merged-by]\n";
+        let r = Rules::from_yaml(src).unwrap();
+        assert_eq!(r.merge_queue.queued_label, None);
+        assert_eq!(r.merge_queue.checking_label.as_deref(), Some("checking"));
+        assert_eq!(r.merge_queue.dequeued_label.as_deref(), Some("dequeued"));
+        assert_eq!(r.merge_queue.status_comments, StatusComments::Outcomes);
+        assert!(!r.merge_queue.queue_controls_comment);
+        assert!(r.commands_restrictions.conditions("refresh").is_empty());
+        assert_eq!(r.commands_restrictions.conditions("queue").len(), 1);
+        let f = r.queue_rules[0].commit_message_format.clone().unwrap();
+        assert_eq!(f.title, TitleFormat::PrTitle);
+        assert_eq!(f.body, BodyFormat::Empty);
+        assert_eq!(f.trailers, vec![Trailer::MergedBy, Trailer::CoAuthoredBy]);
+        assert!(Rules::from_yaml("merge_queue:\n  status_comments: loud\n").is_err());
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::engine::{
     CarPr, Closing, Decision, DequeueReason, EntryStatus, LandError, LandedCommit, Outcome, Sample,
     State, dequeue, fingerprint, short,
 };
-use crate::eval::{self, Context};
+use crate::eval;
 use crate::model::{CheckRun, Conclusion, PullRequest, Time};
 use crate::reasons::{self as code, static_code};
 
@@ -806,7 +806,6 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
     }
     let conds = merge_conditions(rule);
     let check_conds: Vec<Condition> = conds.iter().filter(|c| uses_checks(c)).cloned().collect();
-    let ctx = Context::default();
     let mut checks_ok = true;
     let mut attr_fail = Vec::new();
     let mut views = Vec::new();
@@ -814,6 +813,7 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
         let Some(view) = car_view(state, car, n) else {
             return Verdict::Pending;
         };
+        let ctx = crate::engine::context(state, n);
         for (k, c) in conds.iter().enumerate() {
             if !uses_checks(c) && !eval::eval(c, &view, &ctx, &mut Vec::new()) {
                 attr_fail.push((
@@ -987,7 +987,7 @@ fn dequeue_for_attributes(
 ) {
     for (n, text) in list {
         if let Some(pr) = state.pull_requests.get(&n) {
-            let fp = fingerprint(pr);
+            let fp = fingerprint(rules, pr);
             state.blocked_attrs.insert(n, fp);
         }
         dequeue(
@@ -1298,6 +1298,22 @@ fn front(
                     state.trains.get_mut(base).expect("train").cars[0].status =
                         CarStatus::Landing { since: now };
                     wake(state, now + REPLY_TIMEOUT, out);
+                    let format =
+                        rule(rules, &car.queue).and_then(|r| r.commit_message_format.as_ref());
+                    let messages = car
+                        .own
+                        .iter()
+                        .filter_map(|n| {
+                            let pr = state.pull_requests.get(n)?;
+                            let by = state
+                                .queued
+                                .get(n)
+                                .and_then(|e| e.by.clone())
+                                .unwrap_or_else(|| state.host.bot.clone());
+                            let m = crate::message::compose(format, pr, &by);
+                            (!m.is_inherited()).then_some(m)
+                        })
+                        .collect();
                     out.push(Decision::Land {
                         car: car.id,
                         queue: car.queue.clone(),
@@ -1310,6 +1326,7 @@ fn front(
                             .cloned()
                             .collect(),
                         expected_tree: tree,
+                        messages,
                     });
                     false
                 }

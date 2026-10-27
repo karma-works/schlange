@@ -21,8 +21,12 @@ use serde::{Deserialize, Serialize};
 
 use schlange_config::rules::Rules;
 
-use crate::eval::{self, Context};
-use crate::model::{CheckRun, PullRequest, Time};
+pub use crate::control::PendingCommand;
+pub use crate::cosmetics::Cosmetic;
+use crate::eval::{self, Context, QueueAttrs};
+pub use crate::message::CommitMessage;
+use crate::model::{CheckRun, Comment, PullRequest, Time};
+use crate::protections::Hold;
 use crate::queue::{self, Train};
 pub use crate::reasons::DequeueReason;
 use crate::reasons::{self as code, blocks_requeue};
@@ -62,7 +66,7 @@ pub enum LandError {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     PullRequestOpened {
-        pull_request: PullRequest,
+        pull_request: Box<PullRequest>,
     },
     PullRequestSynchronized {
         number: u64,
@@ -143,6 +147,14 @@ pub enum Event {
     },
     /// The engine restarted from its journal; outstanding requests are in doubt.
     Restarted,
+    /// Comments on pull requests, new or edited: commands and ticked checkboxes. A comment the
+    /// engine has handled before is ignored, so a reconciliation may hand over all of them.
+    Comments {
+        comments: Vec<Comment>,
+    },
+    /// The configuration on the default branch changed: every pull request is evaluated again
+    /// under the new rules (MQ-19).
+    ConfigurationChanged,
 }
 
 /// What the engine decided. The forge adapter turns decisions into side effects.
@@ -207,6 +219,10 @@ pub enum Decision {
         expected_base_sha: String,
         prs: Vec<CarPr>,
         expected_tree: String,
+        /// Squash commit messages the queue decided (`commit_message_format`); a pull request
+        /// without an entry gets the forge's own message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<CommitMessage>,
     },
     /// The pull request landed on the base.
     Merged {
@@ -218,6 +234,9 @@ pub enum Decision {
     Halt { base_branch: String, reason: String },
     /// Deliver `Tick` at this virtual time.
     WakeAt { at: Time },
+    /// Labels, comments, reactions and reported checks. Never read back as a condition and
+    /// sent with the lowest priority, so it never delays landing.
+    Cosmetic { cosmetic: Cosmetic },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +264,33 @@ pub struct QueueEntry {
     /// Start of the batch wait (`batch_max_wait_time`).
     pub waiting_since: Time,
     pub status: EntryStatus,
+    /// Who queued it with a command or checkbox; `None` when a rule queued it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// What the host tells the engine about where it runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Host {
+    /// Unix time of the engine's time 0 (0 when the clock is Unix time, as on GitHub).
+    #[serde(default)]
+    pub epoch: Time,
+    /// The queue app's login (`<slug>[bot]`), for the `merged-by` trailer.
+    #[serde(default)]
+    pub bot: String,
+    /// `owner/name` of the repository.
+    #[serde(default)]
+    pub repository: String,
+}
+
+impl Default for Host {
+    fn default() -> Self {
+        Host {
+            epoch: 0,
+            bot: "schlange[bot]".into(),
+            repository: String::new(),
+        }
+    }
 }
 
 /// How a queued pull request ended up, the last time it left the queue.
@@ -304,6 +350,28 @@ pub struct State {
     /// had then: not queued again until they change.
     #[serde(default)]
     pub blocked_attrs: BTreeMap<u64, String>,
+    #[serde(default)]
+    pub host: Host,
+    /// Comments handled, by id and edit version.
+    #[serde(default)]
+    pub seen_comments: BTreeSet<(u64, String)>,
+    /// `queue` commands waiting for the queue conditions.
+    #[serde(default)]
+    pub pending_commands: BTreeMap<u64, PendingCommand>,
+    /// Dequeued (or a pending command cancelled) with `dequeue`: no rule queues it again until
+    /// a `queue` command.
+    #[serde(default)]
+    pub manual_dequeued: BTreeSet<u64>,
+    /// Why each open pull request that is not queued is held (protections, a waiting command,
+    /// a manual dequeue), for `pr explain`.
+    #[serde(default)]
+    pub holds: BTreeMap<u64, Vec<Hold>>,
+    /// The code of the last time a pull request's queue checks ended (`queue-dequeue-reason`).
+    #[serde(default)]
+    pub checks_ended: BTreeMap<u64, String>,
+    /// What the queue last showed on pull requests (labels, comments, checks).
+    #[serde(default)]
+    pub cosmetics: crate::cosmetics::Applied,
 }
 
 impl State {
@@ -321,7 +389,50 @@ pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, V
     next.wakeups.retain(|t| *t > now);
     let token = apply(&mut next, rules, event, &mut out);
     process(&mut next, rules, now, token, &mut out);
+    for d in &out {
+        if let Decision::Dequeue { number, reason, .. }
+        | Decision::ChecksEnded { number, reason, .. } = d
+            && let Some(c) = reason.code
+        {
+            next.checks_ended.insert(*number, c.to_string());
+        }
+    }
+    crate::cosmetics::update(&mut next, rules, &mut out);
     (next, out)
+}
+
+/// The evaluation context of a pull request: the queue attributes and the clock.
+pub fn context(state: &State, number: u64) -> Context {
+    let epoch = state.host.epoch as i64;
+    let queue = state.queued.get(&number).map(|e| {
+        let position = state
+            .queued
+            .values()
+            .filter(|o| o.base == e.base && o.queue == e.queue && o.seq < e.seq)
+            .count() as i64;
+        let started = match e.status {
+            EntryStatus::InCar { car } => state
+                .trains
+                .get(&e.base)
+                .and_then(|t| t.cars.iter().find(|c| c.id == car))
+                .map(|c| epoch + c.started as i64),
+            _ => None,
+        };
+        QueueAttrs {
+            name: e.queue.clone(),
+            position,
+            queued_at: epoch + e.since as i64,
+            merge_started_at: started,
+        }
+    });
+    Context {
+        sender: None,
+        sender_permission: None,
+        now: epoch + state.now as i64,
+        repository: state.host.repository.clone(),
+        queue,
+        dequeue_reason: state.checks_ended.get(&number).cloned(),
+    }
 }
 
 fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision>) -> Option<u64> {
@@ -332,7 +443,7 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         Event::PullRequestOpened { pull_request } => {
             state
                 .pull_requests
-                .insert(pull_request.number, pull_request.clone());
+                .insert(pull_request.number, (**pull_request).clone());
         }
         Event::PullRequestSynchronized {
             number,
@@ -424,6 +535,12 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         Event::Failed { decision, .. } => queue::side_effect_failed(state, decision, out),
         Event::CarClosed { car } => queue::car_closed(state, *car),
         Event::Restarted => queue::expire_all(state, out),
+        Event::Comments { comments } => crate::control::comments(state, rules, comments, out),
+        Event::ConfigurationChanged => {
+            // Attributes and evaluation errors were judged under the old rules.
+            state.blocked_attrs.clear();
+            state.reported_errors.clear();
+        }
     }
     None
 }
@@ -484,6 +601,172 @@ pub(crate) fn dequeue(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+fn enqueue(
+    state: &mut State,
+    number: u64,
+    base: &str,
+    head_sha: &str,
+    queue: &str,
+    rule: &str,
+    by: Option<String>,
+    now: Time,
+    out: &mut Vec<Decision>,
+) {
+    let seq = state.next_id();
+    state.queued.insert(
+        number,
+        QueueEntry {
+            queue: queue.to_string(),
+            rule: rule.to_string(),
+            since: now,
+            head_sha: head_sha.to_string(),
+            base: base.to_string(),
+            seq,
+            waiting_since: now,
+            status: EntryStatus::Waiting,
+            by,
+        },
+    );
+    state
+        .trains
+        .entry(base.to_string())
+        .or_insert_with(|| Train::new(base));
+    out.push(Decision::Enqueue {
+        number,
+        queue: queue.to_string(),
+        rule: rule.to_string(),
+    });
+}
+
+/// A pending `queue` command: cancelled by a foreign push or a close, entered once the queue
+/// conditions hold and nothing holds the pull request.
+fn pending_command(
+    state: &mut State,
+    rules: &Rules,
+    pr: &PullRequest,
+    holds: &mut Vec<Hold>,
+    now: Time,
+    out: &mut Vec<Decision>,
+) {
+    let number = pr.number;
+    let Some(p) = state.pending_commands.get(&number).cloned() else {
+        return;
+    };
+    let say = |out: &mut Vec<Decision>, body: String| {
+        crate::cosmetics::emit(
+            out,
+            Cosmetic::Reply {
+                number,
+                to: p.comment,
+                body,
+            },
+        );
+    };
+    if pr.closed || pr.merged {
+        state.pending_commands.remove(&number);
+        say(
+            out,
+            format!(
+                "The queue command by @{} is cancelled: the pull request was closed.",
+                p.by
+            ),
+        );
+        return;
+    }
+    if pr.head_sha != p.head_sha && !pr.head_by_queue {
+        state.pending_commands.remove(&number);
+        let pusher = pr
+            .head_pusher
+            .as_ref()
+            .map(|u| format!("@{u}"))
+            .unwrap_or_else(|| "someone".into());
+        say(
+            out,
+            format!(
+                "The queue command by @{} is cancelled: {pusher} pushed new commits ({}) after \
+                 it. The command vouched for the commits it saw; review the new ones and comment \
+                 `@mergifyio queue` again.",
+                p.by,
+                short(&pr.head_sha)
+            ),
+        );
+        return;
+    }
+    if let Some(t) = &p.queue
+        && !rules.queue_rules.iter().any(|q| &q.name == t)
+    {
+        state.pending_commands.remove(&number);
+        say(
+            out,
+            format!(
+                "The queue command by @{} is cancelled: queue `{t}` no longer exists.",
+                p.by
+            ),
+        );
+        return;
+    }
+    if !holds.is_empty() {
+        holds.push(Hold::wait(
+            "queue-command",
+            format!(
+                "a queue command by @{} waits until the holds above clear",
+                p.by
+            ),
+        ));
+        return;
+    }
+    let ctx = context(state, number);
+    let mut errors = Vec::new();
+    let target = rules.queue_rules.iter().find(|q| {
+        p.queue.as_ref().is_none_or(|t| *t == q.name)
+            && eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors).0
+    });
+    match target {
+        Some(q) => {
+            let name = q.name.clone();
+            state.pending_commands.remove(&number);
+            enqueue(
+                state,
+                number,
+                &pr.base,
+                &pr.head_sha,
+                &name,
+                &format!("queue command by @{}", p.by),
+                Some(p.by.clone()),
+                now,
+                out,
+            );
+        }
+        None => holds.push(Hold::wait(
+            "queue-command",
+            format!(
+                "a queue command by @{} waits for the queue conditions of {}",
+                p.by,
+                p.queue
+                    .as_ref()
+                    .map(|q| format!("`{q}`"))
+                    .unwrap_or_else(|| "any queue".into())
+            ),
+        )),
+    }
+    report_errors(state, number, errors, out);
+}
+
+fn report_errors(
+    state: &mut State,
+    number: u64,
+    errors: Vec<eval::EvalError>,
+    out: &mut Vec<Decision>,
+) {
+    for e in errors {
+        let message = e.to_string();
+        if state.reported_errors.insert((number, message.clone())) {
+            out.push(Decision::EvaluationError { number, message });
+        }
+    }
+}
+
 fn evaluate_pull_request(
     state: &mut State,
     rules: &Rules,
@@ -491,11 +774,21 @@ fn evaluate_pull_request(
     now: Time,
     out: &mut Vec<Decision>,
 ) {
-    let ctx = Context::default();
+    let ctx = context(state, pr.number);
     let mut errors = Vec::new();
     let number = pr.number;
+    let open = !pr.closed && !pr.merged;
+    let (mut holds, wake) = if open {
+        crate::protections::protections(state, pr, now)
+    } else {
+        (vec![], None)
+    };
+    if let Some(at) = wake {
+        queue::wake(state, at, out);
+    }
 
     if let Some(entry) = state.queued.get(&number).cloned() {
+        state.holds.remove(&number);
         let rule = rules.queue_rules.iter().find(|q| q.name == entry.queue);
         if pr.merged && queue::landing_in_flight(state, number) {
             // The queue's own landing, seen before its reply: the reply (or the read that
@@ -544,27 +837,52 @@ fn evaluate_pull_request(
                 )),
                 Some(q) => {
                     let (ok, results) = eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors);
-                    (!ok).then(|| {
-                        DequeueReason::assumed(
+                    if !ok {
+                        Some(DequeueReason::assumed(
                             code::PR_DEQUEUED,
                             format!(
                                 "queue_conditions no longer hold (condition {} is false)",
                                 results.iter().position(|r| !r).map_or(0, |i| i + 1)
                             ),
-                        )
-                    })
+                        ))
+                    } else {
+                        holds.first().map(|h| {
+                            DequeueReason::assumed(
+                                code::PR_DEQUEUED,
+                                format!("a merge protection holds it ({}): {}", h.kind, h.text),
+                            )
+                        })
+                    }
                 }
             }
         };
         if let Some(reason) = reason {
             dequeue(state, rules, number, reason, out);
         }
-    } else if !pr.closed && !pr.merged {
+    } else if open {
+        if state.pending_commands.contains_key(&number) {
+            pending_command(state, rules, pr, &mut holds, now, out);
+            store_holds(state, number, holds);
+            report_errors(state, number, errors, out);
+            return;
+        }
+        if state.manual_dequeued.contains(&number) {
+            holds.push(Hold::wait(
+                "manually-dequeued",
+                "dequeued with a command; it rejoins only with a new `queue` command",
+            ));
+            store_holds(state, number, holds);
+            return;
+        }
+        store_holds(state, number, holds.clone());
+        if !holds.is_empty() {
+            return;
+        }
         if state.blocked_heads.get(&number) == Some(&pr.head_sha) {
             return;
         }
         state.blocked_heads.remove(&number);
-        if state.blocked_attrs.get(&number) == Some(&fingerprint(pr)) {
+        if state.blocked_attrs.get(&number) == Some(&fingerprint(rules, pr)) {
             return;
         }
         state.blocked_attrs.remove(&number);
@@ -580,47 +898,51 @@ fn evaluate_pull_request(
                 }
                 let (ok, _) = eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors);
                 if ok {
-                    let seq = state.next_id();
-                    state.queued.insert(
+                    enqueue(
+                        state,
                         number,
-                        QueueEntry {
-                            queue: q.name.clone(),
-                            rule: rule.name.clone(),
-                            since: now,
-                            head_sha: pr.head_sha.clone(),
-                            base: pr.base.clone(),
-                            seq,
-                            waiting_since: now,
-                            status: EntryStatus::Waiting,
-                        },
+                        &pr.base,
+                        &pr.head_sha,
+                        &q.name,
+                        &rule.name,
+                        None,
+                        now,
+                        out,
                     );
-                    state
-                        .trains
-                        .entry(pr.base.clone())
-                        .or_insert_with(|| Train::new(&pr.base));
-                    out.push(Decision::Enqueue {
-                        number,
-                        queue: q.name.clone(),
-                        rule: rule.name.clone(),
-                    });
                     break 'rules;
                 }
             }
         }
+    } else {
+        state.holds.remove(&number);
     }
-    for e in errors {
-        let message = e.to_string();
-        if state.reported_errors.insert((number, message.clone())) {
-            out.push(Decision::EvaluationError { number, message });
-        }
+    report_errors(state, number, errors, out);
+}
+
+fn store_holds(state: &mut State, number: u64, holds: Vec<Hold>) {
+    if holds.is_empty() {
+        state.holds.remove(&number);
+    } else {
+        state.holds.insert(number, holds);
     }
 }
 
 /// The attributes of a pull request that its own merge conditions can read, as one string.
-pub(crate) fn fingerprint(pr: &PullRequest) -> String {
+/// The queue's own labels are left out: the queue changing them must not count as the pull
+/// request changing.
+pub(crate) fn fingerprint(rules: &Rules, pr: &PullRequest) -> String {
+    let own = crate::cosmetics::queue_labels(rules);
+    let labels: Vec<&String> = pr.labels.iter().filter(|l| !own.contains(*l)).collect();
     format!(
-        "{}|{}|{}|{}|{:?}|{:?}|{:?}",
-        pr.head_sha, pr.base, pr.title, pr.draft, pr.labels, pr.files, pr.dependabot_update_types
+        "{}|{}|{}|{}|{:?}|{:?}|{:?}|{}",
+        pr.head_sha,
+        pr.base,
+        pr.title,
+        pr.draft,
+        labels,
+        pr.files,
+        pr.dependabot_update_types,
+        pr.body
     )
 }
 
@@ -668,7 +990,7 @@ mod tests {
             &s,
             &rules,
             &Event::PullRequestOpened {
-                pull_request: pr(1, "bot"),
+                pull_request: Box::new(pr(1, "bot")),
             },
             0,
         );
@@ -708,12 +1030,21 @@ mod tests {
             &State::default(),
             &rules,
             &Event::PullRequestOpened {
-                pull_request: pr(2, "human"),
+                pull_request: Box::new(pr(2, "human")),
             },
             0,
         );
         let (s, d) = step(&s, &rules, &green(2, 1), 5);
-        assert!(d.is_empty());
+        assert!(only_queue_decisions(d.clone()).is_empty());
         assert!(s.queued.is_empty());
+        // Ready for the queue, but no rule queues it: the checkbox comment, once.
+        assert!(matches!(
+            &d[..],
+            [Decision::Cosmetic {
+                cosmetic: Cosmetic::ControlsComment { number: 2, .. }
+            }]
+        ));
+        let (_, d) = step(&s, &rules, &green(2, 1), 6);
+        assert!(d.is_empty(), "{d:?}");
     }
 }

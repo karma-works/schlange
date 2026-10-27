@@ -1,9 +1,24 @@
 {"type":"enqueue","number":1,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":["queued"],"remove":[]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn."}}
 {"type":"enqueue","number":2,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":2,"add":["queued"],"remove":[]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn."}}
 {"type":"build_car","car":"<car1>","queue":"default","base_branch":"main","branch":"mergify/merge-queue/<branch1>","base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"},{"number":2,"head_sha":"<sha3>"}],"own":[1,2]}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked in draft pull request #3."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked in draft pull request #3."}}
 {"type":"close_car","car":"<car1>","branch":"mergify/merge-queue/<branch1>","draft":3}
 {"type":"build_car","car":"<car2>","queue":"default","base_branch":"main","branch":"mergify/merge-queue/<branch2>","base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"own":[1]}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nPart of a failed batch that is being split to find the cause."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nPart of a failed batch that is being split to find the cause."}}
 {"type":"dequeue","number":2,"queue":"default","reason":{"code":"CHECKS_FAILED","text":"every split without it passed: merge conditions are false on #3; failed: ci-ok"}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked in draft pull request #4."}}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":2,"add":["dequeued"],"remove":["queued"]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · left the queue\n\nReason: CHECKS_FAILED: every split without it passed: merge conditions are false on #3; failed: ci-ok\n\n- [ ] Put this pull request back into the queue <!-- schlange:box:requeue -->"}}
 {"type":"land","car":"<car2>","queue":"default","base_branch":"main","expected_base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"expected_tree":"<sha4>"}
 {"type":"close_car","car":"<car2>","branch":"mergify/merge-queue/<branch2>","draft":4}
-{"type":"merged","number":1,"queue":"default","sha":"<sha2>"}
+{"type":"merged","number":1,"queue":"default","sha":"<sha5>"}
+{"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":[],"remove":["queued"]}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · merged\n\nMerged by the queue as 001dfa5."}}

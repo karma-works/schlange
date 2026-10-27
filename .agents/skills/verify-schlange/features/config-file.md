@@ -3,7 +3,7 @@ id: config-file
 title: "Find and load the configuration file"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory: []
 problems:
   - "MQ-19"
@@ -19,10 +19,19 @@ A configuration change inside a pull request takes effect only once it is merged
 
 ## Sub-features
 
-- `search-order`: the allowed file names are searched in a fixed order, the first hit wins.
-- `default-branch-only`: the configuration in a pull request's head never evaluates that pull request.
-- `two-files`: more than one configuration file is a configuration error.
-- `re-evaluate`: after a configuration change is merged, every open pull request is evaluated again.
+- `search-order`: built (`schlange_config::config_file::NAMES`): `.mergify.yml`, `.mergify.yaml`,
+  `.mergify/config.yml`, `.mergify/config.yaml`, `.github/mergify.yml`, `.github/mergify.yaml`.
+- `default-branch-only`: built. `serve` reads the default branch at every reconciliation; the
+  simulation (scenario option `config_in_repo`) after every step. A pull request's own copy never
+  evaluates it.
+- `two-files`: built. More than one file is an error (status `config_error`, the log); the last
+  good configuration stays in use. In a pull request it fails the configuration check.
+- `re-evaluate`: built. A changed configuration is loaded and `ConfigurationChanged` makes the
+  engine evaluate every pull request again (attribute blocks and reported errors are dropped).
+  On GitHub the configuration is read again on a push to the default branch and at every
+  reconciliation (a lost push webhook delays the change until the next pass).
+- `invalid`: a configuration that does not load keeps the last good one and is reported.
+- `extends`: missing (feature `config-extends`).
 
 ## How to get to it (user POV)
 
@@ -35,8 +44,9 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **CLI.** Locally: `schlange config validate <file>` checks one file; the search in a repository is not built yet.
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Scenario.** `target/release/schlange sim run scenarios/p1-config-changed.yaml` → #2 (which drops `-label = halt` and carries `halt`) waits until the label goes (MQ-52); after it lands, `config  the configuration on the default branch changed; using it` and #3 (labelled `halt`) is queued (MQ-19).
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands a_changed_configuration_is_checked_and_applies_only_once_merged two_configuration_files_are_an_error_and_the_last_good_one_stays`.
+- **Unit tests.** `cargo test -p schlange-config config_file`.
 
 ## Gotchas
 

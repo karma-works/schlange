@@ -53,6 +53,10 @@ pub struct Expectation {
     /// Dequeue reason code (`CHECKS_FAILED` …) of the last dequeue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// At the end it is held for this reason: a hold kind (`depends-on`, `merge-after`,
+    /// `configuration-changed`, `queue-command`, `manually-dequeued`) or text in the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// A scenario, from YAML (`scenario`) or the Rust DSL (`dsl`).
@@ -80,6 +84,19 @@ pub struct Scenario {
     pub flake_seed: u64,
     /// Virtual time after which the run counts as not settling (I2).
     pub max_time: Time,
+    /// Accounts and where the configuration lives.
+    pub setup: Setup,
+}
+
+/// Repository settings of a scenario beyond its files.
+#[derive(Clone, Debug, Default)]
+pub struct Setup {
+    /// Repository permission per login (`sender-permission`); others have `none`.
+    pub permissions: BTreeMap<String, String>,
+    /// The configuration is a file on the default branch (`.mergify.yml` unless the base files
+    /// hold another configuration name): it is read from there after every step, and a change
+    /// that lands applies to every pull request (MQ-19).
+    pub config_in_repo: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +156,8 @@ pub struct RunReport {
     /// What this phase does not build.
     pub limitations: Vec<&'static str>,
     pub steps: u64,
+    /// Why open pull requests are held at the end (built-in protections, commands).
+    pub holds: BTreeMap<u64, Vec<schlange_core::protections::Hold>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,9 +195,27 @@ pub const LIMITATIONS: [&str; 6] = [
     "skip_intermediate_results, direct merge, batch_pull_request: not built",
     "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
     "in place: only for an up-to-date pull request; Mergify would update it first",
-    "labels and status comments on pull requests: not built",
-    "commands (queue, dequeue, requeue): not built",
+    "commands backport, copy, rebase, squash, update: recognised and answered, actions not built",
+    "commit_message_template (deprecated): not rendered; IANA time zones in Merge-After: not supported",
 ];
+
+/// Unix time of the simulation's time 0 (2026-01-01T00:00:00Z), for `Merge-After` and the
+/// timestamp attributes.
+pub const SIM_EPOCH: Time = 1_767_225_600;
+
+/// The repository name the simulation uses for `Depends-On`.
+pub const SIM_REPOSITORY: &str = "sim/repo";
+
+fn fresh_state() -> State {
+    State {
+        host: schlange_core::engine::Host {
+            epoch: SIM_EPOCH,
+            bot: crate::sim::BOT.into(),
+            repository: SIM_REPOSITORY.into(),
+        },
+        ..State::default()
+    }
+}
 
 fn describe(d: &Decision) -> String {
     match d {
@@ -262,6 +299,7 @@ fn describe(d: &Decision) -> String {
             reason,
         } => format!("HALT queue of {base_branch}: {reason}"),
         Decision::WakeAt { at } => format!("wake at {}", clock(*at)),
+        Decision::Cosmetic { cosmetic } => cosmetic.describe(),
     }
 }
 
@@ -342,6 +380,7 @@ impl<G: GitStore> Simulation<G> {
             s.flake_seed,
         );
         forge.real_ci = real_ci;
+        forge.permissions = s.setup.permissions.clone();
         for d in &s.prs {
             forge.define(d.clone());
         }
@@ -351,7 +390,7 @@ impl<G: GitStore> Simulation<G> {
         forge.set_faults(faults);
         Simulation {
             forge,
-            state: State::default(),
+            state: fresh_state(),
             checker: Checker::new(),
             log: Vec::new(),
             steps: 0,
@@ -400,7 +439,7 @@ impl<G: GitStore> Simulation<G> {
     fn crash_now(&mut self) {
         self.crashes += 1;
         self.crashed = true;
-        self.state = State::default();
+        self.state = fresh_state();
         let lost = self.forge.drop_engine_inbox();
         self.log(
             "crash",
@@ -444,6 +483,73 @@ impl<G: GitStore> Simulation<G> {
         let known = self.known_branches();
         let ev = self.wire.snapshot_all(&self.forge, &known);
         self.feed(rules, ev, Some("full read after restart".into()));
+        if self.crashed {
+            return;
+        }
+        let comments = self.forge.all_comments();
+        if !comments.is_empty() {
+            self.feed(rules, Event::Comments { comments }, None);
+        }
+    }
+
+    /// Hands every comment to the engine (it ignores those it has seen).
+    fn deliver_comments(&mut self, rules: &Rules) -> bool {
+        let comments = self.forge.all_comments();
+        if comments.is_empty() {
+            return false;
+        }
+        self.deliver(rules, Event::Comments { comments }, None)
+    }
+
+    /// With the configuration in the repository: reads it from the default branch and, when it
+    /// changed, switches to it and tells the engine (MQ-19). A configuration that does not
+    /// load (two files, invalid text) is logged and the last good one stays.
+    fn reload_config(&mut self, rules: &mut Rules, text: &mut Option<String>) {
+        let Some(tip) = self.forge.read_branch(&self.forge.default_branch.clone()) else {
+            return;
+        };
+        let tree = self.forge.repo.tree(&tip);
+        let located = schlange_config::config_file::locate(|p| tree.contains_key(p));
+        let new = match &located {
+            schlange_config::config_file::Located::One(p) => tree.get(*p).cloned(),
+            schlange_config::config_file::Located::None => None,
+            schlange_config::config_file::Located::Several { .. } => {
+                let e = located.error().unwrap_or_default();
+                if self.log.last().is_none_or(|l| l.text != e) {
+                    self.log("config", e);
+                }
+                return;
+            }
+        };
+        let Some(new) = new else {
+            return;
+        };
+        if text.as_ref() == Some(&new) {
+            return;
+        }
+        match Rules::from_yaml(&new) {
+            Ok(r) => {
+                let first = text.is_none();
+                *text = Some(new);
+                if first {
+                    *rules = r;
+                    return;
+                }
+                *rules = r;
+                self.log(
+                    "config",
+                    "the configuration on the default branch changed; using it".into(),
+                );
+                self.deliver(rules, Event::ConfigurationChanged, None);
+            }
+            Err(e) => {
+                *text = Some(new);
+                self.log(
+                    "config",
+                    format!("the configuration on the default branch does not load, keeping the last good one: {e}"),
+                );
+            }
+        }
     }
 
     /// `feed`, then restarts after a crash (as often as needed).
@@ -508,6 +614,9 @@ impl<G: GitStore> Simulation<G> {
                 for (_, note) in std::mem::take(&mut self.forge.notes) {
                     self.log("fault", note);
                 }
+                for (_, n, m) in std::mem::take(&mut self.forge.landed_messages) {
+                    self.log("message", format!("#{n}: {}", m.replace('\n', " ⏎ ")));
+                }
                 for r in replies {
                     if let Some(text) = describe_reply(&r) {
                         self.log("reply", text);
@@ -530,7 +639,12 @@ impl<G: GitStore> Simulation<G> {
     }
 
     pub fn run(&mut self, s: &Scenario) {
-        let rules = &s.rules;
+        let mut owned_rules = s.rules.clone();
+        let mut config_text: Option<String> = None;
+        if s.setup.config_in_repo {
+            self.reload_config(&mut owned_rules, &mut config_text);
+        }
+        let rules = &mut owned_rules;
         let initial = self.wire.snapshot_all(&self.forge, &[]);
         self.deliver(rules, initial, None);
         let mut rounds = 0;
@@ -555,6 +669,9 @@ impl<G: GitStore> Simulation<G> {
                                 self.wire
                                     .snapshot(&self.forge, &[], std::slice::from_ref(b), None)
                             }
+                            Hint::Comment(id) => Event::Comments {
+                                comments: self.forge.read_comment(*id).into_iter().collect(),
+                            },
                         };
                         self.deliver(rules, ev, Some(text));
                     }
@@ -565,6 +682,7 @@ impl<G: GitStore> Simulation<G> {
                         let known = self.known_branches();
                         let ev = self.wire.snapshot_all(&self.forge, &known);
                         self.deliver(rules, ev, Some("reconciliation pass".into()));
+                        self.deliver_comments(rules);
                     }
                     Item::Reply(ev) => {
                         if let Some(text) = describe_reply(&ev) {
@@ -572,6 +690,9 @@ impl<G: GitStore> Simulation<G> {
                         }
                         self.deliver(rules, *ev, None);
                     }
+                }
+                if s.setup.config_in_repo {
+                    self.reload_config(rules, &mut config_text);
                 }
                 self.checker.after_step(&self.forge, &self.state, rules);
             }
@@ -581,7 +702,8 @@ impl<G: GitStore> Simulation<G> {
             // Quiescent: a final reconciliation reads everything once more.
             let known = self.known_branches();
             let ev = self.wire.snapshot_all_fresh(&self.forge, &known);
-            let acted = self.deliver(rules, ev, Some("final reconciliation".into()));
+            let mut acted = self.deliver(rules, ev, Some("final reconciliation".into()));
+            acted |= self.deliver_comments(rules);
             self.checker.after_step(&self.forge, &self.state, rules);
             rounds += 1;
             if (!acted && !self.forge.has_work()) || rounds > 100 {
@@ -695,6 +817,21 @@ fn check_expectation<G: GitStore>(sim: &Simulation<G>, e: &Expectation) -> Expec
         };
         ok &= last == Some(code.as_str());
     }
+    let mut actual = actual;
+    if let Some(h) = &e.held {
+        let holds = sim.state.holds.get(&e.pr).cloned().unwrap_or_default();
+        ok &= holds
+            .iter()
+            .any(|x| x.kind == *h || x.text.contains(h.as_str()));
+        actual = format!(
+            "{actual}; held: [{}]",
+            holds
+                .iter()
+                .map(|x| format!("{}: {}", x.kind, x.text))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
     ExpectationResult {
         expected: e.clone(),
         actual,
@@ -801,6 +938,7 @@ pub fn run_with<G: GitStore, E>(
                 queue: Some(format!("merged order {order:?}")),
                 state: None,
                 reason: None,
+                held: None,
             },
             actual: format!("{:?}", perfect.merged_order),
             ok: &perfect.merged_order == order,
@@ -821,6 +959,7 @@ pub fn run_with<G: GitStore, E>(
                     queue: Some(format!("{} has {path} = {content:?}", s.base)),
                     state: None,
                     reason: None,
+                    held: None,
                 },
                 ok: actual.as_deref() == Some(content.as_str()),
                 actual: format!("{actual:?}"),
@@ -836,6 +975,7 @@ pub fn run_with<G: GitStore, E>(
                 queue: Some(format!("log contains {needle:?}")),
                 state: None,
                 reason: None,
+                held: None,
             },
             actual: if found { "found" } else { "missing" }.into(),
             ok: found,
@@ -865,6 +1005,7 @@ pub fn run_with<G: GitStore, E>(
         disturbed,
         limitations: LIMITATIONS.to_vec(),
         steps: perfect.steps,
+        holds: perfect.state.holds.clone(),
     })
 }
 
@@ -892,6 +1033,19 @@ impl RunReport {
             out.push_str(&format!("  #{n}: {o}\n"));
         }
         out.push_str(&format!("  merged in order: {:?}\n", self.merged_order));
+        if !self.holds.is_empty() {
+            out.push_str("\nheld\n");
+            for (n, hs) in &self.holds {
+                for h in hs {
+                    out.push_str(&format!(
+                        "  #{n}: {}{}: {}\n",
+                        h.kind,
+                        if h.failed { " (fails)" } else { "" },
+                        h.text
+                    ));
+                }
+            }
+        }
         out.push_str("\nexpectations\n");
         for e in &self.expectations {
             let what = if e.expected.pr == 0 {

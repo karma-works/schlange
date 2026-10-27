@@ -11,8 +11,8 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 
 | Path | What |
 |---|---|
-| `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map |
-| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation |
+| `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`) |
+| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`) |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit), configuration validation, doctor checks, permission list |
 | `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
@@ -57,6 +57,12 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
    tests and agents never call api.github.com, register apps or use real tokens.
 8. **Core without side effects.** `schlange-core` does no I/O. Side effects go through a forge
    adapter (`sim` → `localgit` → `forgejo` → `github`).
+9. **Cosmetics never gate landing.** Labels, comments, reactions and reported checks are
+   `Decision::Cosmetic`: never read back as a condition (the queue's own labels are left out of
+   the attributes that can block a pull request), sent by the GitHub adapter with the lowest
+   priority. The texts are Schlange's own, never Mergify's.
+10. **Every hold has a reason.** Whatever keeps an open pull request out of the queue (a
+   protection, a waiting command, a manual dequeue) is a `Hold` in `State::holds`.
 
 ## Commands
 
@@ -74,11 +80,14 @@ SCHLANGE_LOCALGIT_PBT_CASES=50 cargo test --release -p schlange-forge --test loc
 cargo run -q -p schlange --features localgit -- sim run --forge localgit scenarios/p1-bisection.yaml
 cargo test -p schlange-github-fake                                      # schlange serve against the fake GitHub over HTTP
 SCHLANGE_GH_PBT_CASES=50 cargo test -p schlange-github-fake --test properties   # long property run on the fake GitHub
+cargo test -p schlange-github-fake --test e2e_commands                  # commands, checkboxes, labels, protections, commit messages
+cargo test -p schlange-core --test commands --test command_parser       # engine-level commands and the fuzzed parser
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 
 Golden files: `UPDATE_GOLDEN=1 cargo test -p schlange-config --test golden` (validator),
-`UPDATE_GOLDEN=1 cargo test -p schlange-forge --test scenarios` (scenario event logs) and
+`UPDATE_GOLDEN=1 cargo test -p schlange-forge --test scenarios` (scenario event logs),
+`UPDATE_GOLDEN=1 cargo test -p schlange-core --test commit_messages` (squash messages) and
 `UPDATE_GOLDEN=1 cargo test -p schlange-github-fake --test golden_decisions` (the engine's
 decisions against the fake GitHub), then review the diff.
 
@@ -109,6 +118,12 @@ Security notes:
   `crates/schlange-github/src/api.rs` for the guards and the trade-off.
 - Tests never use real tokens; the fake GitHub's test key is in
   `crates/schlange-github-fake/fixtures/`.
+
+Scenarios can comment (`comment: {pr, by, body}`), tick the queue's checkboxes
+(`tick: {pr, by, checkbox: queue|requeue}`), push as someone else (`push: {pr, by}`), edit the
+description (`edit_body`), give logins permissions (`permissions:`) and keep the configuration
+in `.mergify.yml` on the default branch (`config_in_repo: true`); `expect` takes
+`held: <kind or text>`. The simulation's time 0 is 2026-01-01T00:00:00Z.
 
 ## Exit codes of `schlange`
 

@@ -210,3 +210,38 @@ fn installation_tokens_are_downscoped() {
     assert_eq!(perms["contents"], "write");
     t.shutdown();
 }
+
+/// Commands are deduplicated by comment id and version in the engine state, which the journal
+/// persists: a command comment delivered again after a restart (a redelivery with a new
+/// delivery id) is not run a second time.
+#[test]
+fn command_dedup_survives_a_restart() {
+    const BY_COMMAND: &str = "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\n\
+                              pull_request_rules:\n  - name: bots\n    conditions:\n      - author = bot\n    actions:\n      queue:\n";
+    let mut t = Tester::new(BY_COMMAND)
+        .ci(CiRule::success("quick", CiOn::PullRequest))
+        .persistent()
+        .start();
+    t.permission("alice", "write");
+    let pr = t.open_pr("carol").file("c.txt", "c\n").create();
+    let cmd = t.pr(pr).comment("alice", "@mergifyio queue");
+    t.pr(pr).wait_queued();
+    let acks = |t: &schlange_github_fake::tester::Running| {
+        t.gh.reactions()
+            .iter()
+            .filter(|(c, u, _)| *c == cmd && u == "schlange[bot]")
+            .count()
+    };
+    t.wait_until("acknowledged", |t| acks(t) == 1);
+    t.stop_service();
+    t.start_service();
+    t.gh.resend_comment(cmd);
+    t.settle();
+    assert_eq!(acks(&t), 1, "the command ran again after the restart");
+    let log = t.decisions();
+    assert!(
+        !log.iter().any(|d| d.contains("\"enqueue\"")),
+        "queued again by the redelivered command: {log:?}"
+    );
+    t.shutdown();
+}

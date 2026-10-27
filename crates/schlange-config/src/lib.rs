@@ -11,6 +11,7 @@
 //! [`rules`] gives the engine a typed view of queue rules and pull request rules.
 
 pub mod conditions;
+pub mod config_file;
 pub mod features;
 pub mod rules;
 pub mod schema;

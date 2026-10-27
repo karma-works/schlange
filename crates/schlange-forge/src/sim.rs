@@ -18,8 +18,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use schlange_core::engine::{CarPr, LandError, LandedCommit, short};
-use schlange_core::model::{CheckRun, Conclusion, PullRequest, Time};
+use schlange_core::engine::{CarPr, CommitMessage, Cosmetic, LandError, LandedCommit, short};
+use schlange_core::model::{
+    CheckRun, Comment, Conclusion, Dependency, DependencyState, PullRequest, Time,
+};
 use schlange_core::{Decision, Event};
 
 use crate::ci::{CiScript, Rng, keyed_unit};
@@ -56,6 +58,53 @@ pub struct PrDef {
     pub dependabot_update_types: Vec<String>,
     /// CI on the pull request itself (per-PR overrides already applied).
     pub scripts: Vec<CiScript>,
+    /// The description (`Depends-On`, `Merge-After`).
+    pub body: String,
+    /// Opened from a fork.
+    pub fork: bool,
+    /// Logins whose review approves it.
+    pub approvals: Vec<String>,
+}
+
+impl PrDef {
+    /// A pull request by `author` on `main` changing `files`, without CI.
+    pub fn new(number: u64, author: &str, files: Vec<(String, String)>) -> Self {
+        PrDef {
+            number,
+            author: author.to_string(),
+            title: format!("change {number}"),
+            base: "main".into(),
+            draft: false,
+            labels: BTreeSet::new(),
+            files,
+            dependabot_update_types: vec![],
+            scripts: vec![],
+            body: String::new(),
+            fork: false,
+            approvals: vec![],
+        }
+    }
+}
+
+/// Which checkbox a person ticks in the queue's comments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckBox {
+    /// "Add this pull request to the merge queue" in the controls comment.
+    Queue,
+    /// "Put this pull request back into the queue" in the status comment.
+    Requeue,
+}
+
+/// A comment as the simulated forge keeps it.
+#[derive(Clone, Debug)]
+pub struct SimComment {
+    pub id: u64,
+    pub number: u64,
+    pub author: String,
+    pub body: String,
+    pub version: u64,
+    pub last_editor: String,
+    pub head_sha: String,
 }
 
 /// Things a scenario does to the forge at a point in time.
@@ -93,6 +142,29 @@ pub enum Action {
     MergeManually(u64),
     /// Someone pushes to the queue branch that checks this pull request (MQ-08).
     PushQueueBranch(u64),
+    /// A push to the pull request by someone else than its author.
+    PushAs {
+        number: u64,
+        by: String,
+        files: Vec<(String, String)>,
+    },
+    /// Someone comments on the pull request.
+    Comment {
+        number: u64,
+        by: String,
+        body: String,
+    },
+    /// Someone ticks a checkbox in one of the queue's comments.
+    Tick {
+        number: u64,
+        by: String,
+        checkbox: CheckBox,
+    },
+    /// The description is edited.
+    EditBody {
+        number: u64,
+        body: String,
+    },
 }
 
 /// Webhook faults. All probabilities are per delivery.
@@ -157,6 +229,8 @@ pub struct CiTiming {
 pub enum Hint {
     PullRequest(u64),
     Branch(String),
+    /// A comment was created or edited.
+    Comment(u64),
 }
 
 /// What the forge hands to the runner, in time order.
@@ -270,6 +344,31 @@ pub struct SimForge<G: GitStore = Repo> {
     pub dropped: u64,
     pub duplicated: u64,
     pub ci_timing: CiTiming,
+    /// The default branch (configuration and the configuration check apply to it).
+    pub default_branch: String,
+    /// Repository permissions per login (`sender-permission`); unknown logins have `none`.
+    pub permissions: BTreeMap<String, String>,
+    pub comments: BTreeMap<u64, SimComment>,
+    next_comment: u64,
+    /// Reactions the queue made: comment id and content.
+    pub reactions: Vec<(u64, String)>,
+    /// The queue's own comments per pull request: status and controls comment ids.
+    status_comments: BTreeMap<u64, u64>,
+    controls_comments: BTreeMap<u64, u64>,
+    /// Checks the queue reported on pull requests (built-in protections): number, head, name,
+    /// success. Kept apart from CI check runs, as GitHub's reads leave out the app's own runs.
+    pub protection_checks: Vec<(u64, String, String, bool)>,
+    /// Commit authors per pull request (`Name <email>`) and messages, in order.
+    commit_log: BTreeMap<u64, Vec<(String, String)>>,
+    /// Who pushed each pull request's head.
+    pushers: BTreeMap<u64, String>,
+    /// Squash commit messages the forge wrote, for the log: time, number, message.
+    pub landed_messages: Vec<(Time, u64, String)>,
+}
+
+/// `Name <email>` of a simulated account.
+pub fn sim_identity(login: &str) -> String {
+    format!("{login} <{login}@users.noreply.example>")
 }
 
 impl SimForge<Repo> {
@@ -316,6 +415,170 @@ impl<G: GitStore> SimForge<G> {
             dropped: 0,
             duplicated: 0,
             ci_timing: CiTiming::default(),
+            default_branch: base.to_string(),
+            permissions: BTreeMap::new(),
+            comments: BTreeMap::new(),
+            next_comment: 0,
+            reactions: Vec::new(),
+            status_comments: BTreeMap::new(),
+            controls_comments: BTreeMap::new(),
+            protection_checks: Vec::new(),
+            commit_log: BTreeMap::new(),
+            pushers: BTreeMap::new(),
+            landed_messages: Vec::new(),
+        }
+    }
+
+    /// A comment as the engine sees it (with the sender's permission now).
+    pub fn read_comment(&self, id: u64) -> Option<Comment> {
+        let c = self.comments.get(&id)?;
+        Some(Comment {
+            id: c.id,
+            number: c.number,
+            author: c.author.clone(),
+            sender: c.last_editor.clone(),
+            body: c.body.clone(),
+            edited: c.version > 0,
+            version: c.version.to_string(),
+            sender_permission: Some(
+                self.permissions
+                    .get(&c.last_editor)
+                    .cloned()
+                    .unwrap_or_else(|| "none".into()),
+            ),
+            by_queue: c.author == BOT,
+            head_sha: Some(c.head_sha.clone()),
+        })
+    }
+
+    /// Every comment (for reconciliation).
+    pub fn all_comments(&self) -> Vec<Comment> {
+        self.comments
+            .keys()
+            .filter_map(|id| self.read_comment(*id))
+            .collect()
+    }
+
+    fn add_comment(&mut self, number: u64, author: &str, body: String) -> u64 {
+        self.next_comment += 1;
+        let id = self.next_comment;
+        let head_sha = self
+            .prs
+            .get(&number)
+            .map(|p| p.head_sha.clone())
+            .unwrap_or_default();
+        self.comments.insert(
+            id,
+            SimComment {
+                id,
+                number,
+                author: author.to_string(),
+                body,
+                version: 0,
+                last_editor: author.to_string(),
+                head_sha,
+            },
+        );
+        id
+    }
+
+    /// The text of the queue's own comment on a pull request (status or controls).
+    pub fn queue_comment(&self, number: u64, checkbox: CheckBox) -> Option<&str> {
+        let map = match checkbox {
+            CheckBox::Queue => &self.controls_comments,
+            CheckBox::Requeue => &self.status_comments,
+        };
+        map.get(&number)
+            .and_then(|id| self.comments.get(id))
+            .map(|c| c.body.as_str())
+    }
+
+    /// Comments on a pull request (bodies, oldest first).
+    pub fn comments_on(&self, number: u64) -> Vec<&SimComment> {
+        self.comments
+            .values()
+            .filter(|c| c.number == number)
+            .collect()
+    }
+
+    /// The forge's own squash message ("inherit"): title `<title> (#n)`; body one `* <message>`
+    /// line per commit when the pull request has more than one commit, else empty.
+    fn inherited_message(&self, number: u64) -> (String, String) {
+        let pr = &self.prs[&number];
+        let log = self.commit_log.get(&number).cloned().unwrap_or_default();
+        let body = if log.len() > 1 {
+            log.iter()
+                .map(|(_, m)| format!("* {m}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        };
+        (format!("{} (#{number})", pr.title), body)
+    }
+
+    fn apply_cosmetic(&mut self, c: &Cosmetic) {
+        match c {
+            Cosmetic::Labels {
+                number,
+                add,
+                remove,
+            } => {
+                let Some(p) = self.prs.get_mut(number) else {
+                    return;
+                };
+                let before = p.labels.clone();
+                p.labels.extend(add.iter().cloned());
+                for l in remove {
+                    p.labels.remove(l);
+                }
+                if p.labels != before {
+                    self.emit(
+                        Hint::PullRequest(*number),
+                        format!("#{number} labeled by the queue"),
+                    );
+                }
+            }
+            Cosmetic::StatusComment { number, body }
+            | Cosmetic::ControlsComment { number, body } => {
+                let status = matches!(c, Cosmetic::StatusComment { .. });
+                let existing = if status {
+                    self.status_comments.get(number)
+                } else {
+                    self.controls_comments.get(number)
+                }
+                .copied();
+                match existing.and_then(|id| self.comments.get_mut(&id)) {
+                    Some(sc) => {
+                        sc.body = body.clone();
+                        sc.version += 1;
+                        sc.last_editor = BOT.to_string();
+                    }
+                    None => {
+                        let id = self.add_comment(*number, BOT, body.clone());
+                        if status {
+                            self.status_comments.insert(*number, id);
+                        } else {
+                            self.controls_comments.insert(*number, id);
+                        }
+                    }
+                }
+            }
+            Cosmetic::Reply { number, body, .. } => {
+                self.add_comment(*number, BOT, body.clone());
+            }
+            Cosmetic::React {
+                comment, content, ..
+            } => self.reactions.push((*comment, content.clone())),
+            Cosmetic::ProtectionCheck {
+                number,
+                head_sha,
+                name,
+                ok,
+                ..
+            } => self
+                .protection_checks
+                .push((*number, head_sha.clone(), name.clone(), *ok)),
         }
     }
 
@@ -674,7 +937,15 @@ impl<G: GitStore> SimForge<G> {
                 pr.draft = def.draft;
                 pr.labels = def.labels.clone();
                 pr.dependabot_update_types = def.dependabot_update_types.clone();
+                pr.body = def.body.clone();
+                pr.from_fork = def.fork;
+                pr.approved_by = def.approvals.clone();
                 self.prs.insert(n, pr);
+                self.commit_log.insert(
+                    n,
+                    vec![(sim_identity(&def.author), format!("{} (#{n})", def.title))],
+                );
+                self.pushers.insert(n, def.author.clone());
                 self.emit(Hint::PullRequest(n), format!("#{n} opened"));
                 self.start_ci(n, false);
                 let files: Vec<&str> = def.files.iter().map(|(p, _)| p.as_str()).collect();
@@ -691,6 +962,14 @@ impl<G: GitStore> SimForge<G> {
                 )
             }
             Action::Push { number, files } => {
+                let by = self
+                    .prs
+                    .get(&number)
+                    .map(|p| p.author.clone())
+                    .unwrap_or_default();
+                self.act(Action::PushAs { number, by, files })
+            }
+            Action::PushAs { number, by, files } => {
                 let Some(pr) = self.prs.get(&number).cloned() else {
                     return format!("push to unknown #{number}");
                 };
@@ -718,9 +997,70 @@ impl<G: GitStore> SimForge<G> {
                 );
                 self.repo.update_ref(&pr.head_ref, &pr.head_sha, &head).ok();
                 self.prs.get_mut(&number).expect("pr").head_sha = head.clone();
+                self.commit_log
+                    .entry(number)
+                    .or_default()
+                    .push((sim_identity(&by), format!("push {k} to #{number}")));
+                self.pushers.insert(number, by.clone());
                 self.emit(Hint::PullRequest(number), format!("#{number} synchronize"));
                 self.start_ci(number, false);
-                format!("#{number} pushed, head {}", short(&head))
+                if by == pr.author {
+                    format!("#{number} pushed, head {}", short(&head))
+                } else {
+                    format!("#{number} pushed by {by}, head {}", short(&head))
+                }
+            }
+            Action::Comment { number, by, body } => {
+                if !self.prs.contains_key(&number) {
+                    return format!("comment on unknown #{number}");
+                }
+                let id = self.add_comment(number, &by, body.clone());
+                self.emit(Hint::Comment(id), format!("#{number} comment {id} by {by}"));
+                format!(
+                    "{by} commented on #{number}: {}",
+                    body.lines().next().unwrap_or("")
+                )
+            }
+            Action::Tick {
+                number,
+                by,
+                checkbox,
+            } => {
+                let map = match checkbox {
+                    CheckBox::Queue => &self.controls_comments,
+                    CheckBox::Requeue => &self.status_comments,
+                };
+                let Some(id) = map.get(&number).copied() else {
+                    return format!(
+                        "#{number} has no queue comment with a checkbox; nothing ticked"
+                    );
+                };
+                let head = self
+                    .prs
+                    .get(&number)
+                    .map(|p| p.head_sha.clone())
+                    .unwrap_or_default();
+                let c = self.comments.get_mut(&id).expect("comment");
+                // The person vouches for the head they see when ticking.
+                c.head_sha = head;
+                if !c.body.contains("- [ ]") {
+                    return format!("#{number}: the queue's comment has no open checkbox");
+                }
+                c.body = c.body.replacen("- [ ]", "- [x]", 1);
+                c.version += 1;
+                c.last_editor = by.clone();
+                self.emit(
+                    Hint::Comment(id),
+                    format!("#{number} comment {id} edited by {by}"),
+                );
+                format!("{by} ticked the {checkbox:?} checkbox on #{number}")
+            }
+            Action::EditBody { number, body } => {
+                if let Some(p) = self.prs.get_mut(&number) {
+                    p.body = body;
+                }
+                self.emit(Hint::PullRequest(number), format!("#{number} edited"));
+                format!("#{number} description edited")
             }
             Action::Label { number, label } => {
                 if let Some(p) = self.prs.get_mut(&number) {
@@ -845,6 +1185,39 @@ impl<G: GitStore> SimForge<G> {
             pr.base_tip = Some(tip);
         }
         pr.head_tree = Some(self.repo.tree_id_of(&pr.head_sha));
+        if pr.author == BOT {
+            return Some(pr);
+        }
+        pr.commit_authors = self
+            .commit_log
+            .get(&n)
+            .map(|l| l.iter().map(|(a, _)| a.clone()).collect())
+            .unwrap_or_default();
+        pr.head_pusher = self.pushers.get(&n).cloned();
+        // Depends-On, resolved against this repository's pull requests.
+        let (refs, _) = schlange_core::protections::depends_on(&pr.body);
+        pr.dependencies = refs
+            .iter()
+            .filter(|r| r.repo.is_none())
+            .map(|r| Dependency {
+                reference: r.full(""),
+                state: match self.prs.get(&r.number) {
+                    Some(p) if p.merged => DependencyState::Merged,
+                    Some(p) if p.closed => DependencyState::Closed,
+                    Some(_) => DependencyState::Open,
+                    None => DependencyState::Missing,
+                },
+            })
+            .collect();
+        // The configuration check, for pull requests against the default branch.
+        if pr.base == self.default_branch {
+            let head_tree = self.repo.tree(&pr.head_sha);
+            pr.config_change = schlange_config::config_file::assess_change(
+                &pr.files,
+                |p| head_tree.get(p).cloned(),
+                schlange_config::config_file::validate_without_schema,
+            );
+        }
         Some(pr)
     }
 
@@ -1094,8 +1467,9 @@ impl<G: GitStore> SimForge<G> {
                 base_branch,
                 expected_base_sha,
                 prs,
+                messages,
                 ..
-            } => vec![self.land(*car, queue, base_branch, expected_base_sha, prs)],
+            } => vec![self.land(*car, queue, base_branch, expected_base_sha, prs, messages)],
             Decision::WakeAt { at } => {
                 let at = (*at).max(self.now());
                 self.push_pending(at, Pending::Tick);
@@ -1107,6 +1481,10 @@ impl<G: GitStore> SimForge<G> {
             | Decision::EvaluationError { .. }
             | Decision::Merged { .. }
             | Decision::Halt { .. } => vec![],
+            Decision::Cosmetic { cosmetic } => {
+                self.apply_cosmetic(cosmetic);
+                vec![]
+            }
         }
     }
 
@@ -1117,6 +1495,7 @@ impl<G: GitStore> SimForge<G> {
         base_branch: &str,
         expected_base: &str,
         prs: &[CarPr],
+        messages: &[CommitMessage],
     ) -> Event {
         let before: Vec<PullRequest> = prs
             .iter()
@@ -1144,7 +1523,20 @@ impl<G: GitStore> SimForge<G> {
                 error = Some(LandError::BaseMoved { actual: tip });
                 break;
             }
-            let message = format!("{} (#{})", truth.title, p.number);
+            let (title, inherited) = self.inherited_message(p.number);
+            let message = match messages.iter().find(|m| m.number == p.number) {
+                Some(m) => {
+                    let title = m.title.clone().unwrap_or(title);
+                    let body = m.full_body(&inherited);
+                    if body.is_empty() {
+                        title
+                    } else {
+                        format!("{title}\n\n{body}")
+                    }
+                }
+                None if inherited.is_empty() => title,
+                None => format!("{title}\n\n{inherited}"),
+            };
             let Ok(c) = self.repo.squash(&expected, &p.head_sha, &message) else {
                 error = Some(LandError::Conflict { number: p.number });
                 break;
@@ -1162,6 +1554,8 @@ impl<G: GitStore> SimForge<G> {
             pr.merged = true;
             pr.closed = true;
             pr.merge_commit_sha = Some(c.clone());
+            let now = self.now();
+            self.landed_messages.push((now, p.number, message.clone()));
             commits.push(LandedCommit {
                 number: p.number,
                 sha: c.clone(),
@@ -1234,6 +1628,9 @@ mod tests {
                 .collect(),
             dependabot_update_types: vec![],
             scripts,
+            body: String::new(),
+            fork: false,
+            approvals: vec![],
         }
     }
 
@@ -1321,6 +1718,7 @@ mod tests {
             expected_base_sha: base,
             prs: vec![pr(&f, 1)],
             expected_tree: String::new(),
+            messages: vec![],
         });
         assert!(matches!(
             &r[..],
@@ -1336,6 +1734,7 @@ mod tests {
             expected_base_sha: base2,
             prs: vec![pr(&f, 1)],
             expected_tree: String::new(),
+            messages: vec![],
         });
         assert!(
             matches!(&r[..], [Event::Landed { error: None, commits, .. }] if commits.len() == 1)

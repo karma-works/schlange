@@ -1,0 +1,8 @@
+Fix the login redirect (#42)
+
+The redirect lost the query string.
+
+Depends-On: #41
+
+Approved-by: dave
+Approved-by: erin

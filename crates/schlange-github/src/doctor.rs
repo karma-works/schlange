@@ -158,11 +158,16 @@ fn config_check(
             installation,
         };
         match crate::config::read_from_default_branch(&api, crate::client::Priority::Normal) {
-            Ok(None) => fails.push(format!(
-                "{}: no .mergify.yml on the default branch",
+            Ok(crate::config::Found::None) => fails.push(format!(
+                "{}: no configuration file on the default branch (searched {})",
+                repo.full(),
+                schlange_config::config_file::NAMES.join(", ")
+            )),
+            Ok(crate::config::Found::Ambiguous(e)) => fails.push(format!(
+                "{}: {e}; `serve` keeps the last valid configuration",
                 repo.full()
             )),
-            Ok(Some((path, text))) => match cfg.check(&path, &text) {
+            Ok(crate::config::Found::One(path, text)) => match cfg.check(&path, &text) {
                 Ok(l) if l.warnings.is_empty() => {
                     oks.push(format!("{}: {path} valid", repo.full()))
                 }

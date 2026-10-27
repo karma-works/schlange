@@ -3,7 +3,7 @@ id: merge-protections-builtin
 title: "Built-in protection: configuration changed"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "attr:mergify-configuration-changed"
 problems:
@@ -23,11 +23,21 @@ whose constitution pull requests change `.mergify.yml`.
 
 ## Sub-features
 
-- `detect`: the pull request changes one of the configuration file names (see `config-file`).
-- `validate`: the new file goes through `schlange config validate` (stages 1 to 5).
-- `report`: a check with the result; failure blocks the merge.
-- `deleted`: removing the file is reported as success under its own check name.
-- `attribute`: `mergify-configuration-changed` is true for such pull requests.
+- `detect`: built (`schlange_config::config_file`). The pull request targets the default branch
+  and changes one of the six configuration file names.
+- `validate`: built. The configuration as the pull request leaves it: one file (two or more are
+  a failure); with the schema at hand (`SCHLANGE_SCHEMA` or `.research/`) stages 1 to 5 (findings
+  Schlange does not support are notes, the file is valid for Mergify), without it stages 1, 3
+  and 4 (YAML, shape and conditions, semantics). The simulation always runs without the schema.
+- `report`: built. A check run `Configuration changed` (success or failure, findings with lines
+  in the summary) on the head; a failure holds the pull request (hold
+  `configuration-changed`).
+- `deleted`: built. Removing the configuration is reported as a success under `Configuration
+  has been deleted`.
+- `attribute`: built. `mergify-configuration-changed` is true when the files include a
+  configuration name.
+- `not-active`: built. The new configuration takes effect only once it is on the default branch
+  (see `config-file`).
 
 ## How to get to it (user POV)
 
@@ -40,10 +50,14 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Validator part.** Run `target/release/schlange config validate <changed file>`; this is the check's content (built).
-- **Not drivable yet.** The check on the pull request needs the forge adapter; planned scenario: a pull request changing the configuration, expected check result and blocked merge on failure.
+- **Validator part.** `target/release/schlange config validate <changed file>`.
+- **Scenario.** `target/release/schlange sim run scenarios/p1-config-changed.yaml` → `check `Configuration changed` on #1: failure` (duplicate queue names), `#4` (a second file) fails, `#2` succeeds and lands.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands a_changed_configuration_is_checked_and_applies_only_once_merged` (check runs of the app on the heads).
 
 ## Gotchas
 
-- Exact check names and their texts are Mergify's; observe them in the sandbox before claiming conformance.
+- Exact check names come from the docs; their texts are Schlange's own. Observe Mergify's output
+  in the sandbox before claiming conformance.
 - The new configuration only takes effect after the merge (MQ-19); the check validates, it does not activate.
+- The deletion check is covered by unit tests only (the simulated forge and the fake have no
+  file deletion in a pull request).

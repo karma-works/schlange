@@ -1,5 +1,6 @@
-//! The configuration as `serve` and `doctor` load it: `.mergify.yml` (or `.mergify/config.yml`,
-//! `.github/mergify.yml`) from the repository's **default branch** only, through the same
+//! The configuration as `serve` and `doctor` load it: the configuration file from the
+//! repository's **default branch** only, searched under the six documented names in their
+//! order (`schlange_config::config_file::NAMES`; two files are an error), through the same
 //! pipeline as `schlange config validate`: YAML (stage 1), Mergify's schema (2), conditions
 //! (3), semantics (4). Findings of stage 5 (features Schlange does not support yet) are
 //! warnings: the configuration is used, and the warnings are logged and shown by the doctor.
@@ -17,8 +18,15 @@ use schlange_config::{FeatureMap, Schema};
 use crate::api::RepoApi;
 use crate::client::{Error, Priority};
 
-/// Where Mergify looks for its configuration, in order.
-pub const CONFIG_PATHS: [&str; 3] = [".mergify.yml", ".mergify/config.yml", ".github/mergify.yml"];
+/// What the search on the default branch found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Found {
+    None,
+    /// Exactly one file: its path and text.
+    One(String, String),
+    /// More than one file: the error text (nothing is applied).
+    Ambiguous(String),
+}
 
 /// The validator with the pinned schema and the feature map.
 pub struct ConfigCheck {
@@ -77,18 +85,24 @@ impl ConfigCheck {
     }
 }
 
-/// Reads the configuration from the default branch: `(path, text)`, `None` when there is none.
-pub fn read_from_default_branch(
-    api: &RepoApi,
-    prio: Priority,
-) -> Result<Option<(String, String)>, Error> {
+/// Reads the configuration from the default branch under every documented name.
+pub fn read_from_default_branch(api: &RepoApi, prio: Priority) -> Result<Found, Error> {
+    use schlange_config::config_file::{Located, NAMES, locate};
     let branch = api.repository(prio)?.default_branch;
-    for path in CONFIG_PATHS {
+    let mut found = std::collections::BTreeMap::new();
+    for path in NAMES {
         if let Some(t) = api.file_content(path, &branch, prio)? {
-            return Ok(Some((path.to_string(), t)));
+            found.insert(path, t);
         }
     }
-    Ok(None)
+    let located = locate(|p| found.contains_key(p));
+    if let Some(e) = located.error() {
+        return Ok(Found::Ambiguous(e));
+    }
+    Ok(match located {
+        Located::One(p) => Found::One(p.to_string(), found.remove(p).unwrap_or_default()),
+        _ => Found::None,
+    })
 }
 
 #[cfg(test)]

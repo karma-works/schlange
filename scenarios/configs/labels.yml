@@ -1,0 +1,26 @@
+# Queue labels and status comments with non-default settings, and queue attributes in
+# conditions: a pull request whose checks failed in the queue is not queued again by the rule
+# (`queue-dequeue-reason`), the merge conditions read `queue-name` and `queue-position`.
+merge_queue:
+  checking_label: checking
+  dequeued_label: kicked-out
+  status_comments: outcomes
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+      - queue-name = default
+      - queue-position >= 0
+      - queued-at <= 0 minutes ago
+
+pull_request_rules:
+  - name: queue bot pull requests unless their checks failed in the queue
+    conditions:
+      - author = bot
+      - queue-dequeue-reason != checks-failed
+    actions:
+      queue:

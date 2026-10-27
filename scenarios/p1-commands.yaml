@@ -1,0 +1,66 @@
+# Comment commands (MQ-50): `queue` waits for the queue conditions, a second one is ignored,
+# another queue name replaces it, a foreign push cancels it with a reply naming the pusher,
+# `dequeue` takes a pull request out for good (PR_MANUALLY_DEQUEUED) until a new `queue`,
+# `refresh` re-reads, the commands Schlange lacks are answered, restrictions refuse.
+name: p1-commands
+description: queue, dequeue, refresh and the unsupported commands, with their replies.
+config: configs/commands.yml
+permissions: { alice: write, bob: maintain, carol: write, mallory: read }
+
+ci:
+  - check: quick
+    duration: 2m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  # #1: queued by command once its quick check is green; a second command is ignored.
+  - { number: 1, author: human, files: { one.txt: "1\n" } }
+  # #2: queued by command; a push by mallory while it waits cancels the command.
+  - { number: 2, author: human, files: { two.txt: "2\n" } }
+  # #3: queued by its rule, dequeued by carol, rejoins only when alice queues it again.
+  - { number: 3, author: bot, files: { three.txt: "3\n" } }
+  # #4: mallory may not queue; the other commands are answered.
+  - { number: 4, author: human, files: { four.txt: "4\n" } }
+  # #5: a command naming another queue replaces the waiting one.
+  - { number: 5, author: human, labels: [urgent], files: { five.txt: "5\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 4 }
+  - { at: 10s, comment: { pr: 1, by: alice, body: "@mergifyio queue" } }
+  - { at: 30s, comment: { pr: 1, by: bob, body: "@Mergifyio queue" } }
+  - { at: 50s, comment: { pr: 2, by: bob, body: "@mergify queue" } }
+  - { at: 60s, push: { pr: 2, by: mallory, files: { two.txt: "2 changed\n" } } }
+  - { at: 5m, open: 3 }
+  - { at: 7m30s, comment: { pr: 3, by: carol, body: "@mergifyio dequeue" } }
+  - { at: 9m, comment: { pr: 4, by: mallory, body: "@mergifyio queue" } }
+  - { at: 10m, comment: { pr: 4, by: carol, body: "@mergifyio rebase" } }
+  - { at: 11m, comment: { pr: 4, by: carol, body: "@mergifyio refresh" } }
+  - { at: 12m, comment: { pr: 4, by: carol, body: "@mergifyio dequeue" } }
+  - { at: 13m, comment: { pr: 4, by: carol, body: "@mergifyio frobnicate" } }
+  - { at: 30m, comment: { pr: 3, by: alice, body: "@mergifyio queue" } }
+  - { at: 40m, open: 5 }
+  - { at: 40m10s, comment: { pr: 5, by: alice, body: "@mergifyio queue" } }
+  - { at: 40m30s, comment: { pr: 5, by: bob, body: "@mergifyio queue urgent" } }
+
+expect:
+  - { pr: 1, state: merged, queue: default }
+  - { pr: 2, state: open }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: open }
+  - { pr: 5, state: merged, queue: urgent }
+expect_log:
+  - "a queue command by @alice is already waiting"
+  - "@mallory pushed new commits"
+  - "dequeue #3 from `default`: PR_MANUALLY_DEQUEUED"
+  - "you may not run `queue`"
+  - "Schlange does not support it yet"
+  - "read #4 before acting"
+  - "this pull request is not queued"
+  - "`frobnicate` is not a command"
+  - "enqueue #3 into `default` (rule `queue command by @alice`)"
+  - "the waiting queue command now targets queue `urgent`"

@@ -3,7 +3,7 @@ id: depends-on
 title: "Dependencies between pull requests (`Depends-On`)"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "attr:depends-on"
 problems:
@@ -23,12 +23,25 @@ KONZEPT.md's P1 list; added after checking Arztagent's rules.
 
 ## Sub-features
 
-- `parse`: lines `Depends-On: #<n>` in the description, also several; `owner/repo#<n>` and pull request URLs for other repositories.
-- `limits`: the documented maximum number of dependencies; unresolvable references and owner restrictions are reported, not ignored.
-- `cycles`: mutual dependencies never merge; report them.
-- `hold`: the pull request is not queued while a named pull request is open.
-- `release`: once the last named pull request is merged, the pull request is evaluated again.
-- `closed-dependency`: a named pull request closed without merge keeps holding (report it).
+- `parse`: built (`crates/schlange-core/src/protections.rs`). `Depends-On: #n`,
+  `Depends-On: owner/repo#n`, pull request URLs; the key without regard to letter case, each
+  reference once.
+- `limits`: built. More than 50 references resolve none and fail with the count. A reference
+  that is no reference, does not exist or cannot be read, or belongs to another owner fails
+  (does not wait).
+- `cycles`: built. A circular chain (or a self-reference) never resolves; the hold names the
+  cycle (`#5 → #6 → #5`).
+- `hold`: built. Not queued while a named pull request is open (a hold `depends-on` in the
+  engine state, for `pr explain`); a queued pull request whose body gains an unmet dependency
+  leaves with `PR_DEQUEUED` (code assumed).
+- `release`: built. Once the last named pull request is merged, the next evaluation queues it
+  (the engine's own view of a pull request it knows wins over the dependent's read).
+- `closed-dependency`: built. Closed without merge fails the protection.
+- `other-repositories`: GitHub reads them with the same installation; one it cannot read fails.
+  The queue does not show dependencies in its own lists (no dashboard).
+- `attribute`: built. `depends-on` lists `owner/repo#n`.
+- `report`: Mergify reports the protection as a check; Schlange reports it in the engine state
+  and the status, not as a check run (missing).
 
 ## How to get to it (user POV)
 
@@ -41,7 +54,9 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: two pull requests in the simulated forge, the second with
+- **Scenario.** `target/release/schlange sim run scenarios/p1-depends-on.yaml` → merged order `[9, 1]`; the `held` section names the closed dependency, the cycle, the missing and the foreign reference.
+- **Unit and engine tests.** `cargo test -p schlange-core protections`; `cargo test -p schlange-core --test commands depends_on_holds_until_the_dependency_merges`.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands depends_on_and_merge_after_hold_with_visible_reasons`.
 
 ## Gotchas
 

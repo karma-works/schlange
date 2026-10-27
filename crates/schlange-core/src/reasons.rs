@@ -28,6 +28,7 @@ pub const BATCH_AHEAD_BRANCH_EDITED: &str = "BATCH_AHEAD_BRANCH_EDITED";
 pub const BATCH_REBUILT: &str = "BATCH_REBUILT";
 pub const BATCH_AHEAD_REBUILT: &str = "BATCH_AHEAD_REBUILT";
 pub const CHECKS_RETRIED: &str = "CHECKS_RETRIED";
+pub const PR_MANUALLY_DEQUEUED: &str = "PR_MANUALLY_DEQUEUED";
 
 /// A dequeue code. An alias, so that serde does not tie deserialisation to `'static`.
 pub type Code = &'static str;
@@ -56,6 +57,7 @@ pub const ALL: &[&str] = &[
     BATCH_REBUILT,
     BATCH_AHEAD_REBUILT,
     CHECKS_RETRIED,
+    PR_MANUALLY_DEQUEUED,
 ];
 
 /// The constant for a stored code; `None` for a code the engine does not know.

@@ -1,7 +1,10 @@
 //! Property tests over random scenarios: random queue settings, pull requests with conflicting
 //! files, markers that break or hang the full suite, semantic conflicts, flaky checks, human
 //! actions (labels read by the queue conditions and by the merge conditions only, pushes,
-//! closes, drafts, manual merges, direct pushes to main, pushes to queue branches), webhook
+//! closes, drafts, manual merges, direct pushes to main, pushes to queue branches, comment
+//! commands `queue`, `dequeue`, `refresh` and `rebase` by a maintainer or by someone the
+//! restrictions refuse, pushes by someone else than the author; every third pull request is
+//! a human's that only a `queue` command queues), webhook
 //! faults, forge faults (lost, late, duplicated and lying replies, base races, lagging reads, CI
 //! timing) and engine crashes. The runner checks I0–I4 after every step and I2/I3 at
 //! quiescence; any violation fails the case.
@@ -140,6 +143,11 @@ enum Human {
     MergeByHand(usize),
     PushBase(usize),
     PushQueueBranch(usize),
+    /// A comment command: `queue`, `dequeue`, `refresh` or `rebase` (answered as not
+    /// supported), by the maintainer (write permission) or by mallory (read, refused).
+    Command(usize, u8, bool),
+    /// A push by mallory (someone else than the author): cancels a waiting `queue` command.
+    PushByOther(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -233,6 +241,9 @@ fn human() -> impl Strategy<Value = Human> {
         (0usize..6).prop_map(Human::MergeByHand),
         (0usize..6).prop_map(Human::PushBase),
         (0usize..6).prop_map(Human::PushQueueBranch),
+        (0usize..6, 0u8..4, prop::bool::weighted(0.8))
+            .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
+        (0usize..6).prop_map(Human::PushByOther),
     ]
 }
 
@@ -305,6 +316,31 @@ fn human_action(p: &Plan, k: usize, h: &Human) -> Action {
             files: vec![(PATHS[*i].to_string(), format!("direct {k}\n"))],
         },
         Human::PushQueueBranch(i) => Action::PushQueueBranch(pr(i)),
+        Human::Command(i, c, trusted) => Action::Comment {
+            number: pr(i),
+            by: if *trusted { "maintainer" } else { "mallory" }.into(),
+            body: format!(
+                "@mergifyio {}",
+                ["queue", "dequeue", "refresh", "rebase"][*c as usize % 4]
+            ),
+        },
+        Human::PushByOther(i) => Action::PushAs {
+            number: pr(i),
+            by: "mallory".into(),
+            files: vec![(
+                PATHS[p.prs[*i % n].path].to_string(),
+                format!("pushed by mallory {k}\n"),
+            )],
+        },
+    }
+}
+
+/// Every third pull request is a human's: no rule queues it, only a `queue` command.
+fn author(num: u64) -> &'static str {
+    if num.is_multiple_of(3) {
+        "human"
+    } else {
+        "bot"
     }
 }
 
@@ -330,6 +366,8 @@ fn scenario(p: &Plan) -> Scenario {
         }
     }
     let mut sim = Sim::new("pbt", &p.settings.yaml())
+        .permission("maintainer", "write")
+        .permission("mallory", "read")
         .check(quick)
         .flake_seed(p.faults.seed)
         .faults(Some(p.faults.clone()));
@@ -348,7 +386,9 @@ fn scenario(p: &Plan) -> Scenario {
         };
         let content = format!("#{num}{}\n", marker_text(marker));
         sim = sim
-            .pr(num, &[(PATHS[pr.path], content.as_str())])
+            .pr_with(num, &[(PATHS[pr.path], content.as_str())], |d| {
+                d.author = author(num).into()
+            })
             .at(&format!("{}s", pr.open_at), Action::Open(num));
     }
     for (k, (t, h)) in p.humans.iter().enumerate() {
@@ -456,6 +496,9 @@ fn oracle_plan() -> impl Strategy<Value = OraclePlan> {
                     (0usize..6).prop_map(Human::MergeByHand),
                     (0usize..6).prop_map(Human::PushBase),
                     (0usize..6).prop_map(Human::PushQueueBranch),
+                    (0usize..6, 0u8..4, prop::bool::weighted(0.8))
+                        .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
+                    (0usize..6).prop_map(Human::PushByOther),
                 ],
             ),
             0..=5,
@@ -487,6 +530,8 @@ fn oracle_scenario(p: &OraclePlan) -> Scenario {
         ci("quick", "1m").pr_only()
     };
     let mut sim = Sim::new("pbt-oracle", &p.settings.yaml())
+        .permission("maintainer", "write")
+        .permission("mallory", "read")
         .check(quick)
         .faults(Some(p.faults.clone()));
     if !p.settings.single_step {
@@ -502,7 +547,9 @@ fn oracle_scenario(p: &OraclePlan) -> Scenario {
         };
         let content = format!("#{num}{marker}\n");
         sim = sim
-            .pr(num, &[(PATHS[*path], content.as_str())])
+            .pr_with(num, &[(PATHS[*path], content.as_str())], |d| {
+                d.author = author(num).into()
+            })
             .at(&format!("{t}s"), Action::Open(num));
     }
     let as_plan = Plan {

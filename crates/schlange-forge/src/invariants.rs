@@ -70,6 +70,11 @@ pub struct Checker {
     landed_commits: BTreeSet<Sha>,
     landed_prs: BTreeMap<u64, u64>,
     noted_modes: bool,
+    /// Queue entries as last observed (queue, since, seq, base, by step): the queue attributes
+    /// (`queue-name`, `queue-position`, `queued-at`) are facts about the queue, not the forge,
+    /// so the checker takes them from what it saw before the landing step.
+    queue_seen: BTreeMap<u64, (String, u64, u64, String)>,
+    epoch: u64,
 }
 
 pub const IDS: [&str; 6] = ["I0", "I1", "I2", "I3", "I4", "I5"];
@@ -116,6 +121,35 @@ impl Checker {
         self.results.values().any(|r| !r.violations.is_empty())
     }
 
+    /// The evaluation context at a landing: the queue attributes as observed before the landing
+    /// step (a pull request queued and landed within one step counts as queued at `t`, first in
+    /// its queue). The repository and clock are the simulation's.
+    fn queue_context(&self, number: u64, queue: &str, t: u64) -> Context {
+        let epoch = self.epoch as i64;
+        let (name, since, position) = match self.queue_seen.get(&number) {
+            Some((q, since, seq, base)) => {
+                let pos = self
+                    .queue_seen
+                    .values()
+                    .filter(|(oq, _, os, ob)| oq == q && ob == base && os < seq)
+                    .count() as i64;
+                (q.clone(), *since, pos)
+            }
+            None => (queue.to_string(), t, 0),
+        };
+        Context {
+            now: epoch + t as i64,
+            repository: crate::runner::SIM_REPOSITORY.into(),
+            queue: Some(eval::QueueAttrs {
+                name,
+                position,
+                queued_at: epoch + since as i64,
+                merge_started_at: None,
+            }),
+            ..Context::default()
+        }
+    }
+
     /// Runs after every simulated step, once the engine's decisions were carried out.
     pub fn after_step<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules) {
         let t = forge.now();
@@ -140,6 +174,12 @@ impl Checker {
             }
         }
         self.landings(forge, rules, t);
+        self.epoch = state.host.epoch;
+        self.queue_seen = state
+            .queued
+            .iter()
+            .map(|(n, e)| (*n, (e.queue.clone(), e.since, e.seq, e.base.clone())))
+            .collect();
         self.base_history(forge, t);
         self.branches(forge, state, rules, t, false);
         self.parallel(forge, state, rules, t);
@@ -206,7 +246,7 @@ impl Checker {
                     green = false;
                     continue;
                 };
-                let ctx = Context::default();
+                let ctx = self.queue_context(c.number, &l.queue, t);
                 let (q_ok, _) = eval::eval_list(&rule.queue_conditions, before, &ctx, &mut vec![]);
                 self.check("I1", q_ok, t, || {
                     format!("#{} landed while its queue_conditions were false", c.number)
