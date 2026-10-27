@@ -199,6 +199,7 @@ impl GithubForge {
         pr.draft = p.draft;
         pr.closed = p.state == "closed";
         pr.merged = p.merged;
+        pr.merge_commit_sha = p.merge_commit_sha.clone().filter(|_| p.merged);
         pr.labels = p.labels.iter().map(|l| l.name.clone()).collect();
         self.heads.borrow_mut().insert(n, p.head.sha.clone());
         if pr.closed {
@@ -507,9 +508,12 @@ impl GithubForge {
             } => self
                 .build_car(*car, base_branch, branch, base_sha, prs, own)
                 .map(|e| vec![e]),
+            // The engine keeps the car's slot until the close is confirmed (I4). The draft's CI
+            // stops through the repository's own `cancel-in-progress` setup; the adapter
+            // confirms once the draft is closed and the branch is gone.
             Decision::CloseCar { car, branch, draft } => self
                 .close_car(*car, branch.as_deref(), *draft)
-                .map(|_| vec![]),
+                .map(|_| vec![Event::CarClosed { car: *car }]),
             Decision::Refresh {
                 token,
                 numbers,

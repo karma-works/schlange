@@ -862,15 +862,35 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
         let cancelled = relevant
             .iter()
             .any(|r| r.conclusion == Some(Conclusion::Cancelled));
-        let names: Vec<&str> = if red.is_empty() {
+        let mut names: Vec<String> = if red.is_empty() {
             relevant
                 .iter()
                 .filter(|r| r.conclusion != Some(Conclusion::Success))
-                .map(|r| r.name.as_str())
+                .map(|r| r.name.clone())
                 .collect()
         } else {
-            red
+            red.iter().map(|s| s.to_string()).collect()
         };
+        if names.is_empty() {
+            // Every check reported success and the check conditions are still false (a count,
+            // a regex, a negation): name what was seen, never an empty list.
+            names = relevant
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}={}",
+                        r.name,
+                        r.conclusion
+                            .map(|c| format!("{c:?}").to_lowercase())
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            names.insert(
+                0,
+                "no check failed, the check conditions are false with".into(),
+            );
+        }
         return if !hard && cancelled {
             Verdict::Failed(
                 code::CHECKS_INTERRUPTED,
