@@ -4,7 +4,9 @@
 //! closes, drafts, manual merges, direct pushes to main, pushes to queue branches, comment
 //! commands `queue`, `dequeue`, `refresh` and `rebase` by a maintainer or by someone the
 //! restrictions refuse, pushes by someone else than the author; every third pull request is
-//! a human's that only a `queue` command queues), webhook
+//! a human's that only a `queue` command queues; queue settings include
+//! `reset_on_external_merge: never`, `max_checks_retries`, `allow_queue_branch_edit` and an
+//! explicit `checks_timeout: auto`), webhook
 //! faults, forge faults (lost, late, duplicated and lying replies, base races, lagging reads, CI
 //! timing) and engine crashes. The runner checks I0–I4 after every step and I2/I3 at
 //! quiescence; any violation fails the case.
@@ -59,6 +61,16 @@ struct Settings {
     /// `-label = wip` in the merge conditions only (an attribute the queue conditions do not
     /// read).
     wip: bool,
+    /// `reset_on_external_merge: never`.
+    never: bool,
+    /// `max_checks_retries`.
+    retries: u32,
+    /// `allow_queue_branch_edit: true` (with `squash` the engine refuses the edit, as the
+    /// option needs a method that lands the batch branch).
+    branch_edit: bool,
+    /// `checks_timeout: auto` written out (the default; without history it applies no
+    /// timeout, so a case with it is the same as without a timeout).
+    auto: bool,
 }
 
 impl Settings {
@@ -75,6 +87,14 @@ impl Settings {
         }
         if self.timeout {
             rule.push_str("    checks_timeout: 20 min\n");
+        } else if self.auto {
+            rule.push_str("    checks_timeout: auto\n");
+        }
+        if self.retries > 0 {
+            rule.push_str(&format!("    max_checks_retries: {}\n", self.retries));
+        }
+        if self.branch_edit {
+            rule.push_str("    allow_queue_branch_edit: true\n");
         }
         let queue = "      - base = main\n      - -draft\n      - -label = halt\n      - check-success = quick\n";
         rule.push_str("    queue_conditions:\n");
@@ -93,8 +113,13 @@ impl Settings {
             }
             (true, false) => {}
         }
+        let reset = if self.never {
+            "  reset_on_external_merge: never\n"
+        } else {
+            ""
+        };
         format!(
-            "merge_queue:\n  max_parallel_checks: {}\nqueue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
+            "merge_queue:\n  max_parallel_checks: {}\n{reset}queue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
             self.max_parallel
         )
     }
@@ -111,15 +136,33 @@ fn settings() -> impl Strategy<Value = Settings> {
         any::<bool>(),
         prop::bool::weighted(0.2),
         prop::bool::weighted(0.4),
+        (
+            prop::bool::weighted(0.3),
+            prop::sample::select(vec![0u32, 0, 1, 2]),
+            prop::bool::weighted(0.15),
+            prop::bool::weighted(0.3),
+        ),
     )
         .prop_map(
-            |(batch, max_parallel, limit, timeout, single_step, wip)| Settings {
+            |(
                 batch,
                 max_parallel,
                 limit,
                 timeout,
                 single_step,
                 wip,
+                (never, retries, branch_edit, auto),
+            )| Settings {
+                batch,
+                max_parallel,
+                limit,
+                timeout,
+                single_step,
+                wip,
+                never,
+                retries,
+                branch_edit,
+                auto,
             },
         )
 }

@@ -239,7 +239,9 @@ pub fn retry_waits_for_close(state: &State, car: &Car) -> bool {
 /// Closes a car's draft and deletes its branch. The slot stays taken until the forge
 /// confirms (`CarClosed`) or the close is retried.
 pub(crate) fn close(state: &mut State, base: Option<&str>, car: &Car, out: &mut Vec<Decision>) {
-    if car.in_place {
+    // In place there is nothing to close; a retry not built yet has nothing on the forge (the
+    // attempt it replaces is being closed under its own id).
+    if car.in_place || car.status == CarStatus::Retry {
         return;
     }
     state.closing.insert(
@@ -570,6 +572,17 @@ pub(crate) fn landed(
         && commits.is_empty()
         && let Some(LandError::BaseMoved { actual }) = error
     {
+        // A refusal for a landing that is no longer outstanding (a duplicated or late reply of
+        // an earlier attempt: the car already moved to the new tip and may be landing again)
+        // changes nothing; acting on it would forget the landing in flight.
+        let car = &state.trains[&base].cars[i];
+        let outstanding = matches!(
+            car.status,
+            CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+        );
+        if !outstanding || state.trains[&base].base_sha.as_deref() == Some(actual.as_str()) {
+            return;
+        }
         // `reset_on_external_merge: never`: the queue stays as it is; land again on the new
         // tip (still a compare-and-swap).
         let actual = actual.clone();
@@ -1075,13 +1088,50 @@ fn abandon_car(state: &mut State, base: &str, id: u64, out: &mut Vec<Decision>) 
         return;
     };
     let car = state.trains[base].cars[i].clone();
-    if car.test.is_some() {
-        // A bisection test: `bisect::fill` builds it again.
-        state.trains.get_mut(base).expect("train").cars.remove(i);
+    if car.test.is_some() || car.attempt > 0 {
+        // A bisection test or a retry: the same attempt is built again on a fresh branch once
+        // the forge confirmed the close, so the retry count does not start over (a check that
+        // always times out would otherwise be retried forever, I2).
         close(state, Some(base), &car, out);
+        let id = state.next_id();
+        let prefix = branch_prefix(car.branch.as_deref());
+        let rebuilt = Car {
+            id,
+            branch: Some(branch_name(&prefix, base, id)),
+            draft: None,
+            head_sha: None,
+            tree: None,
+            started: state.now,
+            status: CarStatus::Retry,
+            measured: false,
+            replaces: Some(car.id),
+            ..car.clone()
+        };
+        let train = state.trains.get_mut(base).expect("train");
+        train.cars[i] = rebuilt;
+        if let Some(b) = train.bisection.as_mut()
+            && b.land == Some(car.id)
+        {
+            b.land = Some(id);
+        }
+        for &n in &car.own {
+            if let Some(e) = state.queued.get_mut(&n)
+                && e.status == (EntryStatus::InCar { car: car.id })
+            {
+                e.status = EntryStatus::InCar { car: id };
+            }
+        }
     } else {
         drop_cars_from(state, base, i, None, None, &[], out);
     }
+}
+
+/// The prefix of a queue branch name (prefix plus ten hex characters); the default prefix
+/// for a car without a branch.
+fn branch_prefix(branch: Option<&str>) -> String {
+    branch
+        .and_then(|b| b.len().checked_sub(10).and_then(|k| b.get(..k)))
+        .map_or_else(|| "mergify/merge-queue/".into(), str::to_string)
 }
 
 /// The landing's outcome is unknown: read the pull requests and the base.

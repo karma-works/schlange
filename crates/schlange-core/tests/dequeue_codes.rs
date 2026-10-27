@@ -288,6 +288,171 @@ fn a_draft_closed_by_someone_else_is_batch_pull_request_closed() {
     );
 }
 
+/// Found by the property tests once retries were enabled: a retry whose build is in doubt (an
+/// error reply) was rebuilt as a first attempt, so the retry count started over and a check
+/// that always times out was retried forever (I2). The rebuilt car keeps its attempt.
+#[test]
+fn a_retry_whose_build_failed_keeps_its_attempt() {
+    let mut dr = Driver::new(&config("    max_checks_retries: 1\n", ""));
+    let d = dr.snapshot(vec![pr(1)], &[("main", "b0")]);
+    dr.build_all(d);
+    let (car, _, _) = dr.cars[0].clone();
+    // The merge check fails; the read confirms it; the car is retried.
+    let draft = dr.draft(
+        0,
+        vec![run(
+            "full",
+            &format!("c{car}"),
+            Some(Conclusion::Failure),
+            50,
+        )],
+    );
+    let d = dr.snapshot(vec![draft.clone()], &[]);
+    let Some(Decision::Refresh { token, .. }) = d
+        .iter()
+        .find(|d| matches!(d, Decision::Refresh { .. }))
+        .cloned()
+    else {
+        panic!("no confirming read: {d:?}")
+    };
+    let d = dr.feed(Event::Snapshot {
+        pull_requests: vec![draft],
+        branches: BTreeMap::new(),
+        token: Some(token),
+    });
+    assert!(
+        reason_of(&d, 1).is_some_and(|r| r.code == Some(code::CHECKS_RETRIED)),
+        "{d:#?}"
+    );
+    // The old attempt's close is confirmed: the retry is built, and that build fails.
+    let d = dr.feed(Event::CarClosed { car });
+    let build = d
+        .iter()
+        .find(|d| matches!(d, Decision::BuildCar { .. }))
+        .cloned()
+        .expect("retry built");
+    dr.feed(Event::Failed {
+        decision: build,
+        error: "502".into(),
+    });
+    let train = &dr.state.trains["main"];
+    assert_eq!(train.cars.len(), 1, "{:?}", train.cars);
+    assert_eq!(
+        train.cars[0].attempt, 1,
+        "still the first retry: {:?}",
+        train.cars[0]
+    );
+}
+
+/// Found by the property tests once retries were enabled: a retry discarded before it was
+/// built was "closed" too, so its never-created branch held a second slot next to the close
+/// of the attempt it replaced (I4 in the engine's count).
+#[test]
+fn a_discarded_retry_that_was_never_built_holds_no_slot() {
+    let mut dr = Driver::new(&config("    max_checks_retries: 1\n", ""));
+    let d = dr.snapshot(vec![pr(1)], &[("main", "b0")]);
+    dr.build_all(d);
+    let (car, _, _) = dr.cars[0].clone();
+    let draft = dr.draft(
+        0,
+        vec![run(
+            "full",
+            &format!("c{car}"),
+            Some(Conclusion::Failure),
+            50,
+        )],
+    );
+    let d = dr.snapshot(vec![draft.clone()], &[]);
+    let Some(Decision::Refresh { token, .. }) = d
+        .iter()
+        .find(|d| matches!(d, Decision::Refresh { .. }))
+        .cloned()
+    else {
+        panic!("no confirming read: {d:?}")
+    };
+    dr.feed(Event::Snapshot {
+        pull_requests: vec![draft],
+        branches: BTreeMap::new(),
+        token: Some(token),
+    });
+    assert_eq!(
+        schlange_core::queue::closing_count(&dr.state, "main"),
+        0,
+        "one slot: the retry"
+    );
+    // A push to #1 dequeues it while the old attempt's close is unconfirmed.
+    let mut pushed = pr(1);
+    pushed.head_sha = "h1b".into();
+    let d = dr.snapshot(vec![pushed], &[]);
+    assert!(dequeued(&d, 1).is_some(), "{d:#?}");
+    assert_eq!(
+        schlange_core::queue::closing_count(&dr.state, "main"),
+        1,
+        "only the old attempt's close holds a slot: {:?}",
+        dr.state.closing
+    );
+}
+
+/// Found by the property tests once `never` was enabled: a late duplicate of a refusal
+/// (`BaseMoved`) arrived while the car was already landing again on the new tip; the engine
+/// went back to "green", forgot the landing in flight and took its own merge for a manual one
+/// (`PR_MANUALLY_MERGED`, I5).
+#[test]
+fn never_mode_ignores_a_stale_refusal_while_landing_again() {
+    let mut dr = Driver::new(&config(
+        "",
+        "merge_queue:\n  reset_on_external_merge: never\n",
+    ));
+    let d = dr.snapshot(vec![pr(1)], &[("main", "b0")]);
+    dr.build_all(d);
+    let Decision::Land { car, .. } = dr.land(0) else {
+        unreachable!()
+    };
+    let refusal = Event::Landed {
+        car,
+        commits: vec![],
+        error: Some(LandError::BaseMoved {
+            actual: "b9".into(),
+        }),
+    };
+    let d = dr.feed(refusal.clone());
+    let Some(Decision::Refresh { token, .. }) = d
+        .iter()
+        .find(|d| matches!(d, Decision::Refresh { .. }))
+        .cloned()
+    else {
+        panic!("no read before landing again: {d:?}")
+    };
+    let d = dr.feed(Event::Snapshot {
+        pull_requests: vec![],
+        branches: BTreeMap::new(),
+        token: Some(token),
+    });
+    assert!(
+        d.iter().any(
+            |d| matches!(d, Decision::Land { expected_base_sha, .. } if expected_base_sha == "b9")
+        ),
+        "{d:?}"
+    );
+    // The same refusal again, late: the second landing is still in flight.
+    dr.feed(refusal);
+    assert!(
+        matches!(
+            dr.state.trains["main"].cars[0].status,
+            schlange_core::queue::CarStatus::Landing { .. }
+        ),
+        "{:?}",
+        dr.state.trains["main"].cars[0].status
+    );
+    // The landing shows up merged before its reply: the queue's own merge.
+    let mut merged = pr(1);
+    merged.merged = true;
+    merged.closed = true;
+    merged.merge_commit_sha = Some("m1".into());
+    let d = dr.snapshot(vec![merged], &[]);
+    assert!(dequeued(&d, 1).is_none(), "not a manual merge: {d:#?}");
+}
+
 #[test]
 fn codes_the_name_states_are_not_marked_assumed() {
     // A retry and a reset after an external merge are what the codes say.
