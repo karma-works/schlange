@@ -8,6 +8,13 @@
 //!
 //! The forge also records what it did for the queue (cars built, landings, external commits),
 //! so the invariant checker can judge the engine with full knowledge.
+//!
+//! The forge logic is generic over its git store ([`GitStore`]): `SimForge<Repo>` (the
+//! default) keeps git in memory; `SimForge<LocalGit>` (feature `localgit`, see
+//! [`crate::localgit`]) keeps it in real repositories on disk and runs every check as a real
+//! process in a checkout (`real_ci`). Pull request metadata (number, author, labels, draft,
+//! check runs), the clock and webhook delivery are the adapter's own in both cases, as in
+//! Prow's `localgit` and uber/submitqueue's fake provider.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,7 +23,7 @@ use schlange_core::model::{CheckRun, Conclusion, PullRequest, Time};
 use schlange_core::{Decision, Event};
 
 use crate::ci::{CiScript, Rng, keyed_unit};
-use crate::git::{Repo, Sha, Tree};
+use crate::git::{GitStore, Repo, Sha, Tree};
 
 /// A virtual clock that only moves when the simulation advances it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -202,9 +209,14 @@ pub struct LandingRecord {
 
 pub const BOT: &str = "schlange[bot]";
 
-pub struct SimForge {
+pub struct SimForge<G: GitStore = Repo> {
     clock: VirtualClock,
-    pub repo: Repo,
+    pub repo: G,
+    /// Every check runs as a process in a checkout of the tested commit (`localgit`); off,
+    /// only checks with a `run` command do and the marker rules are evaluated in memory.
+    pub real_ci: bool,
+    /// How many check runs were real processes.
+    pub processes: u64,
     pending: BTreeMap<(Time, u64), Pending>,
     order: u64,
     check_seq: u64,
@@ -229,15 +241,29 @@ pub struct SimForge {
     pub duplicated: u64,
 }
 
-impl SimForge {
-    /// A forge with one base branch holding `files`.
+impl SimForge<Repo> {
+    /// A forge with git in memory and one base branch holding `files`.
     pub fn new(base: &str, files: Tree, queue_scripts: Vec<CiScript>, flake_seed: u64) -> Self {
-        let mut repo = Repo::new();
+        SimForge::with_git(Repo::new(), base, files, queue_scripts, flake_seed)
+    }
+}
+
+impl<G: GitStore> SimForge<G> {
+    /// A forge on an empty git store `repo`, with one base branch holding `files`.
+    pub fn with_git(
+        mut repo: G,
+        base: &str,
+        files: Tree,
+        queue_scripts: Vec<CiScript>,
+        flake_seed: u64,
+    ) -> Self {
         let root = repo.commit(files, vec![], "initial commit");
         repo.create_ref(base, &root).expect("fresh repo");
         SimForge {
             clock: VirtualClock::default(),
             repo,
+            real_ci: false,
+            processes: 0,
             pending: BTreeMap::new(),
             order: 0,
             check_seq: 0,
@@ -391,7 +417,7 @@ impl SimForge {
             return false;
         };
         let head = pr.head_sha.clone();
-        let Some(mb) = self.repo.merge_base(base_tip, &head) else {
+        let Some(mb) = self.repo.merge_base(&base_tip, &head) else {
             return false;
         };
         let head_tree = self.repo.tree(&head);
@@ -436,7 +462,21 @@ impl SimForge {
             let attempt = self.attempts.entry(key.clone()).or_default();
             let draw = keyed_unit(self.flake_seed, &format!("{key}/{attempt}"));
             *attempt += 1;
-            let conclusion = script.conclude(&tree, |n| self.present(n, &tree), draw);
+            let conclusion = if self.real_ci || script.run.is_some() {
+                let prs_present = !script.fail_when_prs.is_empty()
+                    && script.fail_when_prs.iter().all(|n| self.present(*n, &tree));
+                let env = [
+                    ("SCHLANGE_CHECK", script.check.as_str()),
+                    ("SCHLANGE_SHA", head.as_str()),
+                ];
+                let code = self
+                    .repo
+                    .run_in_checkout(&head, &script.shell_command(), &env);
+                self.processes += 1;
+                script.conclude_exit(code, prs_present, draw)
+            } else {
+                script.conclude(&tree, |n| self.present(n, &tree), draw)
+            };
             self.prs.get_mut(&number).expect("pr").checks.push(run);
             self.emit(
                 Hint::PullRequest(number),
@@ -472,7 +512,7 @@ impl SimForge {
                 let Some(def) = self.defs.get(&n).cloned() else {
                     return format!("#{n} is not defined");
                 };
-                let Some(tip) = self.repo.ref_sha(&def.base).cloned() else {
+                let Some(tip) = self.repo.ref_sha(&def.base) else {
                     return format!("#{n}: base `{}` does not exist", def.base);
                 };
                 let mut tree = self.repo.tree(&tip).clone();
@@ -577,7 +617,7 @@ impl SimForge {
                 format!("#{number} closed")
             }
             Action::PushBase { branch, files } => {
-                let Some(tip) = self.repo.ref_sha(&branch).cloned() else {
+                let Some(tip) = self.repo.ref_sha(&branch) else {
                     return format!("push to unknown branch `{branch}`");
                 };
                 let mut tree = self.repo.tree(&tip).clone();
@@ -597,7 +637,7 @@ impl SimForge {
                 if pr.closed {
                     return format!("manual merge of #{n} refused: closed");
                 }
-                let tip = self.repo.ref_sha(&pr.base).cloned().expect("base");
+                let tip = self.repo.ref_sha(&pr.base).expect("base");
                 match self
                     .repo
                     .squash(&tip, &pr.head_sha, &format!("{} (#{n}) by hand", pr.title))
@@ -629,7 +669,7 @@ impl SimForge {
                     return format!("no open queue branch holds #{n}; nothing pushed");
                 };
                 let branch = car.branch.clone().expect("draft car");
-                let tip = self.repo.ref_sha(&branch).cloned().expect("branch");
+                let tip = self.repo.ref_sha(&branch).expect("branch");
                 let mut tree = self.repo.tree(&tip).clone();
                 tree.insert("foreign-edit.txt".into(), format!("edit of {branch}\n"));
                 let c = self.repo.commit(tree, vec![tip.clone()], "foreign edit");
@@ -650,18 +690,18 @@ impl SimForge {
     pub fn read_pull_request(&self, n: u64) -> Option<PullRequest> {
         let mut pr = self.prs.get(&n)?.clone();
         if let Some(tip) = self.repo.ref_sha(&pr.base) {
-            if let Some(mb) = self.repo.merge_base(tip, &pr.head_sha) {
+            if let Some(mb) = self.repo.merge_base(&tip, &pr.head_sha) {
                 pr.files = self.repo.changed_paths(&mb, &pr.head_sha);
             }
-            pr.behind_base = !self.repo.is_ancestor(tip, &pr.head_sha);
-            pr.base_tip = Some(tip.clone());
+            pr.behind_base = !self.repo.is_ancestor(&tip, &pr.head_sha);
+            pr.base_tip = Some(tip);
         }
         pr.head_tree = Some(self.repo.tree_id_of(&pr.head_sha));
         Some(pr)
     }
 
     pub fn read_branch(&self, name: &str) -> Option<Sha> {
-        self.repo.ref_sha(name).cloned()
+        self.repo.ref_sha(name)
     }
 
     pub fn numbers(&self) -> Vec<u64> {
@@ -688,10 +728,9 @@ impl SimForge {
     pub fn snapshot_all(&self, known: &[String]) -> Event {
         let mut branches: Vec<String> = self
             .repo
-            .refs()
-            .keys()
+            .ref_names()
+            .into_iter()
             .filter(|r| !r.starts_with("pr-"))
-            .cloned()
             .collect();
         branches.extend(known.iter().cloned());
         branches.sort();
@@ -763,7 +802,7 @@ impl SimForge {
                 if self.repo.create_ref(branch, &cur).is_err() {
                     self.notes
                         .push((self.now(), format!("queue branch {branch} already existed")));
-                    let old = self.repo.ref_sha(branch).cloned().expect("exists");
+                    let old = self.repo.ref_sha(branch).expect("exists");
                     self.repo.update_ref(branch, &old, &cur).expect("CAS");
                 }
                 let draft = self.next_draft;

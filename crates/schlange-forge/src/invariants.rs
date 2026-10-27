@@ -17,6 +17,10 @@
 //! - **I4** At no step more cars (running speculative checks) than `max_parallel_checks`.
 //! - **I5** Same end state (merged pull requests, base trees, pull requests left queued) with
 //!   perfect and with disturbed webhook delivery; compared by the runner.
+//!
+//! The checker reads commits, trees, parents and refs through the forge's [`GitStore`], so on
+//! the `localgit` forge it judges the real repository on disk: the first-parent history of the
+//! base comes from `git rev-list`, the tree of every landed commit from `git rev-parse`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,7 +31,7 @@ use schlange_core::State;
 use schlange_core::eval::{self, Context};
 use schlange_core::model::PullRequest;
 
-use crate::git::Sha;
+use crate::git::{GitStore, Sha};
 use crate::sim::SimForge;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -83,7 +87,7 @@ impl Checker {
     }
 
     /// Runs after every simulated step, once the engine's decisions were carried out.
-    pub fn after_step(&mut self, forge: &SimForge, state: &State, rules: &Rules) {
+    pub fn after_step<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules) {
         let t = forge.now();
         self.landings(forge, rules, t);
         self.base_history(forge, t);
@@ -91,7 +95,7 @@ impl Checker {
         self.parallel(forge, state, rules, t);
     }
 
-    fn landings(&mut self, forge: &SimForge, rules: &Rules, t: u64) {
+    fn landings<G: GitStore>(&mut self, forge: &SimForge<G>, rules: &Rules, t: u64) {
         let new: Vec<_> = forge.landings[self.landings_seen..].to_vec();
         self.landings_seen = forge.landings.len();
         for l in new {
@@ -157,7 +161,7 @@ impl Checker {
                 self.check("I0", false, t, || format!("#{first} is not in its car"));
                 continue;
             };
-            let parent = forge.repo.get(&l.commits[0].sha).parents.first().cloned();
+            let parent = forge.repo.parents(&l.commits[0].sha).first().cloned();
             let expected_parent_tree = if idx0 == 0 {
                 forge.repo.tree_id_of(&car.base_sha)
             } else {
@@ -172,10 +176,13 @@ impl Checker {
                 )
             });
             for (k, c) in l.commits.iter().enumerate() {
-                let ok = car
-                    .prefix
-                    .get(idx0 + k)
-                    .is_some_and(|(n, _, tree)| *n == c.number && *tree == c.tree);
+                // The tree as the repository has it, not as the forge's reply claims.
+                let real_tree = forge.repo.tree_id_of(&c.sha);
+                let ok = real_tree == c.tree
+                    && car
+                        .prefix
+                        .get(idx0 + k)
+                        .is_some_and(|(n, _, tree)| *n == c.number && *tree == real_tree);
                 self.check("I0", ok, t, || {
                     format!(
                         "commit {} of #{} has a tree that car {} did not build",
@@ -191,7 +198,7 @@ impl Checker {
         }
     }
 
-    fn base_history(&mut self, forge: &SimForge, t: u64) {
+    fn base_history<G: GitStore>(&mut self, forge: &SimForge<G>, t: u64) {
         for base in &forge.base_branches {
             let Some(tip) = forge.read_branch(base) else {
                 continue;
@@ -211,7 +218,7 @@ impl Checker {
         }
     }
 
-    fn branches(&mut self, forge: &SimForge, state: &State, rules: &Rules, t: u64) {
+    fn branches<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules, t: u64) {
         let prefixes: Vec<String> = rules
             .queue_rules
             .iter()
@@ -219,10 +226,9 @@ impl Checker {
             .collect();
         let on_forge: BTreeSet<String> = forge
             .repo
-            .refs()
-            .keys()
+            .ref_names()
+            .into_iter()
             .filter(|r| is_queue_branch(r, &prefixes))
-            .cloned()
             .collect();
         let in_use: BTreeSet<String> = state.trains.values().flat_map(|t| t.branches()).collect();
         self.check("I3", on_forge == in_use, t, || {
@@ -244,7 +250,7 @@ impl Checker {
         });
     }
 
-    fn parallel(&mut self, forge: &SimForge, state: &State, rules: &Rules, t: u64) {
+    fn parallel<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules, t: u64) {
         let max = rules.merge_queue.max_parallel_checks as usize;
         for (base, train) in &state.trains {
             let cars = train.cars.len();
@@ -260,7 +266,12 @@ impl Checker {
     }
 
     /// Runs once nothing is pending anymore.
-    pub fn at_quiescence(&mut self, forge: &SimForge, state: &State, rules: &Rules) {
+    pub fn at_quiescence<G: GitStore>(
+        &mut self,
+        forge: &SimForge<G>,
+        state: &State,
+        rules: &Rules,
+    ) {
         let t = forge.now();
         for (n, e) in &state.queued {
             let halted = state.trains.get(&e.base).and_then(|t| t.halted.clone());
@@ -291,7 +302,11 @@ impl Checker {
 }
 
 /// The pull request's head is the one the car merged.
-fn pr_head_in_car(forge: &SimForge, car: &crate::sim::CarRecord, pr: &PullRequest) -> bool {
+fn pr_head_in_car<G: GitStore>(
+    forge: &SimForge<G>,
+    car: &crate::sim::CarRecord,
+    pr: &PullRequest,
+) -> bool {
     if car.in_place {
         return car.head == pr.head_sha;
     }

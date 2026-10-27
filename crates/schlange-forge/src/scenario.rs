@@ -19,6 +19,8 @@
 //!     fail_when_prs: [1, 2]             # fail when both pull requests are present
 //!     hang_when_contains: HANG          # never report when a file contains a marker
 //!     flake_rate: 0.1
+//!     run: sh ci/compile.sh             # a real command in a checkout of the tested commit:
+//!                                       # exit 0 = conclusion, 125 = hangs, other = failure
 //! pull_requests:
 //!   - number: 1
 //!     author: arztagent-bot
@@ -141,6 +143,8 @@ struct CiSpec {
     hang_when_contains: OneOrMany,
     #[serde(default)]
     flake_rate: f64,
+    #[serde(default)]
+    run: Option<String>,
 }
 
 /// Files: a list of paths (content generated per pull request) or a map path → content.
@@ -346,6 +350,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         s.fail_when_prs = c.fail_when_prs.clone();
         s.hang_when_contains = c.hang_when_contains.list();
         s.flake_rate = c.flake_rate;
+        s.run = c.run.clone();
         scripts.push(s);
     }
 

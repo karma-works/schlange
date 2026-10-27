@@ -1,9 +1,13 @@
-//! A small content-addressed git model for the simulated forge: commits with trees (path →
-//! content) and parents, deterministic ids, refs updated as compare-and-swap, a three-way merge
-//! at file level and squash commits.
+//! Git as the forge sees it. [`GitStore`] is the interface the forge logic (`sim`) and the
+//! invariant checker use; two stores implement it:
 //!
-//! A file conflicts when both sides changed it differently relative to the merge base. There
-//! is no line-level merge: two changes to the same file always conflict unless they are equal.
+//! - [`Repo`], a small content-addressed model in memory: commits with trees (path → content)
+//!   and parents, deterministic ids, refs updated as compare-and-swap, a three-way merge at
+//!   file level and squash commits. A file conflicts when both sides changed it differently
+//!   relative to the merge base. There is no line-level merge: two changes to the same file
+//!   always conflict unless they are equal.
+//! - `localgit::LocalGit` (feature `localgit`): real git repositories on disk, with git's own
+//!   line-level three-way merges and `git update-ref <ref> <new> <old>` as compare-and-swap.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,6 +53,95 @@ pub enum RefError {
 /// Files that conflict in a merge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Conflict(pub Vec<String>);
+
+/// The git operations the forge needs. Commits are immutable, so reads take `&self`; ref
+/// updates are compare-and-swap and never forced.
+pub trait GitStore {
+    /// Creates (or finds) a commit with exactly this tree.
+    fn commit(&mut self, tree: Tree, parents: Vec<Sha>, message: &str) -> Sha;
+    /// The full tree of a commit (path → content).
+    fn tree(&self, sha: &str) -> Tree;
+    /// The id of a commit's tree.
+    fn tree_id_of(&self, sha: &str) -> String;
+    fn parents(&self, sha: &str) -> Vec<Sha>;
+    fn ref_sha(&self, name: &str) -> Option<Sha>;
+    /// All ref (branch) names.
+    fn ref_names(&self) -> Vec<String>;
+    fn create_ref(&mut self, name: &str, sha: &str) -> Result<(), RefError>;
+    /// Compare-and-swap: moves `name` from `expected` to `new`, never forced.
+    fn update_ref(&mut self, name: &str, expected: &str, new: &str) -> Result<(), RefError>;
+    fn delete_ref(&mut self, name: &str) -> bool;
+    fn is_ancestor(&self, ancestor: &str, of: &str) -> bool;
+    fn merge_base(&self, a: &str, b: &str) -> Option<Sha>;
+    /// A merge commit of `theirs` into `ours` (two parents).
+    fn merge(&mut self, ours: &str, theirs: &str, message: &str) -> Result<Sha, Conflict>;
+    /// The changes of `head` since its merge base with `onto`, as one commit whose single
+    /// parent is `onto`.
+    fn squash(&mut self, onto: &str, head: &str, message: &str) -> Result<Sha, Conflict>;
+    /// Paths that differ between two commits' trees.
+    fn changed_paths(&self, from: &str, to: &str) -> Vec<String>;
+    /// First-parent history of a commit, newest first.
+    fn first_parent_history(&self, sha: &str) -> Vec<Sha>;
+    /// Runs `sh -c command` in a checkout of `sha` and returns its exit code (`None` when it
+    /// could not start or was killed by a signal). The default writes the tree into a fresh
+    /// temporary directory.
+    fn run_in_checkout(&self, sha: &str, command: &str, env: &[(&str, &str)]) -> Option<i32> {
+        crate::ci::run_in_tree(&self.tree(sha), command, env)
+    }
+    /// A short name for reports: `sim` or `localgit`.
+    fn kind(&self) -> &'static str;
+}
+
+impl GitStore for Repo {
+    fn commit(&mut self, tree: Tree, parents: Vec<Sha>, message: &str) -> Sha {
+        Repo::commit(self, tree, parents, message)
+    }
+    fn tree(&self, sha: &str) -> Tree {
+        Repo::tree(self, sha).clone()
+    }
+    fn tree_id_of(&self, sha: &str) -> String {
+        Repo::tree_id_of(self, sha)
+    }
+    fn parents(&self, sha: &str) -> Vec<Sha> {
+        self.get(sha).parents.clone()
+    }
+    fn ref_sha(&self, name: &str) -> Option<Sha> {
+        Repo::ref_sha(self, name).cloned()
+    }
+    fn ref_names(&self) -> Vec<String> {
+        self.refs.keys().cloned().collect()
+    }
+    fn create_ref(&mut self, name: &str, sha: &str) -> Result<(), RefError> {
+        Repo::create_ref(self, name, sha)
+    }
+    fn update_ref(&mut self, name: &str, expected: &str, new: &str) -> Result<(), RefError> {
+        Repo::update_ref(self, name, expected, new)
+    }
+    fn delete_ref(&mut self, name: &str) -> bool {
+        Repo::delete_ref(self, name)
+    }
+    fn is_ancestor(&self, ancestor: &str, of: &str) -> bool {
+        Repo::is_ancestor(self, ancestor, of)
+    }
+    fn merge_base(&self, a: &str, b: &str) -> Option<Sha> {
+        Repo::merge_base(self, a, b)
+    }
+    fn merge(&mut self, ours: &str, theirs: &str, message: &str) -> Result<Sha, Conflict> {
+        Repo::merge(self, ours, theirs, message)
+    }
+    fn squash(&mut self, onto: &str, head: &str, message: &str) -> Result<Sha, Conflict> {
+        Repo::squash(self, onto, head, message)
+    }
+    fn changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        Repo::changed_paths(self, from, to)
+    }
+    fn first_parent_history(&self, sha: &str) -> Vec<Sha> {
+        Repo::first_parent_history(self, sha)
+    }
+    fn kind(&self) -> &'static str {
+        "sim"
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Repo {

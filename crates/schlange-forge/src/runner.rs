@@ -2,6 +2,9 @@
 //! truth reads, decisions are carried out, the forge's replies go back to the engine, and the
 //! invariant checker runs after every step. A scenario with faults runs twice (perfect and
 //! disturbed delivery) and the end states are compared (I5).
+//!
+//! [`run`] uses git in memory; [`run_with`] takes any [`GitStore`], which is how the same
+//! scenarios run against real git repositories (`localgit::run`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,7 +16,7 @@ use schlange_core::model::Time;
 use schlange_core::{Decision, Event, State, step};
 
 use crate::ci::CiScript;
-use crate::git::Tree;
+use crate::git::{GitStore, Repo, Tree};
 use crate::invariants::{Checker, IDS, InvariantState};
 use crate::sim::{Action, Faults, Hint, Item, PrDef, SimForge};
 
@@ -107,6 +110,10 @@ pub struct EndState {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunReport {
+    /// `sim` (git in memory) or `localgit` (real git repositories on disk).
+    pub forge: &'static str,
+    /// Check runs that were real processes in a checkout.
+    pub ci_processes: u64,
     pub scenario: String,
     pub description: String,
     pub config: String,
@@ -136,8 +143,8 @@ pub struct DisturbedRun {
 }
 
 /// One simulation with a given delivery.
-pub struct Simulation {
-    pub forge: SimForge,
+pub struct Simulation<G: GitStore = Repo> {
+    pub forge: SimForge<G>,
     pub state: State,
     pub checker: Checker,
     pub log: Vec<LogEntry>,
@@ -297,14 +304,24 @@ pub fn clock(t: Time) -> String {
     format!("+{}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60)
 }
 
-impl Simulation {
+impl Simulation<Repo> {
+    /// A simulation with git in memory.
     pub fn new(s: &Scenario, faults: Faults) -> Self {
-        let mut forge = SimForge::new(
+        Simulation::on(s, faults, Repo::new(), false)
+    }
+}
+
+impl<G: GitStore> Simulation<G> {
+    /// A simulation on the empty git store `git`; `real_ci` runs every check as a process.
+    pub fn on(s: &Scenario, faults: Faults, git: G, real_ci: bool) -> Self {
+        let mut forge = SimForge::with_git(
+            git,
             &s.base,
             s.base_files.clone(),
             s.queue_scripts.clone(),
             s.flake_seed,
         );
+        forge.real_ci = real_ci;
         for d in &s.prs {
             forge.define(d.clone());
         }
@@ -478,7 +495,7 @@ impl Simulation {
     }
 }
 
-fn check_expectation(sim: &Simulation, e: &Expectation) -> ExpectationResult {
+fn check_expectation<G: GitStore>(sim: &Simulation<G>, e: &Expectation) -> ExpectationResult {
     let actual = sim.outcome(e.pr);
     let in_queue = sim.state.queued.get(&e.pr);
     let mut ok = true;
@@ -543,9 +560,23 @@ fn invariant_results(results: &BTreeMap<&'static str, InvariantState>) -> Vec<In
         .collect()
 }
 
-/// Runs a scenario: perfect delivery, then (with faults) disturbed delivery for I5.
+/// Runs a scenario with git in memory: perfect delivery, then (with faults) disturbed delivery
+/// for I5.
 pub fn run(s: &Scenario) -> RunReport {
-    let mut perfect = Simulation::new(s, Faults::none());
+    match run_with(s, || Ok::<_, std::convert::Infallible>(Repo::new()), false) {
+        Ok(r) => r,
+        Err(e) => match e {},
+    }
+}
+
+/// Runs a scenario on git stores made by `make` (one per run: perfect, and disturbed when the
+/// scenario has faults). `real_ci`: every check runs as a process in a checkout.
+pub fn run_with<G: GitStore, E>(
+    s: &Scenario,
+    mut make: impl FnMut() -> Result<G, E>,
+    real_ci: bool,
+) -> Result<RunReport, E> {
+    let mut perfect = Simulation::on(s, Faults::none(), make()?, real_ci);
     perfect.run(s);
     let mut results = perfect.checker.results.clone();
     let end_state = perfect.end_state();
@@ -557,7 +588,7 @@ pub fn run(s: &Scenario) -> RunReport {
             .notes
             .push("no faults configured: no disturbed run".into()),
         Some(f) => {
-            let mut d = Simulation::new(s, f.clone());
+            let mut d = Simulation::on(s, f.clone(), make()?, real_ci);
             d.run(s);
             let d_end = d.end_state();
             let i5 = results.get_mut("I5").expect("I5");
@@ -614,7 +645,7 @@ pub fn run(s: &Scenario) -> RunReport {
         let tree = perfect
             .forge
             .read_branch(&s.base)
-            .map(|sha| perfect.forge.repo.tree(&sha).clone())
+            .map(|sha| perfect.forge.repo.tree(&sha))
             .unwrap_or_default();
         for (path, content) in &s.expect_base {
             let actual = tree.get(path).cloned();
@@ -652,7 +683,9 @@ pub fn run(s: &Scenario) -> RunReport {
         .iter()
         .map(|p| (p.number, perfect.outcome(p.number)))
         .collect();
-    RunReport {
+    Ok(RunReport {
+        forge: perfect.forge.repo.kind(),
+        ci_processes: perfect.forge.processes,
         scenario: s.name.clone(),
         description: s.description.clone(),
         config: s.config.clone(),
@@ -667,7 +700,7 @@ pub fn run(s: &Scenario) -> RunReport {
         disturbed,
         limitations: LIMITATIONS.to_vec(),
         steps: perfect.steps,
-    }
+    })
 }
 
 impl RunReport {
@@ -681,7 +714,10 @@ impl RunReport {
     }
 
     pub fn to_text(&self) -> String {
-        let mut out = format!("scenario {} (config {})\n", self.scenario, self.config);
+        let mut out = format!(
+            "scenario {} (config {}, forge {})\n",
+            self.scenario, self.config, self.forge
+        );
         out.push_str("\nevent log\n");
         for e in &self.log {
             out.push_str(&format!("  {}  {:<8}  {}\n", clock(e.t), e.kind, e.text));
