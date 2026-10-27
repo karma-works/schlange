@@ -20,3 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
 ureq.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

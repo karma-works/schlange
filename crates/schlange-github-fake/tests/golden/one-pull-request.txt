@@ -1,0 +1,5 @@
+{"type":"enqueue","number":1,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
+{"type":"build_car","car":"<car1>","queue":"default","base_branch":"main","branch":"mergify/merge-queue/<branch1>","base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"own":[1]}
+{"type":"land","car":"<car1>","queue":"default","base_branch":"main","expected_base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"expected_tree":"<sha3>"}
+{"type":"close_car","car":"<car1>","branch":"mergify/merge-queue/<branch1>","draft":2}
+{"type":"merged","number":1,"queue":"default","sha":"<sha2>"}

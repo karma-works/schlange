@@ -21,10 +21,11 @@ limit; serves as the container's health check.
 
 - `version`: built.
 - `schema`: built (reports whether a schema is found).
-- `matrix`: built (support matrix embedded).
+- `matrix`: built (support matrix embedded). Counted honestly: `N conformant, M partial (some sub-features missing), K not built`; a partial feature is not counted as supported.
+- `configuration`: built. With app credentials: each repository's `.mergify.yml` (or `.mergify/config.yml`, `.github/mergify.yml`) from the default branch, through the same validator `serve` uses (stages 1–4); FAIL when it is missing or invalid (`serve` then keeps the last valid one), WARN for features Schlange does not support yet, FAIL without a schema (`serve` does not start without it).
 - `github-app`: built. With `SCHLANGE_GITHUB_APP_ID` and `SCHLANGE_GITHUB_PRIVATE_KEY` (or flags): `GET /app` with the app JWT.
 - `app-permissions`: built. The installation's permissions against the minimum (FAIL when one is missing, WARN for extra ones and for the optional `workflows: write`, W-22).
-- `ruleset`: built. Every active branch ruleset must list the app as a bypass actor (FAIL when not, WARN when the bypass list is not visible).
+- `ruleset`: built. Every active branch ruleset must list the app as a bypass actor (FAIL when not, WARN when the bypass list is not visible). The detail says why and what it costs: a batch lands as squash commits whose checks ran on the queue's draft, which a pull-request ruleset refuses without a bypass; a bypass skips every rule of that ruleset for the app's merges, so it belongs to the app only and the queue's `merge_conditions` must be as strict as the protection.
 - `webhooks`: built. The app's last deliveries: WARN when one failed or the newest is older than a day.
 - `rate-limit`: built. `GET /rate_limit`: WARN below 10 % left.
 - `offline`: built. `--offline` skips the GitHub checks; the container health check uses it so that it does not spend rate limit every 30 seconds.
@@ -39,8 +40,8 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Binary.** Run `target/release/schlange doctor`. Exit `0`; lines `OK version`, `OK support-matrix`, `OK schema` (or `WARN schema` without `.research/`), `SKIP` for the five GitHub checks when no app is configured.
-- **GitHub checks.** Run `cargo test -p schlange --test serve` (the binary against the fake GitHub, `doctor --json` with the app's environment: `github-app`, `webhooks`, `rate-limit` OK) and `cargo test -p schlange-github-fake --test client doctor` (missing permission → FAIL, extra permission named, ruleset without bypass → FAIL, unreachable app → FAIL).
+- **Binary.** Run `target/release/schlange doctor`. Exit `0`; lines `OK version`, `OK support-matrix` (with conformant/partial/not built counts), `OK schema` (or `WARN schema` without `.research/`), `SKIP` for the six GitHub checks when no app is configured.
+- **GitHub checks.** Run `cargo test -p schlange --test serve` (the binary against the fake GitHub, `doctor --json` with the app's environment: `github-app`, `webhooks`, `rate-limit` OK, `configuration` not FAIL) and `cargo test -p schlange-github-fake --test client doctor` (missing permission → FAIL, extra permission named, ruleset without bypass → FAIL with the risk explained, no `.mergify.yml` → FAIL, a rule without `conditions` → FAIL "invalid", no schema → FAIL, unreachable app → FAIL).
 - **Container.** Run `docker run --rm --read-only --cap-drop ALL schlange:verify doctor`. Exit `0`; `WARN schema` because the image holds no Mergify file.
 - **Proof.** `schlange doctor --json` gives `ok: true` and one entry per check.
 
