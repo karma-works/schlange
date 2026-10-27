@@ -1560,8 +1560,18 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
         let Some(i) = foreign else { break };
         let car = train.cars[i].clone();
         let branch = car.branch.clone().unwrap_or_default();
+        // `allow_queue_branch_edit` needs a method that lands the batch branch itself
+        // (`merge-batch`, `fast-forward`; docs: queue rules). With `squash` each pull request
+        // lands at its own head, so the edit would never land and what lands would not be
+        // what was tested: the edit is then a failure like without the option.
         let accept = car.test.is_none()
-            && rule(rules, &car.queue).is_some_and(|r| r.allow_queue_branch_edit);
+            && rule(rules, &car.queue).is_some_and(|r| {
+                r.allow_queue_branch_edit
+                    && matches!(
+                        r.merge_method.as_deref(),
+                        Some("merge-batch" | "fast-forward")
+                    )
+            });
         if accept {
             // `allow_queue_branch_edit: true`: the edited batch keeps going on the pushed head;
             // the batches behind it are torn down and recomposed (docs: editing the batch

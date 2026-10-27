@@ -68,7 +68,12 @@ pub struct Checker {
     landings_seen: usize,
     accounted: BTreeSet<Sha>,
     landed_commits: BTreeSet<Sha>,
+    /// The pull request each queue landing commit belongs to.
+    landed_by: BTreeMap<Sha, u64>,
     landed_prs: BTreeMap<u64, u64>,
+    /// Bases where a landing's real tree differed from the tree the queue branch had when it
+    /// was landed: a halt there is the tree check doing its job (MQ-02).
+    tree_mismatch: BTreeSet<String>,
     noted_modes: bool,
     /// Queue entries as last observed (queue, since, seq, base, by step): the queue attributes
     /// (`queue-name`, `queue-position`, `queued-at`) are facts about the queue, not the forge,
@@ -195,6 +200,7 @@ impl Checker {
             }
             for c in &l.commits {
                 self.landed_commits.insert(c.sha.clone());
+                self.landed_by.insert(c.sha.clone(), c.number);
                 let first = self.landed_prs.insert(c.number, l.car);
                 self.check("I1", first.is_none(), t, || {
                     format!(
@@ -257,8 +263,10 @@ impl Checker {
                     format!("#{} landed while its merge conditions were false", c.number)
                 });
                 green &= m_ok;
-                // Green is not vacuous: without a named check, the conditions must at least
-                // have been evaluated on the queue branch's draft (or in place).
+                // Green is not vacuous: the conditions were evaluated on the car's draft at
+                // exactly the car's head (or in place on the pull request at that head). With
+                // named checks this ties "green" to runs on the tested commit; without them it
+                // is the only evidence the queue branch was checked at all.
                 if eval::referenced_checks(conds).is_empty() {
                     self.note(
                         "I0",
@@ -266,21 +274,23 @@ impl Checker {
                          the car's draft (or in place) right before landing"
                             .into(),
                     );
-                    let evaluated = if car.in_place {
-                        car.head == before.head_sha
-                    } else {
-                        l.draft_before.as_ref().is_some_and(|d| {
-                            d.head_sha == car.head
-                                && d.head_ref == car.branch.clone().unwrap_or_default()
-                        })
-                    };
-                    self.check("I0", evaluated, t, || {
-                        format!(
-                            "#{} landed without its conditions evaluated on a queue branch",
-                            c.number
-                        )
-                    });
                 }
+                let evaluated = if car.in_place {
+                    car.head == before.head_sha
+                } else {
+                    l.draft_before.as_ref().is_some_and(|d| {
+                        d.head_sha == car.head
+                            && d.head_ref == car.branch.clone().unwrap_or_default()
+                    })
+                };
+                self.check("I0", evaluated, t, || {
+                    format!(
+                        "#{} landed although the draft's head was not the car's tested head {} \
+                         (or the conditions were not evaluated on a queue branch)",
+                        c.number,
+                        &car.head[..car.head.len().min(7)]
+                    )
+                });
             }
             // I0: every landed commit is the tested prefix, on the assumed base.
             let first = l.commits[0].number;
@@ -298,7 +308,48 @@ impl Checker {
             let parent_ok = parent
                 .as_ref()
                 .is_some_and(|p| forge.repo.tree_id_of(p) == expected_parent_tree);
+            // The tree check of the engine (MQ-02): a landing whose real tree is not the tree
+            // the queue branch had when it was landed justifies a halt.
+            let tested_tip = if car.in_place {
+                l.before.first().map(|p| p.head_sha.clone())
+            } else {
+                l.draft_before.as_ref().map(|d| d.head_sha.clone())
+            };
+            if let (Some(tip), Some(last)) = (tested_tip, l.commits.last())
+                && forge.repo.tree_id_of(&tip) != forge.repo.tree_id_of(&last.sha)
+            {
+                self.tree_mismatch.insert(l.base_branch.clone());
+            }
             if !parent_ok && never && parent.is_some() {
+                // The base moved under the car: only commits made outside the queue (or the
+                // landings of the pull requests ahead in this car) may lie between the base it
+                // was tested on and the actual parent; the user opted out of retesting after
+                // external merges, nothing else.
+                let ahead: Vec<u64> = car.prefix[..idx0].iter().map(|(n, ..)| *n).collect();
+                let mut reached = false;
+                let mut foreign = Vec::new();
+                for sha in forge
+                    .repo
+                    .first_parent_history(parent.as_deref().unwrap_or_default())
+                {
+                    if sha == car.base_sha {
+                        reached = true;
+                        break;
+                    }
+                    let external = forge.external_commits.contains(&sha);
+                    let ahead_landing = self.landed_by.get(&sha).is_some_and(|n| ahead.contains(n));
+                    if !external && !ahead_landing {
+                        foreign.push(sha[..7].to_string());
+                    }
+                }
+                self.check("I0", reached && foreign.is_empty(), t, || {
+                    format!(
+                        "never mode: #{first} of car {} landed on a parent that is not its tested \
+                         base plus external commits (base reached: {reached}; other commits: \
+                         {foreign:?})",
+                        car.id
+                    )
+                });
                 // `reset_on_external_merge: never`: the tested change on the actual parent.
                 self.note(
                     "I0",
@@ -485,23 +536,29 @@ impl Checker {
         rules: &Rules,
     ) {
         let t = forge.now();
+        // A halt holds pull requests on purpose only when a landing really did not match the
+        // tested tree; any other halt with pull requests left is a wedge (I2).
+        let mismatch = self.tree_mismatch.clone();
+        let justified = |base: &str| mismatch.contains(base);
+        let mut wedged = Vec::new();
         for (n, e) in &state.queued {
             let halted = state.trains.get(&e.base).and_then(|t| t.halted.clone());
             match halted {
-                Some(reason) => self.note("I2", format!("#{n} held by a halted queue: {reason}")),
-                None => self.check("I2", false, t, || {
-                    format!("#{n} still queued at quiescence ({:?})", e.status)
-                }),
+                Some(reason) if justified(&e.base) => {
+                    self.note("I2", format!("#{n} held by a halted queue: {reason}"))
+                }
+                Some(reason) => wedged.push(format!(
+                    "#{n} held by a halt the forge's landings do not justify: {reason}"
+                )),
+                None => wedged.push(format!("#{n} still queued at quiescence ({:?})", e.status)),
             }
         }
-        let ok = state.queued.is_empty()
-            || state.queued.values().all(|e| {
-                state
-                    .trains
-                    .get(&e.base)
-                    .is_some_and(|t| t.halted.is_some())
-            });
-        self.check("I2", ok, t, || "queued pull requests left".into());
+        for w in &wedged {
+            self.check("I2", false, t, || w.clone());
+        }
+        self.check("I2", wedged.is_empty(), t, || {
+            "queued pull requests left".into()
+        });
         self.branches(forge, state, rules, t, true);
         let leftover: Vec<String> = state.trains.values().flat_map(|t| t.branches()).collect();
         self.check(
@@ -562,6 +619,40 @@ mod tests {
     use crate::sim::SimForge;
     use schlange_config::rules::Rules;
     use schlange_core::State;
+
+    /// Critic 1abc: a halt must not hide a wedge. A halted queue with pull requests left and no
+    /// landing whose tree differed from the tested tree violates I2.
+    #[test]
+    fn an_unjustified_halt_is_a_wedge() {
+        use schlange_core::engine::{EntryStatus, QueueEntry};
+        let rules = Rules::from_yaml("queue_rules:\n  - name: default\n").unwrap();
+        let forge = SimForge::new("main", Tree::new(), vec![], 0);
+        let mut state = State::default();
+        let mut train = schlange_core::queue::Train::new("main");
+        train.halted = Some("no reason".into());
+        state.trains.insert("main".into(), train);
+        state.queued.insert(
+            1,
+            QueueEntry {
+                queue: "default".into(),
+                rule: "r".into(),
+                since: 0,
+                head_sha: "h".into(),
+                base: "main".into(),
+                seq: 1,
+                waiting_since: 0,
+                status: EntryStatus::Waiting,
+                by: None,
+            },
+        );
+        let mut c = Checker::new();
+        c.at_quiescence(&forge, &state, &rules);
+        assert!(
+            !c.results["I2"].violations.is_empty(),
+            "{:?}",
+            c.results["I2"]
+        );
+    }
 
     #[test]
     fn an_untested_commit_on_main_violates_i0_and_a_stray_branch_violates_i3() {

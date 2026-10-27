@@ -330,13 +330,14 @@ fn max_checks_retries_recreates_the_draft() {
     assert_eq!(none.outcome(1), "dequeued CHECKS_FAILED");
 }
 
-/// `allow_queue_branch_edit: true`: a foreign push to the front car's branch is accepted, the
-/// car keeps going on the pushed head and the car behind is rebuilt
-/// (BATCH_AHEAD_BRANCH_EDITED). With `squash` (the only method built) what lands is the pull
-/// request without the edit, so the engine halts on the tree mismatch (MQ-02); `config
-/// validate` rejects this combination for that reason, as Mergify does.
+/// `allow_queue_branch_edit: true` with `squash`: the option needs a method that lands the
+/// batch branch itself (docs), so the engine does not accept the edit (`config validate`
+/// rejects the combination too). Before, it accepted it, landed the pull request without the
+/// edit although the checks ran on the edited head, and halted on the tree mismatch; the
+/// strengthened I0 (green tied to the draft's head being the car's tested head) flags that
+/// landing. Now the edit dequeues as without the option, and nothing untested lands.
 #[test]
-fn allow_queue_branch_edit_accepts_the_edit() {
+fn allow_queue_branch_edit_with_squash_refuses_the_edit() {
     let r = Sim::new(
         "edit",
         &rules_with("", "    allow_queue_branch_edit: true\n"),
@@ -351,10 +352,11 @@ fn allow_queue_branch_edit_accepts_the_edit() {
     .at("5m", Action::PushQueueBranch(1))
     .run();
     let log = r.log_text();
-    assert!(!log.contains("DRAFT_PULL_REQUEST_CHANGED"), "{log}");
-    assert!(log.contains("BATCH_AHEAD_BRANCH_EDITED"), "{log}");
-    assert!(log.contains("HALT queue of main"), "{log}");
-    for id in ["I0", "I1", "I3", "I4"] {
+    assert!(log.contains("DRAFT_PULL_REQUEST_CHANGED"), "{log}");
+    assert!(!log.contains("HALT queue of main"), "{log}");
+    assert_eq!(r.outcome(1), "dequeued DRAFT_PULL_REQUEST_CHANGED");
+    assert_eq!(r.outcome(2), "merged");
+    for id in ["I0", "I1", "I2", "I3", "I4"] {
         assert!(
             r.invariant(id).violations.is_empty(),
             "{id}\n{}",
