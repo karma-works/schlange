@@ -890,7 +890,16 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     }
     let batch: Vec<u64> = group.into_iter().take(size.max(1) as usize).collect();
     let train = &state.trains[base];
-    let mut prs: Vec<CarPr> = train.cars.last().map(|c| c.prs.clone()).unwrap_or_default();
+    // The pull requests ahead: those of the last car that are still queued (landed ones are
+    // part of the base now).
+    let mut prs: Vec<CarPr> = train
+        .cars
+        .last()
+        .map(|c| c.prs.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| state.queued.contains_key(&p.number))
+        .collect();
     for n in &batch {
         prs.push(CarPr {
             number: *n,
@@ -903,9 +912,9 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     let in_place = in_place_allowed(rules, rule)
         && no_cars
         && batch.len() == 1
-        && pr
-            .as_ref()
-            .is_some_and(|p| !p.behind_base && p.head_tree.is_some());
+        && pr.as_ref().is_some_and(|p| {
+            !p.behind_base && p.base_tip.as_ref() == Some(&base_sha) && p.head_tree.is_some()
+        });
     let mut car = Car {
         id,
         queue: queue.clone(),

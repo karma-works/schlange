@@ -17,6 +17,7 @@
 //!     fail_when_contains: [BUG]         # fail when a file contains a marker
 //!     fail_when_all: [A, B]             # fail when both markers are present (MQ-01)
 //!     fail_when_prs: [1, 2]             # fail when both pull requests are present
+//!     hang_when_contains: HANG          # never report when a file contains a marker
 //!     flake_rate: 0.1
 //! pull_requests:
 //!   - number: 1
@@ -136,6 +137,8 @@ struct CiSpec {
     fail_when_all: Vec<String>,
     #[serde(default)]
     fail_when_prs: Vec<u64>,
+    #[serde(default)]
+    hang_when_contains: OneOrMany,
     #[serde(default)]
     flake_rate: f64,
 }
@@ -341,6 +344,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         s.fail_when_contains = c.fail_when_contains.list();
         s.fail_when_all = c.fail_when_all.clone();
         s.fail_when_prs = c.fail_when_prs.clone();
+        s.hang_when_contains = c.hang_when_contains.list();
         s.flake_rate = c.flake_rate;
         scripts.push(s);
     }

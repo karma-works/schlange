@@ -32,6 +32,8 @@ pub struct CiScript {
     pub fail_when_all: Vec<String>,
     /// Fails when all of these pull requests' changes are in the tree (semantic conflict).
     pub fail_when_prs: Vec<u64>,
+    /// Never reports when any file contains one of these markers (a hanging job, MQ-37).
+    pub hang_when_contains: Vec<String>,
     /// Probability that a run which would succeed fails anyway.
     pub flake_rate: f64,
 }
@@ -47,6 +49,7 @@ impl CiScript {
             fail_when_contains: vec![],
             fail_when_all: vec![],
             fail_when_prs: vec![],
+            hang_when_contains: vec![],
             flake_rate: 0.0,
         }
     }
@@ -68,6 +71,9 @@ impl CiScript {
         flake: f64,
     ) -> Option<Conclusion> {
         let contains = |m: &String| tree.values().any(|c| c.contains(m.as_str()));
+        if self.hang_when_contains.iter().any(contains) {
+            return None;
+        }
         if self.fail_when_contains.iter().any(contains)
             || (!self.fail_when_all.is_empty() && self.fail_when_all.iter().all(contains))
             || (!self.fail_when_prs.is_empty() && self.fail_when_prs.iter().all(|n| present(*n)))

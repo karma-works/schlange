@@ -54,6 +54,10 @@ impl CiScript {
         self.fail_when_prs = prs.to_vec();
         self
     }
+    pub fn hangs_on(mut self, marker: &str) -> Self {
+        self.hang_when_contains.push(marker.to_string());
+        self
+    }
     pub fn flaky(mut self, rate: f64) -> Self {
         self.flake_rate = rate;
         self

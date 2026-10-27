@@ -1,0 +1,39 @@
+# A red batch of four with one culprit (queue-bisection, MQ-21). With two parallel checks the
+# first three are cut into parts [1, 2] and [3]; tests: [1, 2] and [1, 2, 3]. #3 breaks the full
+# suite: [1, 2] passes, [1, 2, 3] fails, so #1 and #2 land, #4 goes back to the queue and the
+# failing part [3] is a single pull request: the culprit, dequeued with CHECKS_FAILED.
+name: p1-bisection
+description: Bisection of a red batch finds the single culprit; the others merge.
+config: configs/two-step-batch.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    fail_when_contains: BUG
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "BUG in c\n" } }
+  - { number: 4, author: bot, files: { d.txt: "d\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 4, state: merged }
+expect_merged_order: [1, 2, 4]
+expect_log:
+  - "(checks #1 #2 #3 #4)"
+  - "(checks #1 #2)"
+  - "(checks #1 #2 #3)"

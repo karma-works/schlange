@@ -1,0 +1,50 @@
+# Arztagent's batches: batch_size 5, batch_max_wait_time 5 minutes (queue-batch, MQ-26).
+# Three pull requests are queued at +0:05 (KI-Review takes 5 minutes): the batch is not full,
+# so it starts when the wait ends, at +0:10, with three. Later five pull requests are queued at
+# the same moment: that batch is full and starts at once, without waiting.
+name: p1-batch-five
+description: A batch below the size waits batch_max_wait_time; a full batch starts at once.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: [backend/a.py] }
+  - { number: 2, author: arztagent-bot, files: [backend/b.py] }
+  - { number: 3, author: arztagent-bot, files: [backend/c.py] }
+  - { number: 4, author: arztagent-bot, files: [backend/d.py] }
+  - { number: 5, author: arztagent-bot, files: [backend/e.py] }
+  - { number: 6, author: arztagent-bot, files: [backend/f.py] }
+  - { number: 7, author: arztagent-bot, files: [backend/g.py] }
+  - { number: 8, author: arztagent-bot, files: [backend/h.py] }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 30m, open: 4 }
+  - { at: 30m, open: 5 }
+  - { at: 30m, open: 6 }
+  - { at: 30m, open: 7 }
+  - { at: 30m, open: 8 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+  - { pr: 5, state: merged }
+  - { pr: 6, state: merged }
+  - { pr: 7, state: merged }
+  - { pr: 8, state: merged }
+expect_merged_order: [1, 2, 3, 4, 5, 6, 7, 8]
+expect_log:
+  - "(checks #1 #2 #3)"
+  - "(checks #4 #5 #6 #7 #8)"

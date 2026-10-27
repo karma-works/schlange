@@ -5,7 +5,7 @@
 //! A file conflicts when both sides changed it differently relative to the merge base. There
 //! is no line-level merge: two changes to the same file always conflict unless they are equal.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
@@ -34,6 +34,8 @@ pub struct Commit {
     pub tree_id: String,
     pub parents: Vec<Sha>,
     pub message: String,
+    /// This commit and every ancestor.
+    pub ancestors: BTreeSet<Sha>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -71,12 +73,23 @@ impl Repo {
         h.update(b"\n\n");
         h.update(message.as_bytes());
         let sha = hex(&h.finalize())[..40].to_string();
-        self.commits.entry(sha.clone()).or_insert(Commit {
-            tree,
-            tree_id: tid,
-            parents,
-            message: message.to_string(),
-        });
+        if !self.commits.contains_key(&sha) {
+            let mut ancestors: BTreeSet<Sha> = BTreeSet::new();
+            for p in &parents {
+                ancestors.extend(self.ancestors(p).iter().cloned());
+            }
+            ancestors.insert(sha.clone());
+            self.commits.insert(
+                sha.clone(),
+                Commit {
+                    tree,
+                    tree_id: tid,
+                    parents,
+                    message: message.to_string(),
+                    ancestors,
+                },
+            );
+        }
         sha
     }
 
@@ -128,16 +141,9 @@ impl Repo {
         self.refs.remove(name).is_some()
     }
 
-    /// The commit and all its ancestors.
-    pub fn ancestors(&self, sha: &str) -> BTreeSet<Sha> {
-        let mut seen = BTreeSet::new();
-        let mut todo = VecDeque::from([sha.to_string()]);
-        while let Some(s) = todo.pop_front() {
-            if seen.insert(s.clone()) {
-                todo.extend(self.get(&s).parents.iter().cloned());
-            }
-        }
-        seen
+    /// The commit and all its ancestors (computed once per commit, at creation).
+    pub fn ancestors(&self, sha: &str) -> &BTreeSet<Sha> {
+        &self.get(sha).ancestors
     }
 
     pub fn is_ancestor(&self, ancestor: &str, of: &str) -> bool {
@@ -147,21 +153,18 @@ impl Repo {
     /// A best common ancestor: one that is not an ancestor of another common ancestor. Ties
     /// are broken by id, so the result is deterministic.
     pub fn merge_base(&self, a: &str, b: &str) -> Option<Sha> {
-        let common: BTreeSet<Sha> = self
-            .ancestors(a)
-            .intersection(&self.ancestors(b))
-            .cloned()
-            .collect();
-        let mut best: Vec<&Sha> = common
-            .iter()
-            .filter(|c| {
-                !common
-                    .iter()
-                    .any(|o| o != *c && self.ancestors(o).contains(*c))
-            })
-            .collect();
-        best.sort();
-        best.first().map(|s| s.to_string())
+        let common: BTreeSet<&Sha> = self.ancestors(a).intersection(self.ancestors(b)).collect();
+        // Proper ancestors of common ancestors are not best.
+        let mut dominated: BTreeSet<&Sha> = BTreeSet::new();
+        for c in &common {
+            for p in &self.get(c).parents {
+                dominated.extend(self.ancestors(p).iter());
+            }
+        }
+        common
+            .into_iter()
+            .find(|c| !dominated.contains(*c))
+            .map(|s| s.to_string())
     }
 
     /// Three-way merge of trees at file level.

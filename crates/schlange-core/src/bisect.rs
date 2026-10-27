@@ -110,6 +110,20 @@ fn start(
     code: &'static str,
     text: &str,
 ) {
+    // Pull requests that left the queue meanwhile (while the passing parts landed) are gone;
+    // with fewer than two left there is nothing to split, they wait for a new batch.
+    let batch: Vec<u64> = batch
+        .into_iter()
+        .filter(|n| state.queued.contains_key(n))
+        .collect();
+    if batch.len() < 2 {
+        for n in batch {
+            if let Some(e) = state.queued.get_mut(&n) {
+                e.status = EntryStatus::Waiting;
+            }
+        }
+        return;
+    }
     let slots = rules.merge_queue.max_parallel_checks as usize;
     let limit = rule(rules, queue).and_then(|r| r.batch_max_failure_resolution_attempts);
     let last_round = limit.is_some_and(|l| round >= l);
@@ -338,6 +352,18 @@ pub(crate) fn resolve(
     }
     let last = *b.batch.last().expect("non-empty batch");
     let limit = rule(rules, &b.queue).and_then(|r| r.batch_max_failure_resolution_attempts);
+    // Before anything leaves the queue, the bisection keeps only the pull requests it still
+    // owns (the landing test's and the part to split next); otherwise a dequeue below would
+    // abort it.
+    let narrow = |state: &mut State, keep: &[u64]| {
+        if let Some(b) = state
+            .trains
+            .get_mut(base)
+            .and_then(|t| t.bisection.as_mut())
+        {
+            b.batch.retain(|n| keep.contains(n));
+        }
+    };
     if b.only_first {
         let first = b.parts[0].clone();
         let rest: Vec<u64> = b.batch[first.len()..].to_vec();
@@ -345,6 +371,8 @@ pub(crate) fn resolve(
             None => {
                 let keep = test(0).map(|c| c.id);
                 close_tests(state, base, keep, out);
+                narrow(state, &first);
+                land_test(state, base, keep.expect("test 0"), None);
                 for n in rest {
                     dequeue(
                         state,
@@ -357,7 +385,6 @@ pub(crate) fn resolve(
                         out,
                     );
                 }
-                land_test(state, base, keep.expect("test 0"), None);
             }
             Some(_) => {
                 close_tests(state, base, None, out);
@@ -372,6 +399,11 @@ pub(crate) fn resolve(
         None => {
             let keep = test(b.tests - 1).map(|c| c.id);
             close_tests(state, base, keep, out);
+            narrow(state, &b.batch[..b.batch.len() - 1]);
+            match keep {
+                Some(k) => land_test(state, base, k, None),
+                None => state.trains.get_mut(base).expect("train").bisection = None,
+            }
             dequeue(
                 state,
                 rules,
@@ -379,10 +411,6 @@ pub(crate) fn resolve(
                 DequeueReason::new(b.code, format!("every split without it passed: {}", b.text)),
                 out,
             );
-            match keep {
-                Some(k) => land_test(state, base, k, None),
-                None => state.trains.get_mut(base).expect("train").bisection = None,
-            }
         }
         Some(f) => {
             let keep = if f > 0 {
@@ -393,22 +421,26 @@ pub(crate) fn resolve(
             close_tests(state, base, keep, out);
             let mut after: Vec<u64> = b.parts[f + 1..].concat();
             after.push(last);
-            back_to_queue(state, &after, out);
             let part = b.parts[f].clone();
-            let next = if part.len() == 1 || limit.is_some_and(|l| b.round >= l) {
-                dequeue_part(state, rules, &b, &part, out);
-                None
-            } else {
-                Some((part, b.round + 1))
-            };
+            let split_again = part.len() > 1 && !limit.is_some_and(|l| b.round >= l);
+            let next = split_again.then(|| (part.clone(), b.round + 1));
+            let mut owned: Vec<u64> = b.parts[..f].concat();
+            if split_again {
+                owned.extend(&part);
+            }
+            narrow(state, &owned);
             match keep {
-                Some(k) => land_test(state, base, k, next),
-                None => {
-                    state.trains.get_mut(base).expect("train").bisection = None;
-                    if let Some((part, round)) = next {
-                        start(state, rules, base, &b.queue, part, round, b.code, &b.text);
-                    }
-                }
+                Some(k) => land_test(state, base, k, next.clone()),
+                None => state.trains.get_mut(base).expect("train").bisection = None,
+            }
+            back_to_queue(state, &after, out);
+            if !split_again {
+                dequeue_part(state, rules, &b, &part, out);
+            }
+            if keep.is_none()
+                && let Some((part, round)) = next
+            {
+                start(state, rules, base, &b.queue, part, round, b.code, &b.text);
             }
         }
     }

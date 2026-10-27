@@ -647,6 +647,7 @@ impl SimForge {
                 pr.files = self.repo.changed_paths(&mb, &pr.head_sha);
             }
             pr.behind_base = !self.repo.is_ancestor(tip, &pr.head_sha);
+            pr.base_tip = Some(tip.clone());
         }
         pr.head_tree = Some(self.repo.tree_id_of(&pr.head_sha));
         Some(pr)

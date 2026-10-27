@@ -61,6 +61,9 @@ pub struct PullRequest {
     /// The base branch tip is not an ancestor of the head (the pull request is behind).
     #[serde(default)]
     pub behind_base: bool,
+    /// The base branch tip when `behind_base` was computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_tip: Option<String>,
     /// Tree id of the head commit, when the forge reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_tree: Option<String>,
@@ -84,6 +87,7 @@ impl PullRequest {
             checks: vec![],
             merged: false,
             behind_base: false,
+            base_tip: None,
             head_tree: None,
         }
     }

@@ -1,0 +1,32 @@
+# Someone pushes to a queue branch (MQ-08, MQ-53; queue-branch-edit). With the default
+# `allow_queue_branch_edit: false` the tested state no longer holds: the pull request checked on
+# that branch leaves with DRAFT_PULL_REQUEST_CHANGED and the car behind is rebuilt
+# (BATCH_AHEAD_BRANCH_EDITED). The foreign file never reaches main.
+name: p1-queue-branch-push
+description: A foreign push to a queue branch dequeues its pull request; nothing unreviewed lands.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 4m, push_queue_branch: 1 }
+
+expect:
+  - { pr: 1, state: dequeued, reason: DRAFT_PULL_REQUEST_CHANGED }
+  - { pr: 2, state: merged }
+expect_merged_order: [2]
+expect_log:
+  - "foreign push to mergify/merge-queue/"
+  - "BATCH_AHEAD_BRANCH_EDITED"

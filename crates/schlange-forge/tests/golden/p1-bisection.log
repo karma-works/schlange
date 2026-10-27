@@ -1,0 +1,46 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:00:00  action    #2 opened by bot on main, files: b.txt
++0:00:00  action    #3 opened by bot on main, files: c.txt
++0:00:00  action    #4 opened by bot on main, files: d.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  ci        #2 check `quick` completed on bba8845: success
++0:01:00  ci        #3 check `quick` completed on 9e8ef11: success
++0:01:00  ci        #4 check `quick` completed on 0c551c0: success
++0:01:00  webhook   #1 check `quick` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:01:00  webhook   #2 check `quick` completed on bba8845: success
++0:01:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:01:00  webhook   #3 check `quick` completed on 9e8ef11: success
++0:01:00  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
++0:01:00  webhook   #4 check `quick` completed on 0c551c0: success
++0:01:00  decision  enqueue #4 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #1 #2 #3 #4 (checks #1 #2 #3 #4)
++0:01:00  reply     car 5 built at ea96506, draft #1000
++0:11:00  ci        #1000 check `full` completed on ea96506: failure
++0:11:00  webhook   #1000 check `full` completed on ea96506: failure
++0:11:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1000
++0:11:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 5a8b940 + #1 #2 (checks #1 #2)
++0:11:00  reply     car 6 built at 405b1bd, draft #1001
++0:11:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base 5a8b940 + #1 #2 #3 (checks #1 #2 #3)
++0:11:00  reply     car 7 built at 2eb1d8f, draft #1002
++0:21:00  ci        #1001 check `full` completed on 405b1bd: success
++0:21:00  ci        #1002 check `full` completed on 2eb1d8f: failure
++0:21:00  webhook   #1002 check `full` completed on 2eb1d8f: failure
++0:21:00  decision  close car 7, delete mergify/merge-queue/a7693b7b9b, close #1002
++0:21:00  decision  checks of #4 ended, stays queued: BATCH_AHEAD_FAILED (code assumed): tested on top of a failing part while the batch was split
++0:21:00  decision  dequeue #3 from `default`: CHECKS_FAILED: found by splitting the batch: merge conditions are false on #1000; failed: full
++0:21:00  decision  read #1 #2 #1001 main mergify/merge-queue/744dfff868 before acting
++0:21:00  decision  land car 6: squash #1 #2 onto main if it is still 5a8b940
++0:21:00  reply     car 6 landed #1 as 84886d8, #2 as d9ff2dc
++0:21:00  decision  close car 6, delete mergify/merge-queue/744dfff868, close #1001
++0:21:00  decision  #1 merged as 84886d8
++0:21:00  decision  #2 merged as d9ff2dc
++0:21:00  decision  build car 9 on mergify/merge-queue/8cd12edb01: base d9ff2dc + #4 (checks #4)
++0:21:00  reply     car 9 built at 572893c, draft #1003
++0:31:00  ci        #1003 check `full` completed on 572893c: success
++0:31:00  webhook   #1003 check `full` completed on 572893c: success
++0:31:00  decision  read #4 #1003 main mergify/merge-queue/8cd12edb01 before acting
++0:31:00  decision  land car 9: squash #4 onto main if it is still d9ff2dc
++0:31:00  reply     car 9 landed #4 as 8729e2a
++0:31:00  decision  close car 9, delete mergify/merge-queue/8cd12edb01, close #1003
++0:31:00  decision  #4 merged as 8729e2a

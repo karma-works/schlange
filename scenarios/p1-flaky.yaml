@@ -1,0 +1,39 @@
+# A flaky merge check (MQ-22): the full suite fails 25 % of the time without cause. Draws are
+# seeded per tree, check and attempt, so the run is deterministic. Without retries
+# (`max_checks_retries: 0`, the default) a flake dequeues an innocent pull request with
+# CHECKS_FAILED, and the queue must still keep I0–I4: nothing red lands, nothing gets lost.
+# With seed 3, the car of #1 flakes; #1 is dequeued and the cars behind it are rebuilt.
+# `faults: none`: which trees are tested depends on timing, so a disturbed delivery draws other
+# flakes and I5 (same end state) cannot hold for flaky CI; I5 is reported not_checked here.
+name: p1-flaky
+description: A flaky merge check dequeues an innocent pull request; invariants hold.
+config: configs/two-step.yml
+seed: 3
+faults: none
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    flake_rate: 0.25
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+  - { number: 4, author: bot, files: { d.txt: "d\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+
+expect:
+  - { pr: 1, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
