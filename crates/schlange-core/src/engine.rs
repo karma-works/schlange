@@ -52,6 +52,9 @@ pub enum LandError {
     HeadChanged { number: u64 },
     /// The squash merge did not apply.
     Conflict { number: u64 },
+    /// The forge refused the merge for good (missing permission, protection, validation):
+    /// retrying the same head cannot succeed. `message` is the forge's reason with a hint.
+    Refused { number: u64, message: String },
 }
 
 /// What the forge reports.
@@ -112,6 +115,13 @@ pub enum Event {
         with_base: bool,
         /// Pull requests ahead it conflicts with (when it merges onto the base alone).
         with: Vec<u64>,
+    },
+    /// Reply to `BuildCar`: the forge refuses pull request `number` for good (for example a
+    /// workflow change without the permission to push it); nothing was created for the car.
+    CarRefused {
+        car: u64,
+        number: u64,
+        message: String,
     },
     /// Reply to `Land`: the commits created, in order, and the error that stopped it.
     Landed {
@@ -399,7 +409,12 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             number,
             with_base,
             with,
-        } => queue::car_conflict(state, rules, *car, *number, *with_base, with, out),
+        } => queue::car_conflict(state, rules, *car, *number, *with_base, with, None, out),
+        Event::CarRefused {
+            car,
+            number,
+            message,
+        } => queue::car_conflict(state, rules, *car, *number, true, &[], Some(message), out),
         Event::Landed {
             car,
             commits,

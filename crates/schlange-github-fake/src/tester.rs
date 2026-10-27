@@ -155,6 +155,7 @@ impl Tester {
             retry: RetryPolicy::fast(),
             budget: self.budget.clone(),
             timeout: Duration::from_secs(10),
+            allow_insecure_http: true,
         });
         let clock = Arc::new(ManualClock::new(1_800_000_000));
         let serve_cfg = ServeConfig {

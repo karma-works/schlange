@@ -43,6 +43,9 @@ tiny_http = "0.12"
 ring = "0.17"
 rustls-pki-types = { version = "1.12", features = ["std"] }
 yaml-rust2 = "0.13"
+# `serve` persistence (journal, snapshots, webhook dedup, audit): SQLite compiled in (no system
+# library, works for the static musl build), without the default extras.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

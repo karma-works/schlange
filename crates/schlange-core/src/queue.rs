@@ -421,6 +421,9 @@ pub(crate) fn car_closed(state: &mut State, car: u64) {
     }
 }
 
+/// A car could not be built: `number` conflicts (with the base or with pull requests ahead),
+/// or the forge refuses it for good (`refused`, the forge's reason).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn car_conflict(
     state: &mut State,
     rules: &Rules,
@@ -428,6 +431,7 @@ pub(crate) fn car_conflict(
     number: u64,
     with_base: bool,
     with: &[u64],
+    refused: Option<&str>,
     out: &mut Vec<Decision>,
 ) {
     let Some((base, i)) = find_car(state, car) else {
@@ -453,7 +457,15 @@ pub(crate) fn car_conflict(
     if in_bisection {
         bisect::abort(state, &base, None, &[number], out);
     }
-    if with_base {
+    if let Some(message) = refused {
+        dequeue(
+            state,
+            rules,
+            number,
+            DequeueReason::new(code::PR_UNEXPECTEDLY_FAILED_TO_MERGE, message),
+            out,
+        );
+    } else if with_base {
         dequeue(
             state,
             rules,
@@ -652,6 +664,16 @@ pub(crate) fn landed(
                             code::PR_UNEXPECTEDLY_FAILED_TO_MERGE,
                             "the squash merge did not apply",
                         ),
+                        out,
+                    );
+                    DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left the queue"))
+                }
+                LandError::Refused { number, message } => {
+                    dequeue(
+                        state,
+                        rules,
+                        *number,
+                        DequeueReason::new(code::PR_UNEXPECTEDLY_FAILED_TO_MERGE, message.clone()),
                         out,
                     );
                     DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left the queue"))

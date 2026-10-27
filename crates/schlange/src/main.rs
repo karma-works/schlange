@@ -102,13 +102,18 @@ struct GithubArgs {
     /// Repositories (`owner/name`), comma-separated.
     #[arg(long = "repo", env = "SCHLANGE_REPOS", value_delimiter = ',')]
     repos: Vec<String>,
-    /// API base URL (tests point it at a fake GitHub).
+    /// API base URL (tests point it at a fake GitHub). Must be `https://` unless
+    /// `--insecure-test-api` is given.
     #[arg(
         long,
         env = "SCHLANGE_GITHUB_API_URL",
         default_value = "https://api.github.com"
     )]
     api_url: String,
+    /// Allow a plain `http://` API URL. Only for tests against a fake GitHub: the app's JWT and
+    /// installation tokens would travel unencrypted.
+    #[arg(long, env = "SCHLANGE_INSECURE_TEST_API")]
+    insecure_test_api: bool,
 }
 
 impl GithubArgs {
@@ -120,6 +125,18 @@ impl GithubArgs {
         let (Some(app_id), Some(key_path)) = (&self.app_id, &self.private_key) else {
             return Err("needs --app-id and --private-key (or SCHLANGE_GITHUB_APP_ID and SCHLANGE_GITHUB_PRIVATE_KEY)".into());
         };
+        if !self.api_url.starts_with("https://") {
+            if !self.insecure_test_api {
+                return Err(format!(
+                    "the API URL {} is not https://; refusing to send credentials over it (for tests against a fake GitHub only: --insecure-test-api)",
+                    self.api_url
+                ));
+            }
+            eprintln!(
+                "schlange: WARNING: --insecure-test-api: credentials go unencrypted to {}",
+                self.api_url
+            );
+        }
         let pem = std::fs::read(key_path)
             .map_err(|e| format!("cannot read {}: {e}", key_path.display()))?;
         let key = schlange_github::jwt::AppKey::from_pem(&pem).map_err(|e| e.to_string())?;
@@ -131,6 +148,7 @@ impl GithubArgs {
                 retry: Default::default(),
                 budget: Default::default(),
                 timeout: std::time::Duration::from_secs(30),
+                allow_insecure_http: self.insecure_test_api,
             },
         ))
     }

@@ -4,22 +4,43 @@
 //! - **Cars.** `BuildCar` creates the queue branch (`<prefix><10 hex>`) at the expected base
 //!   (`POST /git/refs`), merges each pull request head into it with the merges API, and opens a
 //!   draft pull request on it. A merge conflict deletes the branch again and replies
-//!   `CarConflict`.
-//! - **Landing.** Each pull request is squash-merged with `PUT /pulls/{n}/merge` and the
-//!   tested head as `sha`. Right before, the base is read and compared with the expected SHA;
-//!   right after, the landed commit's parent and tree are read and compared with the expected
-//!   base and the tree the car tested for that prefix. A different tree stops the landing; the
-//!   engine then halts the queue (MQ-02). GitHub has no compare-and-swap on the base; see
-//!   [`crate::api`].
+//!   `CarConflict`; a permanent refusal (403 without `workflows: write`, 422) replies
+//!   `CarRefused`, so the pull request leaves the queue with GitHub's reason instead of
+//!   blocking it (G4).
+//! - **Landing** (see [`crate::api`] for why GitHub has no compare-and-swap on the base). Each
+//!   pull request is squash-merged with `PUT /pulls/{n}/merge` and the tested head as `sha`.
+//!   Every attempt re-validates first, from fresh reads: the pull request is open at the tested
+//!   head, and the base is exactly the expected commit, read immediately before the call.
+//!   Afterwards the landed commit's parent and tree are compared with the expected base and the
+//!   tree the car tested for that prefix; a different tree stops the landing and the engine
+//!   halts the queue (MQ-02). What is left open is the time between that base read and GitHub
+//!   executing the call (one request); a push inside it is caught afterwards, not prevented.
+//! - **A landing is never retried here** (G1). When the merge call fails, the adapter reports
+//!   `Failed` to the engine (after a backoff), and the engine reads the pull requests and the
+//!   base, checks its conditions again, and decides anew: a pull request dequeued in the
+//!   meantime (a `halt` label) is never merged by a stale retry. `CloseCar` also drops anything
+//!   still pending for its car.
+//! - **Transient refusals** (G3): a 405 ("base branch was modified", mergeability still being
+//!   computed) or 409 is retried a few times, each time after reading the pull request and the
+//!   base again. A permanent refusal (403, 422, a 405 that stays) ends the landing with
+//!   `LandError::Refused` and GitHub's message plus a hint: the pull request is dequeued with
+//!   `PR_UNEXPECTEDLY_FAILED_TO_MERGE` instead of being retried forever (G4).
 //! - **Unknown outcomes.** A write that failed with 5xx or a timeout may have happened
 //!   (MQ-35). The adapter reads before it decides: a pull request that is merged after a
 //!   failed merge call counts as landed (never merged twice), a branch or draft that exists
 //!   after a failed create is used.
+//! - **Read your writes.** GitHub's reads can lag behind writes. The adapter remembers what it
+//!   wrote: a pull request it merged stays merged, a draft it closed stays closed, and a branch
+//!   read that returns a commit the adapter moved the branch away from is read again (and
+//!   reported as unavailable if it stays stale), so the engine's verification reads are not
+//!   older than the adapter's own writes.
 //! - **Provisional failures.** Reads that fail (5xx, 404 storms, rate limits) never become
 //!   facts: a pull request that cannot be read is left out of the snapshot (the engine keeps
 //!   what it knew), a branch is reported missing only when a canary read of the default branch
-//!   works. A decision that could not be carried out is kept and retried with backoff; the
-//!   engine waits for its reply (W-24).
+//!   works. A build, close or read that could not be carried out is kept and retried with
+//!   backoff; the engine waits for its reply (W-24).
+//! - **`mergeable: null`** is "not computed yet", never "no conflict": the adapter reads again
+//!   a few times and otherwise retries the build later.
 //! - **Cosmetics.** The queue's own check run on each queued pull request is cosmetic: it uses
 //!   the lowest priority and waits when the budget is low. Check runs of Schlange's own app
 //!   are ignored when reading checks, so they never feed back into conditions.
@@ -38,6 +59,7 @@ use schlange_core::{Decision, Event, State};
 
 use crate::api::{MergeOutcome, Pull, PullMergeOutcome, RepoApi};
 use crate::client::{Error, Priority};
+use crate::store::{AuditRecord, Store};
 use crate::time::Clock;
 use crate::webhook::{conclusion, status_conclusion};
 
@@ -62,6 +84,13 @@ struct PendingOp {
     attempts: u32,
     next: Instant,
     last_error: String,
+}
+
+/// A failed landing, reported to the engine once its backoff has passed.
+struct DelayedReply {
+    car: u64,
+    due: Instant,
+    event: Event,
 }
 
 #[derive(Clone, Debug)]
@@ -97,20 +126,41 @@ pub fn queue_prefixes(rules: &Rules) -> BTreeSet<String> {
         .collect()
 }
 
+/// How long a branch tip the adapter moved away from counts as a stale read.
+const STALE_WINDOW: Duration = Duration::from_secs(300);
+const CLOSED_CARS_MAX: usize = 4096;
+
 pub struct GithubForge {
     pub api: RepoApi,
     clock: Arc<dyn Clock>,
     pub opts: ForgeOptions,
     cars: BTreeMap<u64, CarInfo>,
     pending: Vec<PendingOp>,
+    delayed: Vec<DelayedReply>,
+    /// Failed landings in a row per car (backoff).
+    land_failures: BTreeMap<u64, u32>,
+    /// Cars the engine closed: nothing is carried out for them any more.
+    closed_cars: BTreeSet<u64>,
+    closed_order: VecDeque<u64>,
     cosmetics: VecDeque<Cosmetic>,
     queue_checks: BTreeMap<u64, u64>,
     heads: RefCell<BTreeMap<u64, String>>,
     default_branch: RefCell<Option<String>>,
+    /// Read your writes: per branch, the commits the adapter moved it away from, and when.
+    left_tips: BTreeMap<String, Vec<(String, Instant)>>,
+    /// Pull requests the adapter merged (merge commit), and drafts it closed.
+    known_merged: BTreeMap<u64, String>,
+    known_closed: BTreeSet<u64>,
     /// What the adapter did, newest last (bounded).
     pub log: VecDeque<String>,
     pub retry_base: Duration,
     pub retry_max: Duration,
+    /// Attempts for a transient 405/409 on the merge call, each after fresh reads.
+    pub transient_retries: u32,
+    /// Reads of `mergeable` while GitHub still computes it.
+    pub mergeable_polls: u32,
+    /// Car prefix trees across restarts, and the audit of every landing.
+    pub store: Option<Store>,
 }
 
 const LOG_MAX: usize = 2000;
@@ -130,6 +180,23 @@ fn dependabot_update_types(messages: &[String]) -> Vec<String> {
     out
 }
 
+/// GitHub's refusal as a dequeue text, with a hint for the operator.
+pub fn refusal_text(status: u16, message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let hint = if lower.contains("workflow") {
+        "the app needs `workflows: write` to merge changes under .github/workflows/ (grant it, or merge such pull requests by hand; `schlange doctor` lists the permissions)"
+    } else if status == 405 || lower.contains("protect") || lower.contains("rule") {
+        "branch protection or a ruleset blocks the app; it must be allowed to bypass them (`schlange doctor`, check ruleset-exception)"
+    } else if status == 422 {
+        "GitHub rejected the request; check the repository's merge settings (squash merging must be allowed)"
+    } else if status == 403 {
+        "the app lacks a permission for this (`schlange doctor`, check app-permissions)"
+    } else {
+        "see the service log"
+    };
+    format!("GitHub refused the merge (HTTP {status}): {message}. Hint: {hint}")
+}
+
 impl GithubForge {
     pub fn new(api: RepoApi, clock: Arc<dyn Clock>, opts: ForgeOptions) -> Self {
         GithubForge {
@@ -138,13 +205,23 @@ impl GithubForge {
             opts,
             cars: BTreeMap::new(),
             pending: Vec::new(),
+            delayed: Vec::new(),
+            land_failures: BTreeMap::new(),
+            closed_cars: BTreeSet::new(),
+            closed_order: VecDeque::new(),
             cosmetics: VecDeque::new(),
             queue_checks: BTreeMap::new(),
             heads: RefCell::new(BTreeMap::new()),
             default_branch: RefCell::new(None),
+            left_tips: BTreeMap::new(),
+            known_merged: BTreeMap::new(),
+            known_closed: BTreeSet::new(),
             log: VecDeque::new(),
             retry_base: Duration::from_secs(2),
             retry_max: Duration::from_secs(60),
+            transient_retries: 3,
+            mergeable_polls: 6,
+            store: None,
         }
     }
 
@@ -158,11 +235,47 @@ impl GithubForge {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.delayed.len()
     }
 
     pub fn cosmetic_count(&self) -> usize {
         self.cosmetics.len()
+    }
+
+    /// A short pause between transient retries and stale re-reads.
+    fn pause(&self) -> Duration {
+        (self.retry_base / 2).min(Duration::from_secs(2))
+    }
+
+    // ---- read your writes --------------------------------------------------------------
+
+    /// The adapter moved `branch` from `from` to `to`.
+    fn moved(&mut self, branch: &str, from: &str) {
+        let now = Instant::now();
+        let list = self.left_tips.entry(branch.to_string()).or_default();
+        list.retain(|(_, at)| now.duration_since(*at) < STALE_WINDOW);
+        list.push((from.to_string(), now));
+        if list.len() > 64 {
+            list.remove(0);
+        }
+    }
+
+    fn is_left_tip(&self, branch: &str, sha: &str) -> bool {
+        self.left_tips.get(branch).is_some_and(|l| {
+            l.iter()
+                .any(|(s, at)| s == sha && at.elapsed() < STALE_WINDOW)
+        })
+    }
+
+    fn closed_car(&mut self, car: u64) {
+        if self.closed_cars.insert(car) {
+            self.closed_order.push_back(car);
+            if self.closed_order.len() > CLOSED_CARS_MAX
+                && let Some(old) = self.closed_order.pop_front()
+            {
+                self.closed_cars.remove(&old);
+            }
+        }
     }
 
     // ---- reads -------------------------------------------------------------------------
@@ -180,9 +293,26 @@ impl GithubForge {
         prefixes.iter().any(|p| head_ref.starts_with(p.as_str()))
     }
 
+    /// A pull request as GitHub returns it, corrected by what the adapter wrote itself (merged
+    /// and closed are final; a read that says otherwise lags behind).
+    fn pull(&self, n: u64, prio: Priority) -> Result<Pull, Error> {
+        let mut p = self.api.pull(n, prio)?;
+        if !p.merged
+            && let Some(sha) = self.known_merged.get(&n)
+        {
+            p.merged = true;
+            p.state = "closed".into();
+            p.merge_commit_sha = Some(sha.clone());
+        }
+        if self.known_closed.contains(&n) {
+            p.state = "closed".into();
+        }
+        Ok(p)
+    }
+
     /// Reads a pull request with everything the engine evaluates.
     pub fn read_pr(&self, n: u64, prio: Priority) -> Result<PullRequest, Error> {
-        let p = self.api.pull(n, prio)?;
+        let p = self.pull(n, prio)?;
         self.pr_from(&p, prio)
     }
 
@@ -220,6 +350,7 @@ impl GithubForge {
                 seq: c.id,
             });
         }
+        // Every page of the combined status (more than 30 contexts are common in monorepos).
         for s in self.api.combined_status(&head, prio)?.statuses {
             pr.checks.push(CheckRun {
                 name: s.context.clone(),
@@ -235,7 +366,7 @@ impl GithubForge {
             return Ok(pr);
         }
         pr.files = self.api.pull_files(n, prio)?;
-        let tip = self.api.branch_sha(&p.base.ref_name, prio)?;
+        let tip = self.branch_tip(&p.base.ref_name, prio)?;
         let cmp = self.api.compare(&tip, &head, prio)?;
         pr.behind_base = cmp.behind_by > 0;
         pr.base_tip = Some(tip);
@@ -251,10 +382,28 @@ impl GithubForge {
         Ok(pr)
     }
 
+    /// A branch's SHA, read again while it shows a commit the adapter moved the branch away
+    /// from (read lag); `Unavailable` when it stays stale.
+    fn branch_tip(&self, name: &str, prio: Priority) -> Result<String, Error> {
+        for _ in 0..5 {
+            let sha = self.api.branch_sha(name, prio)?;
+            if !self.is_left_tip(name, &sha) {
+                return Ok(sha);
+            }
+            std::thread::sleep(self.pause() / 2);
+        }
+        Err(Error::Unavailable {
+            method: "GET".into(),
+            path: format!("/git/ref/heads/{name}"),
+            detail: "the read still shows a commit the queue moved the branch away from (stale)"
+                .into(),
+        })
+    }
+
     /// A branch's SHA; `Ok(None)` only when GitHub says 404 *and* a canary read of the
     /// default branch works (a 404 storm is not taken for a deleted branch, W-24).
     pub fn read_branch_checked(&self, name: &str, prio: Priority) -> Result<Option<String>, Error> {
-        match self.api.branch_sha(name, prio) {
+        match self.branch_tip(name, prio) {
             Ok(s) => Ok(Some(s)),
             Err(e @ Error::NotFound { .. }) => {
                 let default = self.default_branch(prio)?;
@@ -363,6 +512,7 @@ impl GithubForge {
             .filter(|p| {
                 p.user.login == self.opts.bot_login
                     && self.is_queue_head(&p.head.ref_name, &prefixes)
+                    && !self.known_closed.contains(&p.number)
             })
             .map(|p| (p.number, p.head.ref_name.clone()))
             .collect();
@@ -395,7 +545,10 @@ impl GithubForge {
         for (n, head) in &sweep.drafts {
             if !drafts.contains(n) && !branches.contains(head) {
                 match self.api.close_pull(*n, Priority::Normal) {
-                    Ok(()) => self.note(format!("closed orphan queue draft #{n}")),
+                    Ok(()) => {
+                        self.known_closed.insert(*n);
+                        self.note(format!("closed orphan queue draft #{n}"))
+                    }
                     Err(e) => self.note(format!("closing orphan draft #{n} failed: {e}")),
                 }
             }
@@ -415,6 +568,12 @@ impl GithubForge {
 
     // ---- decisions ---------------------------------------------------------------------
 
+    fn backoff(&self, attempts: u32) -> Duration {
+        self.retry_base
+            .saturating_mul(1 << attempts.min(10))
+            .min(self.retry_max)
+    }
+
     fn defer(&mut self, decision: &Decision, e: Error) {
         self.note(format!(
             "{} deferred, will retry: {e}",
@@ -429,9 +588,16 @@ impl GithubForge {
         });
     }
 
-    /// Retries deferred decisions that are due; returns the replies for the engine.
+    /// Retries deferred decisions that are due and releases due landing failures; returns
+    /// the replies for the engine.
     pub fn retry_pending(&mut self) -> Vec<Event> {
         let now = Instant::now();
+        let mut out = Vec::new();
+        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.delayed)
+            .into_iter()
+            .partition(|d| d.due <= now);
+        self.delayed = rest;
+        out.extend(due.into_iter().map(|d| d.event));
         let due: Vec<PendingOp> = {
             let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
                 .into_iter()
@@ -439,8 +605,12 @@ impl GithubForge {
             self.pending = rest;
             due
         };
-        let mut out = Vec::new();
         for mut op in due {
+            if decision_car(&op.decision).is_some_and(|c| self.closed_cars.contains(&c))
+                && !matches!(op.decision, Decision::CloseCar { .. })
+            {
+                continue;
+            }
             match self.try_execute(&op.decision) {
                 Ok(events) => {
                     self.note(format!(
@@ -459,11 +629,7 @@ impl GithubForge {
                         ));
                     }
                     op.attempts += 1;
-                    let delay = self
-                        .retry_base
-                        .saturating_mul(1 << op.attempts.min(10))
-                        .min(self.retry_max);
-                    op.next = Instant::now() + delay;
+                    op.next = Instant::now() + self.backoff(op.attempts);
                     op.last_error = e.to_string();
                     self.pending.push(op);
                 }
@@ -474,7 +640,8 @@ impl GithubForge {
 
     /// Deferred decisions with their last error (for status and doctor).
     pub fn pending_summary(&self) -> Vec<String> {
-        self.pending
+        let mut out: Vec<String> = self
+            .pending
             .iter()
             .map(|p| {
                 format!(
@@ -484,7 +651,14 @@ impl GithubForge {
                     p.last_error
                 )
             })
-            .collect()
+            .collect();
+        out.extend(self.delayed.iter().map(|d| {
+            format!(
+                "land car {}: failed, the queue reads and decides again after a backoff",
+                d.car
+            )
+        }));
+        out
     }
 
     /// Makes the next retry of deferred decisions due now (after a reconciliation).
@@ -492,6 +666,9 @@ impl GithubForge {
         let now = Instant::now();
         for p in &mut self.pending {
             p.next = p.next.min(now);
+        }
+        for d in &mut self.delayed {
+            d.due = d.due.min(now);
         }
     }
 
@@ -526,27 +703,61 @@ impl GithubForge {
                 base_branch,
                 expected_base_sha,
                 prs,
+                expected_tree,
                 ..
             } => self
-                .land(*car, base_branch, expected_base_sha, prs)
+                .land(*car, base_branch, expected_base_sha, prs, expected_tree)
                 .map(|e| vec![e]),
             _ => Ok(vec![]),
         }
     }
 
-    /// Carries out one decision. Failures are deferred (retried), never reported as facts.
+    /// Carries out one decision. Failures of builds, closes and reads are deferred (retried);
+    /// a failed landing goes back to the engine, which re-validates before landing again.
     pub fn execute(&mut self, d: &Decision) -> Vec<Event> {
         match d {
-            Decision::BuildCar { .. }
-            | Decision::Refresh { .. }
-            | Decision::Land { .. }
-            | Decision::CloseCar { .. } => {
+            Decision::Land { car, .. } => {
+                let car = *car;
+                if self.closed_cars.contains(&car) {
+                    self.note(format!("land car {car}: the car is closed; not landing"));
+                    return vec![];
+                }
+                match self.try_execute(d) {
+                    Ok(events) => {
+                        self.land_failures.remove(&car);
+                        events
+                    }
+                    Err(e) => {
+                        let k = self.land_failures.entry(car).or_insert(0);
+                        *k += 1;
+                        let k = *k;
+                        let delay = self.backoff(k - 1);
+                        self.note(format!(
+                            "land car {car} failed ({e}); not retried here: the queue reads and decides again in {} ms",
+                            delay.as_millis()
+                        ));
+                        self.delayed.push(DelayedReply {
+                            car,
+                            due: Instant::now() + delay,
+                            event: Event::Failed {
+                                decision: d.clone(),
+                                error: e.to_string(),
+                            },
+                        });
+                        vec![]
+                    }
+                }
+            }
+            Decision::BuildCar { .. } | Decision::Refresh { .. } | Decision::CloseCar { .. } => {
                 if let Decision::CloseCar { car, .. } = d {
-                    // A car closed before it was built: forget its pending build.
+                    // Whatever is still pending for this car (a build, a landing failure to
+                    // report) is dropped: the engine is done with it (G1).
                     let car = *car;
-                    self.pending.retain(
-                        |p| !matches!(&p.decision, Decision::BuildCar { car: c, .. } if *c == car),
-                    );
+                    self.closed_car(car);
+                    self.pending
+                        .retain(|p| decision_car(&p.decision) != Some(car));
+                    self.delayed.retain(|r| r.car != car);
+                    self.land_failures.remove(&car);
                 }
                 match self.try_execute(d) {
                     Ok(events) => events,
@@ -605,6 +816,25 @@ impl GithubForge {
             }
             Decision::WakeAt { .. } => vec![],
         }
+    }
+
+    /// Whether pull request `n` conflicts with the base alone. `mergeable: null` means GitHub
+    /// has not computed it yet: read again a few times; `None` when it stays unknown.
+    fn conflicts_with_base(&self, n: u64, prio: Priority) -> Option<bool> {
+        for i in 0..self.mergeable_polls.max(1) {
+            if i > 0 {
+                std::thread::sleep(self.pause());
+            }
+            match self.api.pull(n, prio) {
+                Ok(p) => {
+                    if let Some(m) = p.mergeable {
+                        return Some(!m);
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     fn build_car(
@@ -666,6 +896,23 @@ impl GithubForge {
                         });
                     }
                 }
+                Err(Error::Status {
+                    status: status @ (403 | 422),
+                    message,
+                    ..
+                }) => {
+                    // GitHub refuses this pull request's changes for good (a workflow file
+                    // without `workflows: write`, a validation error): it leaves the queue
+                    // with the reason; the others get a new car.
+                    let _ = self.api.delete_ref(branch, prio);
+                    let text = refusal_text(status, &message);
+                    self.note(format!("car {car}: #{} refused: {text}", p.number));
+                    return Ok(Event::CarRefused {
+                        car,
+                        number: p.number,
+                        message: text,
+                    });
+                }
                 Err(e) => {
                     let _ = self.api.delete_ref(branch, prio);
                     return Err(e);
@@ -673,18 +920,29 @@ impl GithubForge {
             };
             match outcome {
                 MergeOutcome::Merged { sha, tree: t } => {
+                    self.moved(branch, &cur);
                     cur = sha;
                     tree = t;
                 }
                 MergeOutcome::NothingToMerge => {}
                 MergeOutcome::Conflict => {
                     let _ = self.api.delete_ref(branch, prio);
-                    let with_base = i == 0
-                        || self
-                            .api
-                            .pull(p.number, prio)
-                            .map(|pr| pr.mergeable == Some(false))
-                            .unwrap_or(false);
+                    let with_base = if i == 0 {
+                        true
+                    } else {
+                        match self.conflicts_with_base(p.number, prio) {
+                            Some(b) => b,
+                            None => {
+                                return Err(Error::Unavailable {
+                                    method: "GET".into(),
+                                    path: format!("/pulls/{}", p.number),
+                                    detail:
+                                        "mergeability not computed yet (null); the build is retried"
+                                            .into(),
+                                });
+                            }
+                        }
+                    };
                     let with = if with_base {
                         vec![]
                     } else {
@@ -732,6 +990,11 @@ impl GithubForge {
             }
             Err(e) => return Err(e),
         };
+        if let Some(s) = &self.store
+            && let Err(e) = s.save_car(&self.api.repo.full(), car, &prefix)
+        {
+            self.note(format!("car {car}: prefix trees not stored: {e}"));
+        }
         self.cars.insert(car, CarInfo { prefix });
         self.note(format!(
             "car {car}: {branch} at {}, draft #{draft}",
@@ -754,9 +1017,12 @@ impl GithubForge {
     ) -> Result<(), Error> {
         let prio = Priority::Normal;
         if let Some(d) = draft {
-            let p = self.api.pull(d, prio)?;
+            let p = self.pull(d, prio)?;
             if p.user.login == self.opts.bot_login && p.state == "open" {
                 self.api.close_pull(d, prio)?;
+            }
+            if p.user.login == self.opts.bot_login {
+                self.known_closed.insert(d);
             }
         }
         if let Some(b) = branch {
@@ -764,119 +1030,211 @@ impl GithubForge {
                 Ok(()) | Err(Error::NotFound { .. }) => {}
                 Err(e) => return Err(e),
             }
+            self.left_tips.remove(b);
         }
         self.cars.remove(&car);
+        if let Some(s) = &self.store {
+            let _ = s.delete_car(&self.api.repo.full(), car);
+        }
         Ok(())
     }
 
-    /// Squash-lands the pull requests in order. Safe to repeat: a pull request that is
-    /// already merged onto the expected base counts as landed, so nothing lands twice.
+    /// The tree after each pull request of a car: from memory, or from the store after a
+    /// restart.
+    fn prefix_of(&self, car: u64) -> Vec<(u64, String)> {
+        if let Some(c) = self.cars.get(&car) {
+            return c.prefix.clone();
+        }
+        self.store
+            .as_ref()
+            .and_then(|s| s.load_car(&self.api.repo.full(), car).ok().flatten())
+            .unwrap_or_default()
+    }
+
+    /// Squash-lands the pull requests in order. Every merge call is preceded by fresh reads
+    /// of the pull request (open, at the tested head) and of the base (exactly the expected
+    /// commit); a pull request that is already merged onto the expected base counts as landed,
+    /// so nothing lands twice. Errors are returned, never retried here.
     fn land(
         &mut self,
         car: u64,
         base_branch: &str,
         expected_base: &str,
         prs: &[CarPr],
+        expected_tree: &str,
     ) -> Result<Event, Error> {
         let prio = Priority::Landing;
-        let prefix = self
-            .cars
-            .get(&car)
-            .map(|c| c.prefix.clone())
-            .unwrap_or_default();
+        let prefix = self.prefix_of(car);
         let mut expected = expected_base.to_string();
         let mut commits = Vec::new();
         let mut error = None;
-        for p in prs {
-            let pull = self.api.pull(p.number, prio)?;
-            let landed_sha = if pull.merged {
-                // Merged already: by an earlier attempt whose reply was lost (MQ-35), or by
-                // hand. Ours only when it sits right on the expected base.
-                let sha = pull.merge_commit_sha.clone().unwrap_or_default();
-                let c = self.api.git_commit(&sha, prio)?;
-                if c.parents.first().map(|x| x.sha.as_str()) != Some(expected.as_str()) {
-                    error = Some(LandError::HeadChanged { number: p.number });
-                    break;
+        'prs: for (idx, p) in prs.iter().enumerate() {
+            let tested_tree = prefix
+                .iter()
+                .find(|(n, _)| *n == p.number)
+                .map(|(_, t)| t.clone())
+                .or_else(|| (idx + 1 == prs.len()).then(|| expected_tree.to_string()));
+            let mut transient = 0;
+            let mut note = String::new();
+            let landed_sha = loop {
+                let pull = self.pull(p.number, prio)?;
+                if pull.merged {
+                    // Merged already: by an earlier attempt whose reply was lost (MQ-35), or by
+                    // hand. Ours only when it sits right on the expected base.
+                    let sha = pull.merge_commit_sha.clone().unwrap_or_default();
+                    let c = self.api.git_commit(&sha, prio)?;
+                    if c.parents.first().map(|x| x.sha.as_str()) != Some(expected.as_str()) {
+                        error = Some(LandError::HeadChanged { number: p.number });
+                        break 'prs;
+                    }
+                    if note.is_empty() {
+                        note = "found merged (an earlier attempt landed it)".into();
+                    }
+                    self.note(format!(
+                        "#{} is already merged as {} ({note})",
+                        p.number,
+                        short(&sha)
+                    ));
+                    break sha;
                 }
-                self.note(format!(
-                    "#{} is already merged as {} (an earlier attempt landed it)",
-                    p.number,
-                    short(&sha)
-                ));
-                sha
-            } else {
                 if pull.state == "closed" || pull.head.sha != p.head_sha {
                     error = Some(LandError::HeadChanged { number: p.number });
-                    break;
+                    break 'prs;
                 }
-                let tip = self.api.branch_sha(base_branch, prio)?;
+                // The base right before the write: the merge call has no expected base, so
+                // this read is the guard (G2). Never a merge call after a wait without it.
+                let tip = self.branch_tip(base_branch, prio)?;
                 if tip != expected {
                     error = Some(LandError::BaseMoved { actual: tip });
-                    break;
+                    break 'prs;
                 }
                 let title = format!("{} (#{})", pull.title, p.number);
                 match self.api.squash_pull(p.number, &p.head_sha, &title, prio) {
-                    Ok(PullMergeOutcome::Merged { sha }) => sha,
+                    Ok(PullMergeOutcome::Merged { sha }) => {
+                        self.known_merged.insert(p.number, sha.clone());
+                        self.moved(base_branch, &expected);
+                        break sha;
+                    }
                     Ok(PullMergeOutcome::HeadMoved) => {
+                        // 409: the head moved, or GitHub is still updating the pull request.
+                        // The next round reads it again.
+                        if transient < self.transient_retries {
+                            transient += 1;
+                            self.note(format!(
+                                "#{}: 409 from the merge call; reading again (attempt {transient})",
+                                p.number
+                            ));
+                            std::thread::sleep(self.pause());
+                            continue;
+                        }
                         error = Some(LandError::HeadChanged { number: p.number });
-                        break;
+                        break 'prs;
                     }
                     Ok(PullMergeOutcome::NotMergeable(msg)) => {
-                        // "Not mergeable" also comes back when it was merged a moment ago.
-                        let again = self.api.pull(p.number, prio)?;
-                        if again.merged {
-                            again.merge_commit_sha.unwrap_or_default()
-                        } else {
-                            self.note(format!("#{} refused by GitHub: {msg}", p.number));
-                            error = Some(LandError::Conflict { number: p.number });
-                            break;
+                        // 405: "base branch was modified", mergeability still being computed,
+                        // or a refusal that stays (protection). Also when it was merged a
+                        // moment ago: the next round reads.
+                        if transient < self.transient_retries {
+                            transient += 1;
+                            note = format!("after a 405 ({msg})");
+                            self.note(format!(
+                                "#{}: 405 from the merge call ({msg}); reading again (attempt {transient})",
+                                p.number
+                            ));
+                            std::thread::sleep(self.pause());
+                            continue;
                         }
+                        let again = self.pull(p.number, prio)?;
+                        if again.merged {
+                            continue;
+                        }
+                        let text = refusal_text(405, &msg);
+                        self.note(format!("#{}: {text}", p.number));
+                        error = Some(if again.mergeable == Some(false) {
+                            LandError::Conflict { number: p.number }
+                        } else {
+                            LandError::Refused {
+                                number: p.number,
+                                message: text,
+                            }
+                        });
+                        break 'prs;
+                    }
+                    Err(Error::Status {
+                        status, message, ..
+                    }) if (400..500).contains(&status) => {
+                        // A definitive refusal (403 without a permission, 422): retrying the
+                        // same head cannot help (G4).
+                        let again = self.pull(p.number, prio)?;
+                        if again.merged {
+                            continue;
+                        }
+                        let text = refusal_text(status, &message);
+                        self.note(format!("#{}: {text}", p.number));
+                        error = Some(LandError::Refused {
+                            number: p.number,
+                            message: text,
+                        });
+                        break 'prs;
                     }
                     Err(e @ (Error::Ambiguous { .. } | Error::Unavailable { .. })) => {
                         // MQ-35: did it merge? Read before anything else.
-                        let again = self.api.pull(p.number, prio)?;
+                        let again = self.pull(p.number, prio)?;
                         if again.merged {
-                            self.note(format!(
-                                "#{}: merge call failed ({e}) but the merge happened",
-                                p.number
-                            ));
-                            again.merge_commit_sha.unwrap_or_default()
-                        } else if commits.is_empty() {
-                            return Err(e);
-                        } else {
-                            // Part of the batch landed: retry the rest later; what landed is
-                            // found merged on the next attempt.
-                            return Err(e);
+                            note = format!("the merge call failed ({e}) but the merge happened");
+                            continue;
                         }
+                        return Err(e);
                     }
+                    // Rate limits included: the call was not sent again after the wait; the
+                    // engine reads and decides anew.
                     Err(e) => return Err(e),
                 }
             };
             let c = self.api.git_commit(&landed_sha, prio)?;
-            if c.parents.first().map(|x| x.sha.as_str()) != Some(expected.as_str()) {
-                self.note(format!(
-                    "#{} landed on {} instead of the expected base {} (no CAS on GitHub)",
-                    p.number,
-                    c.parents.first().map(|x| short(&x.sha)).unwrap_or("?"),
+            let parent = c.parents.first().map(|x| x.sha.clone()).unwrap_or_default();
+            if parent != expected {
+                note = format!(
+                    "landed on {} instead of the expected base {} (a push raced the merge call)",
+                    short(&parent),
                     short(&expected)
-                ));
+                );
+                self.note(format!("#{}: {note}", p.number));
             }
+            self.audit(AuditRecord {
+                repo: self.api.repo.full(),
+                at: self.clock.now(),
+                car,
+                number: p.number,
+                tested_head: p.head_sha.clone(),
+                tested_tree: tested_tree.clone(),
+                base_before: expected.clone(),
+                landed_sha: landed_sha.clone(),
+                landed_tree: c.tree.sha.clone(),
+                landed_parent: parent,
+                note,
+            });
             commits.push(LandedCommit {
                 number: p.number,
                 sha: landed_sha.clone(),
                 tree: c.tree.sha.clone(),
             });
             expected = landed_sha;
-            if let Some((_, tested)) = prefix.iter().find(|(n, _)| *n == p.number)
-                && *tested != c.tree.sha
-            {
-                self.note(format!(
-                    "#{} landed with tree {} but the queue tested {}: stopping",
-                    p.number,
-                    short(&c.tree.sha),
-                    short(tested)
-                ));
-                break;
+            match tested_tree {
+                Some(tested) if tested != c.tree.sha => {
+                    self.note(format!(
+                        "#{} landed with tree {} but the queue tested {}: stopping",
+                        p.number,
+                        short(&c.tree.sha),
+                        short(&tested)
+                    ));
+                    break;
+                }
+                Some(_) => {}
+                None => self.note(format!(
+                    "#{}: no record of the tree the car tested for it; only the batch's final tree is compared",
+                    p.number
+                )),
             }
         }
         Ok(Event::Landed {
@@ -884,6 +1242,30 @@ impl GithubForge {
             commits,
             error,
         })
+    }
+
+    fn audit(&mut self, r: AuditRecord) {
+        self.note(format!(
+            "audit: #{} car {} tested {} (tree {}) on {}, landed {} (tree {}, parent {}){}",
+            r.number,
+            r.car,
+            short(&r.tested_head),
+            r.tested_tree.as_deref().map(short).unwrap_or("?"),
+            short(&r.base_before),
+            short(&r.landed_sha),
+            short(&r.landed_tree),
+            short(&r.landed_parent),
+            if r.note.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", r.note)
+            }
+        ));
+        if let Some(s) = &self.store
+            && let Err(e) = s.audit(&r)
+        {
+            self.note(format!("audit record not stored: {e}"));
+        }
     }
 
     /// Sends the cosmetic writes that the budget allows, in order.
@@ -963,6 +1345,17 @@ pub struct Sweep {
     /// Open draft pull requests of the bot on queue branches: number and head branch.
     pub drafts: Vec<(u64, String)>,
     pub prefixes: BTreeSet<String>,
+}
+
+/// The car a side effect belongs to.
+fn decision_car(d: &Decision) -> Option<u64> {
+    match d {
+        Decision::BuildCar { car, .. }
+        | Decision::CloseCar { car, .. }
+        | Decision::Land { car, .. }
+        | Decision::CheckInPlace { car, .. } => Some(*car),
+        _ => None,
+    }
 }
 
 fn decision_name(d: &Decision) -> String {

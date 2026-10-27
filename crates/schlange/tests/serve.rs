@@ -17,6 +17,7 @@ fn env_for(cmd: &mut Command, gh: &FakeGithub) {
         .env("SCHLANGE_GITHUB_PRIVATE_KEY", key_path())
         .env("SCHLANGE_GITHUB_API_URL", gh.url())
         .env("SCHLANGE_REPOS", cfg.full_name())
+        .env("SCHLANGE_INSECURE_TEST_API", "true")
         .env_remove("SCHLANGE_SCHEMA");
 }
 

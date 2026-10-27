@@ -14,6 +14,7 @@ pub mod forge;
 pub mod jwt;
 pub mod permissions;
 pub mod service;
+pub mod store;
 pub mod time;
 pub mod webhook;
 

@@ -20,6 +20,7 @@ fn client(gh: &FakeGithub, budget: BudgetConfig) -> Client {
         retry: RetryPolicy::fast(),
         budget,
         timeout: Duration::from_secs(5),
+        allow_insecure_http: true,
     })
 }
 
