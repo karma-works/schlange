@@ -1,0 +1,10 @@
+bad-conditions.yml:4:7: error[schema] /queue_rules/0/queue_conditions: {"xor":["base = main"]} is not valid under any of the schemas listed in the 'anyOf' keyword; true was expected
+bad-conditions.yml:12:13: error[conditions] /queue_rules/0/queue_conditions/6/or/1: condition `base ? main`: unknown operator after `base`
+bad-conditions.yml:14:11: error[conditions] /queue_rules/0/queue_conditions/7/xor: unknown combinator `xor` (expected and, or, not)
+bad-conditions.yml:5:9: error[conditions] /queue_rules/0/queue_conditions/1: unknown attribute `lable`
+bad-conditions.yml:6:9: error[conditions] /queue_rules/0/queue_conditions/2: `draft` takes no operator (write `draft` or `-draft`), found `=`
+bad-conditions.yml:7:9: error[conditions] /queue_rules/0/queue_conditions/3: length of `files` needs a number, found `many`
+bad-conditions.yml:8:9: error[conditions] /queue_rules/0/queue_conditions/4: regex does not compile: Parsing error at position 10: Opening parenthesis without closing parenthesis
+bad-conditions.yml:9:9: error[conditions] /queue_rules/0/queue_conditions/5: `commits-behind` can only be used with `#`
+bad-conditions.yml:18:9: error[conditions] /pull_request_rules/0/conditions/0: operator `~=` is not allowed for `sender-permission` (allowed: = != >= <= < >)
+bad-conditions.yml: invalid (9 errors); stages not built yet: semantics

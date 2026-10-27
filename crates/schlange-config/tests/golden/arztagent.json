@@ -1,0 +1,763 @@
+{
+  "file": "arztagent.yml",
+  "valid": true,
+  "strict": false,
+  "exit_code": 0,
+  "findings": [
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/actions/queue",
+      "line": 44,
+      "column": 7,
+      "message": "`action:queue` is not supported by Schlange yet (feature action-queue, P1, missing)",
+      "feature": "action-queue"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:author` is not supported by Schlange yet (feature conditions-basic, P1, missing)",
+      "feature": "conditions-basic"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:base` is not supported by Schlange yet (feature conditions-basic, P1, missing)",
+      "feature": "conditions-basic"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:check-failure` is not supported by Schlange yet (feature conditions-checks, P1, missing)",
+      "feature": "conditions-checks"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:check-success` is not supported by Schlange yet (feature conditions-checks, P1, missing)",
+      "feature": "conditions-checks"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/1/conditions",
+      "line": 49,
+      "column": 5,
+      "message": "`attr:dependabot-update-type` is not supported by Schlange yet (feature conditions-dependabot, P1, missing)",
+      "feature": "conditions-dependabot"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:draft` is not supported by Schlange yet (feature conditions-basic, P1, missing)",
+      "feature": "conditions-basic"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/conditions",
+      "line": 32,
+      "column": 5,
+      "message": "`attr:files` is not supported by Schlange yet (feature conditions-files, P1, missing)",
+      "feature": "conditions-files"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`attr:label` is not supported by Schlange yet (feature conditions-basic, P1, missing)",
+      "feature": "conditions-basic"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/commands_restrictions/queue/conditions",
+      "line": 64,
+      "column": 5,
+      "message": "`attr:sender` is not supported by Schlange yet (feature conditions-basic, P1, missing)",
+      "feature": "conditions-basic"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/commands_restrictions",
+      "line": 61,
+      "column": 1,
+      "message": "`config:commands_restrictions` is not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/commands_restrictions/queue",
+      "line": 63,
+      "column": 3,
+      "message": "`config:commands_restrictions.queue` is not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/commands_restrictions/queue/conditions",
+      "line": 64,
+      "column": 5,
+      "message": "`config:commands_restrictions.queue.conditions` is not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules",
+      "line": 30,
+      "column": 1,
+      "message": "`config:pull_request_rules` is not supported by Schlange yet (feature pull-request-rules, P1, missing)",
+      "feature": "pull-request-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/actions",
+      "line": 43,
+      "column": 5,
+      "message": "`config:pull_request_rules.actions` is not supported by Schlange yet (feature pull-request-rules, P1, missing)",
+      "feature": "pull-request-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/actions/queue",
+      "line": 44,
+      "column": 7,
+      "message": "`config:pull_request_rules.actions.queue` is not supported by Schlange yet (feature action-queue, P1, missing)",
+      "feature": "action-queue"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/conditions",
+      "line": 32,
+      "column": 5,
+      "message": "`config:pull_request_rules.conditions` is not supported by Schlange yet (feature pull-request-rules, P1, missing)",
+      "feature": "pull-request-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/0/name",
+      "line": 31,
+      "column": 5,
+      "message": "`config:pull_request_rules.name` is not supported by Schlange yet (feature pull-request-rules, P1, missing)",
+      "feature": "pull-request-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules",
+      "line": 9,
+      "column": 1,
+      "message": "`config:queue_rules` is not supported by Schlange yet (feature queue-rules, P1, missing)",
+      "feature": "queue-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/batch_max_wait_time",
+      "line": 13,
+      "column": 5,
+      "message": "`config:queue_rules.batch_max_wait_time` is not supported by Schlange yet (feature queue-batch, P1, missing)",
+      "feature": "queue-batch"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/batch_size",
+      "line": 12,
+      "column": 5,
+      "message": "`config:queue_rules.batch_size` is not supported by Schlange yet (feature queue-batch, P1, missing)",
+      "feature": "queue-batch"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/merge_conditions",
+      "line": 27,
+      "column": 5,
+      "message": "`config:queue_rules.merge_conditions` is not supported by Schlange yet (feature queue-two-step, P1, missing)",
+      "feature": "queue-two-step"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/merge_method",
+      "line": 11,
+      "column": 5,
+      "message": "`config:queue_rules.merge_method` is not supported by Schlange yet (feature queue-merge-method-squash, P1, missing)",
+      "feature": "queue-merge-method-squash"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/name",
+      "line": 10,
+      "column": 5,
+      "message": "`config:queue_rules.name` is not supported by Schlange yet (feature queue-rules, P1, missing)",
+      "feature": "queue-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 15,
+      "column": 5,
+      "message": "`config:queue_rules.queue_conditions` is not supported by Schlange yet (feature queue-two-step, P1, missing)",
+      "feature": "queue-two-step"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.backport` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.copy` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.dequeue` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.rebase` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.refresh` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.requeue` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.squash` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `commands_restrictions.update` is in effect but not supported by Schlange yet (feature commands-restrictions, P1, missing)",
+      "feature": "commands-restrictions"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.dequeued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
+      "feature": "queue-labels-comments"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.max_parallel_checks` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
+      "feature": "queue-speculation"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.mode` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
+      "feature": "queue-speculation"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.queue_controls_comment` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
+      "feature": "queue-labels-comments"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.queued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
+      "feature": "queue-labels-comments"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.reset_on_external_merge` is in effect but not supported by Schlange yet (feature queue-conflicts, P1, missing)",
+      "feature": "queue-conflicts"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.skip_intermediate_results` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
+      "feature": "queue-speculation"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `merge_queue.status_comments` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
+      "feature": "queue-labels-comments"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.allow_inplace_checks` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing)",
+      "feature": "queue-draft-pr"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.allow_queue_branch_edit` is in effect but not supported by Schlange yet (feature queue-branch-edit, P1, missing)",
+      "feature": "queue-branch-edit"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing)",
+      "feature": "queue-branch-protection"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.checks_timeout` is in effect but not supported by Schlange yet (feature queue-checks-timeout, P1, missing)",
+      "feature": "queue-checks-timeout"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.max_checks_retries` is in effect but not supported by Schlange yet (feature queue-checks-timeout, P1, missing)",
+      "feature": "queue-checks-timeout"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.queue_branch_prefix` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing)",
+      "feature": "queue-draft-pr"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/0/merge_method",
+      "line": 11,
+      "column": 5,
+      "message": "`enum:merge_method:squash` is not supported by Schlange yet (feature queue-merge-method-squash, P1, missing)",
+      "feature": "queue-merge-method-squash"
+    }
+  ],
+  "support": [
+    {
+      "id": "action:queue",
+      "feature": "action-queue",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/actions/queue"
+    },
+    {
+      "id": "attr:author",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:base",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:check-failure",
+      "feature": "conditions-checks",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:check-success",
+      "feature": "conditions-checks",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:dependabot-update-type",
+      "feature": "conditions-dependabot",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/1/conditions"
+    },
+    {
+      "id": "attr:draft",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:files",
+      "feature": "conditions-files",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/conditions"
+    },
+    {
+      "id": "attr:label",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "attr:sender",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/commands_restrictions/queue/conditions"
+    },
+    {
+      "id": "config:commands_restrictions",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/commands_restrictions"
+    },
+    {
+      "id": "config:commands_restrictions.queue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/commands_restrictions/queue"
+    },
+    {
+      "id": "config:commands_restrictions.queue.conditions",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/commands_restrictions/queue/conditions"
+    },
+    {
+      "id": "config:pull_request_rules",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules"
+    },
+    {
+      "id": "config:pull_request_rules.actions",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/actions"
+    },
+    {
+      "id": "config:pull_request_rules.actions.queue",
+      "feature": "action-queue",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/actions/queue"
+    },
+    {
+      "id": "config:pull_request_rules.conditions",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/conditions"
+    },
+    {
+      "id": "config:pull_request_rules.name",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/pull_request_rules/0/name"
+    },
+    {
+      "id": "config:queue_rules",
+      "feature": "queue-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules"
+    },
+    {
+      "id": "config:queue_rules.batch_max_wait_time",
+      "feature": "queue-batch",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/batch_max_wait_time"
+    },
+    {
+      "id": "config:queue_rules.batch_size",
+      "feature": "queue-batch",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/batch_size"
+    },
+    {
+      "id": "config:queue_rules.merge_conditions",
+      "feature": "queue-two-step",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/merge_conditions"
+    },
+    {
+      "id": "config:queue_rules.merge_method",
+      "feature": "queue-merge-method-squash",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/merge_method"
+    },
+    {
+      "id": "config:queue_rules.name",
+      "feature": "queue-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/name"
+    },
+    {
+      "id": "config:queue_rules.queue_conditions",
+      "feature": "queue-two-step",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/queue_conditions"
+    },
+    {
+      "id": "default:commands_restrictions.backport",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.copy",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.dequeue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.rebase",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.refresh",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.requeue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.squash",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:commands_restrictions.update",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.dequeued_label",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.max_parallel_checks",
+      "feature": "queue-speculation",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.mode",
+      "feature": "queue-speculation",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.queue_controls_comment",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.queued_label",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.reset_on_external_merge",
+      "feature": "queue-conflicts",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.skip_intermediate_results",
+      "feature": "queue-speculation",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:merge_queue.status_comments",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.allow_inplace_checks",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.allow_queue_branch_edit",
+      "feature": "queue-branch-edit",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.branch_protection_injection_mode",
+      "feature": "queue-branch-protection",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.checks_timeout",
+      "feature": "queue-checks-timeout",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.max_checks_retries",
+      "feature": "queue-checks-timeout",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.queue_branch_prefix",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "enum:merge_method:squash",
+      "feature": "queue-merge-method-squash",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false,
+      "pointer": "/queue_rules/0/merge_method"
+    }
+  ],
+  "stages_missing": [
+    "semantics"
+  ]
+}

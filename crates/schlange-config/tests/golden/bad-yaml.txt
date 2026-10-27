@@ -1,0 +1,2 @@
+bad-yaml.yml:4:5: error[yaml] /queue_rules/0/merge_method: duplicate key `merge_method`
+bad-yaml.yml: invalid (1 errors); stages not built yet: semantics

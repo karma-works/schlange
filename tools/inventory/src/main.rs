@@ -157,7 +157,11 @@ impl<'a> Schema<'a> {
             }
         }
         let joined = types.into_iter().collect::<Vec<_>>().join("|");
-        if nullable { format!("{joined}?") } else { joined }
+        if nullable {
+            format!("{joined}?")
+        } else {
+            joined
+        }
     }
 
     /// Walks configuration paths. Arrays are transparent (`queue_rules.name`), maps with a
@@ -237,7 +241,12 @@ fn enum_values(node: &Value) -> Option<Vec<String>> {
         );
     }
     for key in ["anyOf", "oneOf"] {
-        for sub in node.get(key).and_then(Value::as_array).into_iter().flatten() {
+        for sub in node
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if let Some(v) = enum_values(sub) {
                 return Some(v);
             }
@@ -382,11 +391,7 @@ fn cli(html: &str, out: &mut BTreeMap<String, Entry>) {
         let end = synopsis.find("</code>").unwrap_or(synopsis.len());
         let words: Vec<&str> = synopsis[..end]
             .split_whitespace()
-            .take_while(|w| {
-                w.chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_lowercase())
-            })
+            .take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()))
             .collect();
         if words.len() >= 2 {
             let e = Entry::new("cli", words.join(" "));

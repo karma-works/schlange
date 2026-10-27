@@ -1,0 +1,84 @@
+{
+  "file": "bad-conditions.yml",
+  "valid": false,
+  "strict": false,
+  "exit_code": 1,
+  "findings": [
+    {
+      "stage": "schema",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions",
+      "line": 4,
+      "column": 7,
+      "message": "{\"xor\":[\"base = main\"]} is not valid under any of the schemas listed in the 'anyOf' keyword; true was expected"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/6/or/1",
+      "line": 12,
+      "column": 13,
+      "message": "condition `base ? main`: unknown operator after `base`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/7/xor",
+      "line": 14,
+      "column": 11,
+      "message": "unknown combinator `xor` (expected and, or, not)"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/1",
+      "line": 5,
+      "column": 9,
+      "message": "unknown attribute `lable`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/2",
+      "line": 6,
+      "column": 9,
+      "message": "`draft` takes no operator (write `draft` or `-draft`), found `=`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/3",
+      "line": 7,
+      "column": 9,
+      "message": "length of `files` needs a number, found `many`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/4",
+      "line": 8,
+      "column": 9,
+      "message": "regex does not compile: Parsing error at position 10: Opening parenthesis without closing parenthesis"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/5",
+      "line": 9,
+      "column": 9,
+      "message": "`commits-behind` can only be used with `#`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/pull_request_rules/0/conditions/0",
+      "line": 18,
+      "column": 9,
+      "message": "operator `~=` is not allowed for `sender-permission` (allowed: = != >= <= < >)"
+    }
+  ],
+  "support": [],
+  "stages_missing": [
+    "semantics"
+  ]
+}

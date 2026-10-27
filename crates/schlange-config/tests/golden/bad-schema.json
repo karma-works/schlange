@@ -1,0 +1,44 @@
+{
+  "file": "bad-schema.yml",
+  "valid": false,
+  "strict": false,
+  "exit_code": 1,
+  "findings": [
+    {
+      "stage": "schema",
+      "severity": "error",
+      "pointer": "/queue_rules/0/merge_method",
+      "line": 3,
+      "column": 19,
+      "message": "\"sqush\" is not one of \"merge\", \"rebase\" or 3 other candidates"
+    },
+    {
+      "stage": "schema",
+      "severity": "error",
+      "pointer": "/queue_rules/0/batch_size",
+      "line": 5,
+      "column": 17,
+      "message": "500 is greater than the maximum of 128; 500 is not of type \"object\""
+    },
+    {
+      "stage": "schema",
+      "severity": "error",
+      "pointer": "/queue_rules/0/bach_size",
+      "line": 4,
+      "column": 5,
+      "message": "unknown key `bach_size`"
+    },
+    {
+      "stage": "schema",
+      "severity": "error",
+      "pointer": "/merge_queue/max_parallel_checks",
+      "line": 9,
+      "column": 24,
+      "message": "\"five\" is not of type \"integer\""
+    }
+  ],
+  "support": [],
+  "stages_missing": [
+    "semantics"
+  ]
+}

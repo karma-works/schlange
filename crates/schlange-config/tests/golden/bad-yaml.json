@@ -1,0 +1,20 @@
+{
+  "file": "bad-yaml.yml",
+  "valid": false,
+  "strict": false,
+  "exit_code": 1,
+  "findings": [
+    {
+      "stage": "yaml",
+      "severity": "error",
+      "pointer": "/queue_rules/0/merge_method",
+      "line": 4,
+      "column": 5,
+      "message": "duplicate key `merge_method`"
+    }
+  ],
+  "support": [],
+  "stages_missing": [
+    "semantics"
+  ]
+}
