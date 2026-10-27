@@ -181,9 +181,23 @@ pub struct PrBuilder<'a> {
     files: Vec<(String, String)>,
     draft: bool,
     labels: Vec<String>,
+    body: String,
+    fork: bool,
 }
 
 impl PrBuilder<'_> {
+    /// The description (`Depends-On`, `Merge-After`).
+    pub fn body(mut self, b: &str) -> Self {
+        self.body = b.into();
+        self
+    }
+
+    /// Opened from a fork.
+    pub fn fork(mut self) -> Self {
+        self.fork = true;
+        self
+    }
+
     pub fn file(mut self, path: &str, content: &str) -> Self {
         self.files.push((path.into(), content.into()));
         self
@@ -213,9 +227,15 @@ impl PrBuilder<'_> {
         } else {
             self.files
         };
-        self.t
-            .gh
-            .open_pr(&self.author, &self.title, &files, self.draft, &self.labels)
+        self.t.gh.open_pr_with(
+            &self.author,
+            &self.title,
+            &files,
+            self.draft,
+            &self.labels,
+            &self.body,
+            self.fork,
+        )
     }
 }
 
@@ -275,6 +295,59 @@ impl PrHandle<'_> {
         self.t.gh.label(self.number, l, true);
     }
 
+    /// `user` comments `body`; returns the comment id.
+    pub fn comment(&self, user: &str, body: &str) -> u64 {
+        self.t.gh.comment(self.number, user, body)
+    }
+
+    /// `user` ticks the checkbox in the queue's comment with `marker`
+    /// (`schlange_core::commands::CONTROLS_MARKER` or `STATUS_MARKER`); waits for the comment.
+    pub fn tick(&self, user: &str, marker: &str) {
+        let n = self.number;
+        let m = marker.to_string();
+        self.t.wait_until(&format!("a checkbox in #{n}"), |t| {
+            t.gh.comments_on(n)
+                .iter()
+                .any(|c| c.body.contains(&m) && c.body.contains("- [ ]"))
+        });
+        assert!(self.t.gh.tick(n, user, marker), "no checkbox to tick");
+    }
+
+    /// `user` pushes a commit.
+    pub fn push_as(&self, user: &str, path: &str, content: &str) {
+        self.t
+            .gh
+            .push_pr_as(self.number, user, &[(path.into(), content.into())]);
+    }
+
+    pub fn edit_body(&self, body: &str) {
+        self.t.gh.edit_body(self.number, body);
+    }
+
+    pub fn approve(&self, user: &str) {
+        self.t.gh.review(self.number, user, "APPROVED");
+    }
+
+    /// The comments on this pull request (bodies).
+    pub fn comments(&self) -> Vec<String> {
+        self.t
+            .gh
+            .comments_on(self.number)
+            .into_iter()
+            .map(|c| c.body)
+            .collect()
+    }
+
+    /// Waits until a comment contains `text`.
+    pub fn wait_comment(&self, text: &str) {
+        let n = self.number;
+        let text = text.to_string();
+        self.t
+            .wait_until(&format!("a comment on #{n} with {text:?}"), |t| {
+                t.gh.comments_on(n).iter().any(|c| c.body.contains(&text))
+            });
+    }
+
     pub fn unlabel(&self, l: &str) {
         self.t.gh.label(self.number, l, false);
     }
@@ -316,7 +389,14 @@ impl Running {
             files: vec![],
             draft: false,
             labels: vec![],
+            body: String::new(),
+            fork: false,
         }
+    }
+
+    /// A repository permission of a login (`collaborators/{u}/permission`).
+    pub fn permission(&self, login: &str, permission: &str) {
+        self.gh.set_collaborator(login, permission);
     }
 
     pub fn pr(&self, number: u64) -> PrHandle<'_> {

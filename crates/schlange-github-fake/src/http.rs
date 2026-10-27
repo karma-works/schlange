@@ -388,6 +388,8 @@ fn repo_route(
                     merged: false,
                     merge_commit_sha: None,
                     labels: Default::default(),
+                    fork: false,
+                    reviews: vec![],
                 },
             );
             st.emit_pr("opened", n, json!({}));
@@ -440,7 +442,11 @@ fn repo_route(
                     break;
                 }
                 let commit = st.repo.get(&c);
-                items.push(json!({ "sha": c, "commit": { "message": commit.message, "tree": { "sha": commit.tree_id } },
+                let login = st.commit_authors.get(&c).cloned().unwrap_or_default();
+                items.push(json!({ "sha": c,
+                                   "commit": { "message": commit.message, "tree": { "sha": commit.tree_id },
+                                               "author": { "name": login, "email": format!("{login}@users.noreply.github.com") } },
+                                   "author": if login.is_empty() { Value::Null } else { json!({ "login": login }) },
                                    "parents": commit.parents.iter().map(|p| json!({"sha": p})).collect::<Vec<_>>() }));
             }
             items.reverse();
@@ -464,11 +470,36 @@ fn repo_route(
                 return err(405, "the fake only squashes");
             }
             let tip = st.tip(&pr.base).expect("base");
+            // GitHub's defaults when no title or message is given: the title `<title> (#n)`,
+            // the body per the repository's squash setting.
             let title = body["commit_title"]
                 .as_str()
-                .unwrap_or(&pr.title)
-                .to_string();
-            let Ok(c) = st.repo.squash(&tip, &pr.head_sha, &title) else {
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{} (#{n})", pr.title));
+            let text = match body["commit_message"].as_str() {
+                Some(m) => m.to_string(),
+                None => match st.squash_message_setting.as_str() {
+                    "PR_BODY" => pr.body.clone(),
+                    "BLANK" => String::new(),
+                    _ => {
+                        let mut msgs = Vec::new();
+                        for c in st.repo.first_parent_history(&pr.head_sha) {
+                            if st.repo.is_ancestor(&c, &tip) {
+                                break;
+                            }
+                            msgs.push(format!("* {}", st.repo.get(&c).message));
+                        }
+                        msgs.reverse();
+                        msgs.join("\n\n")
+                    }
+                },
+            };
+            let message = if text.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}\n\n{text}")
+            };
+            let Ok(c) = st.repo.squash(&tip, &pr.head_sha, &message) else {
                 return err(405, "Pull Request is not mergeable");
             };
             let tree = st.repo.tree_id_of(&c);
@@ -478,12 +509,15 @@ fn repo_route(
             p.merged = true;
             p.open = false;
             p.merge_commit_sha = Some(c.clone());
+            let merged_by = st.bot();
             st.squashes.push(Squash {
                 pr: n,
                 sha: c.clone(),
                 parent: tip.clone(),
                 tree,
                 tested_green,
+                message,
+                merged_by,
             });
             st.emit_push(&pr.base, &tip, Some(&c));
             st.emit_pr("closed", n, json!({}));
@@ -726,7 +760,10 @@ fn repo_route(
             let reference = query_param(query, "ref")
                 .map(decode)
                 .unwrap_or(st.cfg.default_branch.clone());
-            let Some(tip) = st.tip(&reference) else {
+            let Some(tip) = st
+                .tip(&reference)
+                .or_else(|| st.repo.get_opt(&reference).map(|_| reference.clone()))
+            else {
                 return err(404, "No commit found for the ref");
             };
             match st.repo.tree(&tip).get(&p.join("/")) {
@@ -775,18 +812,90 @@ fn repo_route(
             let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
                 return err(404, "Not Found");
             };
-            let id = st.id();
-            st.comments
-                .push((n, id, body["body"].as_str().unwrap_or("").into()));
-            reply(201, json!({ "id": id }))
+            let bot = st.bot();
+            let id = st.add_comment(n, &bot, body["body"].as_str().unwrap_or(""));
+            let c = st
+                .comments
+                .iter()
+                .find(|c| c.id == id)
+                .cloned()
+                .expect("comment");
+            reply(201, st.comment_json(&c))
         }
-        ("POST", ["issues", "comments", id, "reactions"]) => {
-            let Some(id) = num(id).filter(|id| st.comments.iter().any(|c| c.1 == *id)) else {
+        ("GET", ["issues", "comments"]) => {
+            // `sort=updated&direction=desc`, one page: the newest first.
+            let mut cs = st.comments.clone();
+            cs.sort_by_key(|c| std::cmp::Reverse((c.updated_at, c.id)));
+            let per_page = query_param(query, "per_page")
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(30usize);
+            let items: Vec<Value> = cs
+                .iter()
+                .take(per_page)
+                .map(|c| st.comment_json(c))
+                .collect();
+            reply(200, Value::Array(items))
+        }
+        ("GET", ["issues", n, "comments"]) => {
+            let Some(n) = num(n) else {
                 return err(404, "Not Found");
             };
+            let items = st
+                .comments
+                .iter()
+                .filter(|c| c.number == n)
+                .map(|c| st.comment_json(c))
+                .collect();
+            paginate(base_url, path, query, items, None)
+        }
+        ("PATCH", ["issues", "comments", id]) => {
+            let Some(id) = num(id) else {
+                return err(404, "Not Found");
+            };
+            let bot = st.bot();
+            if !st.comments.iter().any(|c| c.id == id && c.user == bot) {
+                return err(404, "Not Found");
+            }
+            st.edit_comment(id, &bot, body["body"].as_str().unwrap_or(""));
+            let c = st
+                .comments
+                .iter()
+                .find(|c| c.id == id)
+                .cloned()
+                .expect("comment");
+            reply(200, st.comment_json(&c))
+        }
+        ("GET", ["issues", "comments", id, "reactions"]) => {
+            let Some(id) = num(id) else {
+                return err(404, "Not Found");
+            };
+            let items = st
+                .reactions
+                .iter()
+                .filter(|r| r.0 == id)
+                .map(|r| json!({ "user": { "login": r.1 }, "content": r.2 }))
+                .collect();
+            paginate(base_url, path, query, items, None)
+        }
+        ("POST", ["issues", "comments", id, "reactions"]) => {
+            let Some(id) = num(id).filter(|id| st.comments.iter().any(|c| c.id == *id)) else {
+                return err(404, "Not Found");
+            };
+            let bot = st.bot();
             st.reactions
-                .push((id, body["content"].as_str().unwrap_or("").into()));
+                .push((id, bot, body["content"].as_str().unwrap_or("").into()));
             reply(201, json!({ "id": id, "content": body["content"] }))
+        }
+        ("GET", ["pulls", n, "reviews"]) => {
+            let Some(pr) = num(n).and_then(|n| st.prs.get(&n).cloned()) else {
+                return err(404, "Not Found");
+            };
+            let items = pr
+                .reviews
+                .iter()
+                .map(|(u, s)| json!({ "user": { "login": u }, "state": s }))
+                .collect();
+            paginate(base_url, path, query, items, None)
         }
         ("POST", ["issues", n, "labels"]) => {
             let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {

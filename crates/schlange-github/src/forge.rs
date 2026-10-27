@@ -32,8 +32,10 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use schlange_config::rules::Rules;
-use schlange_core::engine::{CarPr, LandError, LandedCommit, short};
-use schlange_core::model::{CheckRun, PullRequest, Time};
+use schlange_core::engine::{
+    CarPr, CommitMessage, Cosmetic as EngineCosmetic, LandError, LandedCommit, short,
+};
+use schlange_core::model::{CheckRun, Comment, Dependency, DependencyState, PullRequest, Time};
 use schlange_core::{Decision, Event, State};
 
 use crate::api::{MergeOutcome, Pull, PullMergeOutcome, RepoApi};
@@ -81,7 +83,7 @@ enum Cosmetic {
         summary: String,
     },
     /// Labels, comments, reactions and protection checks the engine decided.
-    Show(schlange_core::engine::Cosmetic),
+    Show(EngineCosmetic),
 }
 
 /// Is `name` a queue branch: `prefix` plus exactly ten lower-case hex characters?
@@ -113,6 +115,15 @@ pub struct GithubForge {
     pub log: VecDeque<String>,
     pub retry_base: Duration,
     pub retry_max: Duration,
+    /// Read the reviews of each pull request (only when a queue rule asks for the
+    /// `approved-by` trailer).
+    pub read_reviews: bool,
+    /// The Mergify schema for the "configuration changed" check; without it the check runs
+    /// stages 1, 3 and 4 of the validator.
+    pub schema: Option<Arc<schlange_config::Schema>>,
+    pub features: Option<Arc<schlange_config::FeatureMap>>,
+    /// The queue's own status and controls comments: (pull request, marker) → comment id.
+    own_comments: BTreeMap<(u64, &'static str), u64>,
 }
 
 const LOG_MAX: usize = 2000;
@@ -147,7 +158,61 @@ impl GithubForge {
             log: VecDeque::new(),
             retry_base: Duration::from_secs(2),
             retry_max: Duration::from_secs(60),
+            read_reviews: false,
+            schema: None,
+            features: None,
+            own_comments: BTreeMap::new(),
         }
+    }
+
+    /// The head of a pull request as last read.
+    pub fn head_of(&self, n: u64) -> Option<String> {
+        self.heads.borrow().get(&n).cloned()
+    }
+
+    /// Validates a configuration text: with the schema all five stages (support findings are
+    /// notes), else without it.
+    fn validate_config(&self, file: &str, text: &str) -> Vec<schlange_config::validate::Finding> {
+        match (&self.schema, &self.features) {
+            (Some(schema), Some(features)) => {
+                schlange_config::validate(file, text, schema, features, false).findings
+            }
+            _ => schlange_config::config_file::validate_without_schema(file, text),
+        }
+    }
+
+    /// Resolves the `Depends-On` references of a body.
+    fn dependencies(&self, body: &str, prio: Priority) -> Vec<Dependency> {
+        let own = self.api.repo.full();
+        let (refs, _) = schlange_core::protections::depends_on(body);
+        refs.iter()
+            .take(schlange_core::protections::MAX_DEPENDENCIES)
+            .map(|r| {
+                let reference = r.full(&own);
+                let state = if r.repo.as_ref().is_some_and(|x| {
+                    !x.split('/')
+                        .next()
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(&self.api.repo.owner)
+                }) {
+                    DependencyState::OtherOwner
+                } else {
+                    let read = if r.is_local(&own) {
+                        self.api.pull(r.number, prio)
+                    } else {
+                        self.api
+                            .foreign_pull(r.repo.as_deref().unwrap_or(""), r.number, prio)
+                    };
+                    match read {
+                        Ok(p) if p.merged => DependencyState::Merged,
+                        Ok(p) if p.state == "closed" => DependencyState::Closed,
+                        Ok(_) => DependencyState::Open,
+                        Err(_) => DependencyState::Missing,
+                    }
+                };
+                Dependency { reference, state }
+            })
+            .collect()
     }
 
     pub fn note(&mut self, text: impl Into<String>) {
@@ -241,14 +306,62 @@ impl GithubForge {
         let cmp = self.api.compare(&tip, &head, prio)?;
         pr.behind_base = cmp.behind_by > 0;
         pr.base_tip = Some(tip);
+        pr.body = p.body.clone().unwrap_or_default();
+        pr.from_fork = match (&p.head.repo, &p.base.repo) {
+            (Some(h), Some(b)) => h.full_name != b.full_name,
+            // A deleted head repository counts as a fork (docs: `from-fork`).
+            (None, _) => true,
+            (Some(_), None) => false,
+        };
+        let commits = self.api.pull_commits(n, prio)?;
+        pr.commit_authors = commits
+            .iter()
+            .filter_map(|c| c.commit.author.as_ref())
+            .map(|a| format!("{} <{}>", a.name, a.email))
+            .collect();
+        pr.head_pusher = commits
+            .last()
+            .and_then(|c| c.author.as_ref())
+            .map(|u| u.login.clone());
+        pr.head_by_queue = pr.head_pusher.as_deref() == Some(self.opts.bot_login.as_str());
         if p.user.login == "dependabot[bot]" {
-            let msgs: Vec<String> = self
-                .api
-                .pull_commits(n, prio)?
-                .into_iter()
-                .map(|c| c.commit.message)
-                .collect();
+            let msgs: Vec<String> = commits.iter().map(|c| c.commit.message.clone()).collect();
             pr.dependabot_update_types = dependabot_update_types(&msgs);
+        }
+        if self.read_reviews {
+            let mut latest: BTreeMap<String, String> = BTreeMap::new();
+            for r in self.api.reviews(n, prio)? {
+                if let Some(u) = r.user {
+                    // Comments do not change a reviewer's verdict.
+                    if r.state != "COMMENTED" {
+                        latest.insert(u.login, r.state);
+                    }
+                }
+            }
+            pr.approved_by = latest
+                .into_iter()
+                .filter(|(_, s)| s == "APPROVED")
+                .map(|(u, _)| u)
+                .collect();
+        }
+        pr.dependencies = self.dependencies(&pr.body, prio);
+        if p.base.ref_name == self.default_branch(prio)?
+            && pr
+                .files
+                .iter()
+                .any(|f| schlange_config::config_file::is_config_path(f))
+        {
+            let mut texts = BTreeMap::new();
+            for name in schlange_config::config_file::NAMES {
+                if let Some(t) = self.api.file_content(name, &head, prio)? {
+                    texts.insert(name.to_string(), t);
+                }
+            }
+            pr.config_change = schlange_config::config_file::assess_change(
+                &pr.files,
+                |path| texts.get(path).cloned(),
+                |file, text| self.validate_config(file, text),
+            );
         }
         Ok(pr)
     }
@@ -528,9 +641,10 @@ impl GithubForge {
                 base_branch,
                 expected_base_sha,
                 prs,
+                messages,
                 ..
             } => self
-                .land(*car, base_branch, expected_base_sha, prs)
+                .land(*car, base_branch, expected_base_sha, prs, messages)
                 .map(|e| vec![e]),
             _ => Ok(vec![]),
         }
@@ -783,6 +897,7 @@ impl GithubForge {
         base_branch: &str,
         expected_base: &str,
         prs: &[CarPr],
+        messages: &[CommitMessage],
     ) -> Result<Event, Error> {
         let prio = Priority::Landing;
         let prefix = self
@@ -820,8 +935,31 @@ impl GithubForge {
                     error = Some(LandError::BaseMoved { actual: tip });
                     break;
                 }
-                let title = format!("{} (#{})", pull.title, p.number);
-                match self.api.squash_pull(p.number, &p.head_sha, &title, prio) {
+                // `inherit` leaves title and body to GitHub's squash settings; with trailers
+                // on an inherited body the adapter writes that body itself, as GitHub would.
+                let (title, message) = match messages.iter().find(|m| m.number == p.number) {
+                    None => (None, None),
+                    Some(m) => {
+                        let inherited = if m.body.is_none() && !m.trailers.is_empty() {
+                            self.inherited_body(&pull, prio)?
+                        } else {
+                            String::new()
+                        };
+                        let body = if m.body.is_none() && m.trailers.is_empty() {
+                            None
+                        } else {
+                            Some(m.full_body(&inherited))
+                        };
+                        (m.title.clone(), body)
+                    }
+                };
+                match self.api.squash_pull(
+                    p.number,
+                    &p.head_sha,
+                    title.as_deref(),
+                    message.as_deref(),
+                    prio,
+                ) {
                     Ok(PullMergeOutcome::Merged { sha }) => sha,
                     Ok(PullMergeOutcome::HeadMoved) => {
                         error = Some(LandError::HeadChanged { number: p.number });
@@ -889,6 +1027,27 @@ impl GithubForge {
             car,
             commits,
             error,
+        })
+    }
+
+    /// The squash body GitHub writes under the repository's setting
+    /// (`squash_merge_commit_message`: `PR_BODY`, `COMMIT_MESSAGES` (the default), `BLANK`).
+    fn inherited_body(&self, pull: &Pull, prio: Priority) -> Result<String, Error> {
+        let setting = self
+            .api
+            .repository(prio)?
+            .squash_merge_commit_message
+            .unwrap_or_else(|| "COMMIT_MESSAGES".into());
+        Ok(match setting.as_str() {
+            "PR_BODY" => pull.body.clone().unwrap_or_default(),
+            "BLANK" => String::new(),
+            _ => self
+                .api
+                .pull_commits(pull.number, prio)?
+                .iter()
+                .map(|c| format!("* {}", c.commit.message))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
         })
     }
 
@@ -964,8 +1123,138 @@ impl GithubForge {
 }
 
 impl GithubForge {
-    fn show(&mut self, _c: &schlange_core::engine::Cosmetic) -> Result<(), Error> {
+    /// Carries out a cosmetic decision of the engine.
+    fn show(&mut self, c: &EngineCosmetic) -> Result<(), Error> {
+        let prio = Priority::Cosmetic;
+        match c {
+            EngineCosmetic::Labels {
+                number,
+                add,
+                remove,
+            } => {
+                if !add.is_empty() {
+                    let add: Vec<&str> = add.iter().map(String::as_str).collect();
+                    self.api.add_labels(*number, &add, prio)?;
+                }
+                for l in remove {
+                    self.api.remove_label(*number, l, prio)?;
+                }
+            }
+            EngineCosmetic::StatusComment { number, body } => {
+                self.upsert(*number, schlange_core::commands::STATUS_MARKER, body)?
+            }
+            EngineCosmetic::ControlsComment { number, body } => {
+                self.upsert(*number, schlange_core::commands::CONTROLS_MARKER, body)?
+            }
+            EngineCosmetic::Reply { number, to, body } => {
+                // Issue comments have no threads; a reply quotes nothing and stands alone.
+                let _ = to;
+                self.api.comment(*number, body, prio)?;
+            }
+            EngineCosmetic::React {
+                comment, content, ..
+            } => match self.api.react_to_comment(*comment, content, prio) {
+                Ok(()) | Err(Error::NotFound { .. }) => {}
+                Err(e) => return Err(e),
+            },
+            EngineCosmetic::ProtectionCheck {
+                head_sha,
+                name,
+                ok,
+                title,
+                summary,
+                ..
+            } => {
+                self.api.create_check_run(
+                    &json!({
+                        "name": name,
+                        "head_sha": head_sha,
+                        "status": "completed",
+                        "conclusion": if *ok { "success" } else { "failure" },
+                        "output": { "title": title, "summary": summary }
+                    }),
+                    prio,
+                )?;
+            }
+        }
         Ok(())
+    }
+
+    /// Creates or edits the queue's own comment with `marker` on pull request `n`.
+    fn upsert(&mut self, n: u64, marker: &'static str, body: &str) -> Result<(), Error> {
+        let prio = Priority::Cosmetic;
+        let id = match self.own_comments.get(&(n, marker)).copied() {
+            Some(id) => Some(id),
+            None => self
+                .api
+                .issue_comments(n, prio)?
+                .into_iter()
+                .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
+                .map(|c| c.id),
+        };
+        if let Some(id) = id {
+            match self.api.update_comment(id, body, prio) {
+                Ok(()) => {
+                    self.own_comments.insert((n, marker), id);
+                    return Ok(());
+                }
+                Err(Error::NotFound { .. }) => {
+                    self.own_comments.remove(&(n, marker));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let id = self.api.comment(n, body, prio)?;
+        self.own_comments.insert((n, marker), id);
+        Ok(())
+    }
+
+    /// Commands among the repository's most recent comments that the engine has not handled
+    /// and that the queue has not acknowledged (a 👍 of the app): lost webhooks, or commands
+    /// from before a restart. Edits are left out: the list does not say who edited.
+    pub fn unhandled_commands(&mut self, state: &State) -> Result<Vec<Comment>, Error> {
+        let prio = Priority::Normal;
+        let mut out = Vec::new();
+        for c in self.api.recent_comments(prio)? {
+            let Some(n) = c
+                .issue_url
+                .rsplit('/')
+                .next()
+                .and_then(|x| x.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if c.user.login == self.opts.bot_login
+                || !state.pull_requests.contains_key(&n)
+                || state.seen_comments.contains(&(c.id, c.updated_at.clone()))
+                || schlange_core::commands::parse(&c.body)
+                    == schlange_core::commands::Parsed::NotACommand
+            {
+                continue;
+            }
+            let acknowledged = self
+                .api
+                .comment_reactions(c.id, prio)?
+                .iter()
+                .any(|r| r.user.login == self.opts.bot_login);
+            if acknowledged {
+                continue;
+            }
+            let permission = self.api.collaborator_permission(&c.user.login, prio)?;
+            out.push(Comment {
+                id: c.id,
+                number: n,
+                author: c.user.login.clone(),
+                sender: c.user.login.clone(),
+                body: c.body.clone(),
+                edited: false,
+                version: c.updated_at.clone(),
+                sender_permission: Some(permission),
+                by_queue: false,
+                head_sha: self.head_of(n),
+            });
+        }
+        Ok(out)
     }
 }
 

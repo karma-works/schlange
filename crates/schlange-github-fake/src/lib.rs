@@ -90,6 +90,21 @@ pub struct FakePr {
     pub merged: bool,
     pub merge_commit_sha: Option<Sha>,
     pub labels: BTreeSet<String>,
+    /// The head branch lives in a fork.
+    pub fork: bool,
+    /// Reviews in order: login and state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`).
+    pub reviews: Vec<(String, String)>,
+}
+
+/// A comment on a pull request.
+#[derive(Clone, Debug)]
+pub struct FakeComment {
+    pub id: u64,
+    pub number: u64,
+    pub user: String,
+    pub body: String,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +135,10 @@ pub struct Squash {
     pub tree: String,
     /// The tree was tested: a queue branch commit with this tree whose draft was green.
     pub tested_green: bool,
+    /// The commit message GitHub wrote (title, blank line, body).
+    pub message: String,
+    /// Who merged: the caller (the app's bot).
+    pub merged_by: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,8 +262,15 @@ pub(crate) struct St {
     pub runs: Vec<FakeRun>,
     pub statuses: Vec<FakeStatus>,
     pub next_id: u64,
-    pub comments: Vec<(u64, u64, String)>,
-    pub reactions: Vec<(u64, String)>,
+    pub comments: Vec<FakeComment>,
+    /// Reactions: comment id, user, content.
+    pub reactions: Vec<(u64, String, String)>,
+    /// Comment timestamps (seconds), increasing with every write.
+    pub comment_clock: u64,
+    /// Who made each commit (login), for `GET /pulls/{n}/commits`.
+    pub commit_authors: BTreeMap<Sha, String>,
+    /// The repository's squash body setting (`COMMIT_MESSAGES`, `PR_BODY`, `BLANK`).
+    pub squash_message_setting: String,
     pub tokens: BTreeMap<String, u64>,
     pub ci: Vec<CiRule>,
     pub faults: Vec<FaultRule>,
@@ -287,7 +313,61 @@ impl St {
 
     pub fn repo_json(&self) -> Value {
         json!({ "full_name": self.cfg.full_name(), "name": self.cfg.name,
-                "owner": { "login": self.cfg.owner }, "default_branch": self.cfg.default_branch })
+                "owner": { "login": self.cfg.owner }, "default_branch": self.cfg.default_branch,
+                "squash_merge_commit_message": self.squash_message_setting })
+    }
+
+    pub fn bot(&self) -> String {
+        format!("{}[bot]", self.cfg.app_slug)
+    }
+
+    pub fn comment_json(&self, c: &FakeComment) -> Value {
+        json!({
+            "id": c.id, "user": { "login": c.user }, "body": c.body,
+            "created_at": ts(c.created_at), "updated_at": ts(c.updated_at),
+            "issue_url": format!("https://api.github.test/repos/{}/issues/{}", self.cfg.full_name(), c.number),
+        })
+    }
+
+    /// Adds a comment and emits `issue_comment.created` sent by `user`.
+    pub fn add_comment(&mut self, n: u64, user: &str, body: &str) -> u64 {
+        let id = self.id();
+        self.comment_clock += 1;
+        let c = FakeComment {
+            id,
+            number: n,
+            user: user.into(),
+            body: body.into(),
+            created_at: self.comment_clock,
+            updated_at: self.comment_clock,
+        };
+        let j = self.comment_json(&c);
+        self.comments.push(c);
+        self.emit(
+            "issue_comment",
+            json!({ "action": "created", "issue": { "number": n, "pull_request": {} },
+                    "comment": j, "sender": { "login": user } }),
+        );
+        id
+    }
+
+    /// Edits a comment and emits `issue_comment.edited` sent by `sender`.
+    pub fn edit_comment(&mut self, id: u64, sender: &str, body: &str) -> bool {
+        self.comment_clock += 1;
+        let now = self.comment_clock;
+        let Some(c) = self.comments.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        c.body = body.into();
+        c.updated_at = now;
+        let c = c.clone();
+        let j = self.comment_json(&c);
+        self.emit(
+            "issue_comment",
+            json!({ "action": "edited", "issue": { "number": c.number, "pull_request": {} },
+                    "comment": j, "sender": { "login": sender } }),
+        );
+        true
     }
 
     pub fn mergeable(&mut self, pr: &FakePr) -> Option<bool> {
@@ -299,6 +379,12 @@ impl St {
         let pr = self.prs.get(&n)?.clone();
         let mergeable = if pr.open { self.mergeable(&pr) } else { None };
         let base_sha = self.tip(&pr.base).unwrap_or_default();
+        let own = self.cfg.full_name();
+        let head_repo = if pr.fork {
+            format!("{}/{}", pr.user, self.cfg.name)
+        } else {
+            own.clone()
+        };
         Some(json!({
             "number": pr.number,
             "title": pr.title,
@@ -309,8 +395,8 @@ impl St {
             "merge_commit_sha": pr.merge_commit_sha,
             "mergeable": mergeable,
             "user": { "login": pr.user },
-            "head": { "ref": pr.head_ref, "sha": pr.head_sha },
-            "base": { "ref": pr.base, "sha": base_sha },
+            "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": { "full_name": head_repo } },
+            "base": { "ref": pr.base, "sha": base_sha, "repo": { "full_name": own } },
             "labels": pr.labels.iter().map(|l| json!({ "name": l })).collect::<Vec<_>>(),
         }))
     }
@@ -548,6 +634,9 @@ impl FakeGithub {
             rulesets: Vec::new(),
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
+            comment_clock: 1_800_000_000,
+            commit_authors: BTreeMap::new(),
+            squash_message_setting: "COMMIT_MESSAGES".into(),
         };
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
@@ -650,6 +739,21 @@ impl FakeGithub {
         draft: bool,
         labels: &[String],
     ) -> u64 {
+        self.open_pr_with(author, title, files, draft, labels, "", false)
+    }
+
+    /// `open_pr` with a description and, optionally, from a fork.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_pr_with(
+        &self,
+        author: &str,
+        title: &str,
+        files: &[(String, String)],
+        draft: bool,
+        labels: &[String],
+        body: &str,
+        fork: bool,
+    ) -> u64 {
         self.with(|s| {
             s.next_issue += 1;
             let n = s.next_issue;
@@ -660,6 +764,7 @@ impl FakeGithub {
                 tree.insert(p.clone(), c.clone());
             }
             let head = s.repo.commit(tree, vec![tip], &format!("{title} (#{n})"));
+            s.commit_authors.insert(head.clone(), author.to_string());
             let head_ref = format!("pr-{n}");
             s.repo.create_ref(&head_ref, &head).expect("new branch");
             s.prs.insert(
@@ -667,7 +772,7 @@ impl FakeGithub {
                 FakePr {
                     number: n,
                     title: title.into(),
-                    body: String::new(),
+                    body: body.into(),
                     user: author.into(),
                     head_ref,
                     head_sha: head,
@@ -677,6 +782,8 @@ impl FakeGithub {
                     merged: false,
                     merge_commit_sha: None,
                     labels: labels.iter().cloned().collect(),
+                    fork,
+                    reviews: vec![],
                 },
             );
             s.emit_pr("opened", n, json!({}));
@@ -687,6 +794,12 @@ impl FakeGithub {
 
     /// A new commit on the pull request's branch.
     pub fn push_pr(&self, n: u64, files: &[(String, String)]) -> Sha {
+        let author = self.pr(n).map(|p| p.user).unwrap_or_default();
+        self.push_pr_as(n, &author, files)
+    }
+
+    /// A new commit on the pull request's branch, made by `by`.
+    pub fn push_pr_as(&self, n: u64, by: &str, files: &[(String, String)]) -> Sha {
         self.with(|s| {
             let pr = s.prs.get(&n).cloned().expect("pr");
             let mut tree = s.repo.tree(&pr.head_sha).clone();
@@ -696,6 +809,7 @@ impl FakeGithub {
             let head = s
                 .repo
                 .commit(tree, vec![pr.head_sha.clone()], &format!("push to #{n}"));
+            s.commit_authors.insert(head.clone(), by.to_string());
             s.repo
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
@@ -738,6 +852,78 @@ impl FakeGithub {
                 json!({}),
             );
         });
+    }
+
+    /// `user` comments `body` on pull request `n`; returns the comment id.
+    pub fn comment(&self, n: u64, user: &str, body: &str) -> u64 {
+        self.with(|s| s.add_comment(n, user, body))
+    }
+
+    /// `user` ticks the first open checkbox in the queue's comment carrying `marker`; false
+    /// when there is none.
+    pub fn tick(&self, n: u64, user: &str, marker: &str) -> bool {
+        self.with(|s| {
+            let bot = s.bot();
+            let Some(c) = s
+                .comments
+                .iter()
+                .rev()
+                .find(|c| c.number == n && c.user == bot && c.body.contains(marker))
+                .cloned()
+            else {
+                return false;
+            };
+            if !c.body.contains("- [ ]") {
+                return false;
+            }
+            let body = c.body.replacen("- [ ]", "- [x]", 1);
+            s.edit_comment(c.id, user, &body)
+        })
+    }
+
+    /// Edits the pull request's description.
+    pub fn edit_body(&self, n: u64, body: &str) {
+        self.with(|s| {
+            if let Some(p) = s.prs.get_mut(&n) {
+                p.body = body.into();
+            }
+            s.emit_pr("edited", n, json!({}));
+        });
+    }
+
+    /// `user` reviews pull request `n` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`).
+    pub fn review(&self, n: u64, user: &str, state: &str) {
+        self.with(|s| {
+            if let Some(p) = s.prs.get_mut(&n) {
+                p.reviews.push((user.into(), state.into()));
+            }
+            s.emit(
+                "pull_request_review",
+                json!({ "action": "submitted", "pull_request": { "number": n },
+                        "review": { "state": state.to_lowercase(), "user": { "login": user } } }),
+            );
+        });
+    }
+
+    /// The comments on a pull request, oldest first.
+    pub fn comments_on(&self, n: u64) -> Vec<FakeComment> {
+        self.with(|s| {
+            s.comments
+                .iter()
+                .filter(|c| c.number == n)
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Reactions: comment id, user, content.
+    pub fn reactions(&self) -> Vec<(u64, String, String)> {
+        self.with(|s| s.reactions.clone())
+    }
+
+    /// GitHub's squash body setting of the repository.
+    pub fn set_squash_message_setting(&self, setting: &str) {
+        self.with(|s| s.squash_message_setting = setting.into());
     }
 
     pub fn close_pr(&self, n: u64) {
