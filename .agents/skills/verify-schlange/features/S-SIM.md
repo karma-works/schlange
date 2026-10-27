@@ -50,6 +50,7 @@ Preconditions:
 - Webhooks in the simulation are hints: the runner reads the forge after each delivery. A real adapter has to do the same.
 - `max_time` (default 7 days) bounds a run; a run that does not settle reports an I2 violation.
 - Golden event logs exist for the in-memory forge only: on `localgit` the commit ids differ (they are git's), so the localgit test compares outcomes and merged order with the in-memory run instead.
+- Every scenario under `scenarios/` passes on `localgit` except `p1-flaky.yaml`: flake draws are keyed by the tree id, and git's tree ids differ from the in-memory ones, so other runs flake and that scenario's expectations (which pull request is hit) do not hold there; its invariants I0–I4 do hold.
 - On `localgit`, check durations are still virtual time: the process runs when the check starts, its result is reported after `duration`.
 - A `run` command also works on the in-memory forge (the tree is written to a temporary directory), so `p1-semantic-conflict-compile` needs `sh`, `grep` and `sed` on both forges.
 - A `localgit` run starts git hundreds of times (about 1–3 s per scenario); `SCHLANGE_KEEP_TEMP=1` keeps the repositories for inspection.
