@@ -7,9 +7,9 @@ unsupported.yml: unsupported[support] feature pull-request-rules (P1, missing): 
 unsupported.yml: unsupported[support] feature queue-bot-accounts (P1, missing): default:queue_rules.draft_bot_account, default:queue_rules.merge_bot_account, default:queue_rules.update_bot_account
 unsupported.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
 unsupported.yml: unsupported[support] feature queue-commit-message (P1, missing): default:queue_rules.commit_message_template
-unsupported.yml: unsupported[support] feature queue-draft-pr (P1, missing): default:queue_rules.allow_inplace_checks, default:queue_rules.queue_branch_prefix
+unsupported.yml: unsupported[support] feature queue-draft-pr (P1, missing): default:queue_rules.allow_inplace_checks, default:queue_rules.batch_pull_request, default:queue_rules.queue_branch_prefix
 unsupported.yml: unsupported[support] feature queue-labels-comments (P1, missing): default:merge_queue.checking_label, default:merge_queue.dequeued_label, default:merge_queue.queue_controls_comment, default:merge_queue.queued_label, default:merge_queue.status_comments
 unsupported.yml: unsupported[support] feature queue-merge-methods-other (P2, missing): default:queue_rules.queue_branch_merge_method, enum:merge_method:rebase (7:5)
 unsupported.yml: unsupported[support] feature queue-priority (P2, missing): config:priority_rules (9:1), config:priority_rules.conditions (11:5), config:priority_rules.name (10:5), config:priority_rules.priority (13:5), default:priority_rules.allow_checks_interruption, enum:priority:high (13:5)
 unsupported.yml: unsupported[support] feature queue-update-method (P2, missing): default:queue_rules.update_method
-unsupported.yml: valid for Mergify; 43 entries not supported by Schlange yet (--strict makes this exit 2)
+unsupported.yml: valid for Mergify; 44 entries not supported by Schlange yet (--strict makes this exit 2)

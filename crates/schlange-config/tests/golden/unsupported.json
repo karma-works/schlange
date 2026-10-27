@@ -269,6 +269,13 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
+      "message": "default `queue_rules.batch_pull_request` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing)",
+      "feature": "queue-draft-pr"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing)",
       "feature": "queue-branch-protection"
     },
@@ -667,6 +674,13 @@
       "priority": "P1",
       "status": "partial",
       "supported": true
+    },
+    {
+      "id": "default:queue_rules.batch_pull_request",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
     },
     {
       "id": "default:queue_rules.batch_size",

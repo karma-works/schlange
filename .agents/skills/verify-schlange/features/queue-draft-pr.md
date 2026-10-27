@@ -9,6 +9,8 @@ inventory:
   - "config:queue_rules.allow_inplace_checks"
   - "default:queue_rules.queue_branch_prefix"
   - "default:queue_rules.allow_inplace_checks"
+  - "config:queue_rules.batch_pull_request"
+  - "default:queue_rules.batch_pull_request"
 problems:
   - "MQ-18"
   - "MQ-36"
@@ -31,6 +33,7 @@ one pull request at a time in serial mode without retries and with single-step C
 - `prefix`: default `mergify/merge-queue/`, followed by a random hex part.
 - `draft-pr`: title and body refer to the contained pull requests.
 - `in-place`: computed, not configured: only when `max_parallel_checks` is 1, mode `serial`, batch size 1 (the max of a range), `max_checks_retries` 0 and `merge_conditions` empty or equal to `queue_conditions`. The option `allow_inplace_checks` is deprecated.
+- `batch-pull-request`: experimental option `batch_pull_request` (default true), added to the schema on 2026-10-27 without a description; presumably whether the queue opens a batch pull request at all. Behaviour unknown until documented or observed.
 - `cleanup`: branch and pull request disappear after merge or abort (I3).
 
 ## How to get to it (user POV)

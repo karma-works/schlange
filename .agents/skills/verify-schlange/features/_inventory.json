@@ -20,11 +20,11 @@
     "attr": 76,
     "cli": 42,
     "cmd": 8,
-    "config": 293,
-    "default": 154,
+    "config": 295,
+    "default": 156,
     "enum": 153
   },
-  "total": 823,
+  "total": 827,
   "entries": [
     {
       "id": "action:assign",
@@ -2271,6 +2271,12 @@
       "type": "string"
     },
     {
+      "id": "config:defaults.queue_rule.batch_pull_request",
+      "kind": "config",
+      "type": "boolean",
+      "experimental": true
+    },
+    {
       "id": "config:defaults.queue_rule.batch_size",
       "kind": "config",
       "type": "integer|object"
@@ -2994,6 +3000,12 @@
       "type": "string"
     },
     {
+      "id": "config:queue_rules.batch_pull_request",
+      "kind": "config",
+      "type": "boolean",
+      "experimental": true
+    },
+    {
       "id": "config:queue_rules.batch_size",
       "kind": "config",
       "type": "integer|object"
@@ -3551,6 +3563,11 @@
       "value": "30 seconds"
     },
     {
+      "id": "default:defaults.queue_rule.batch_pull_request",
+      "kind": "default",
+      "value": true
+    },
+    {
       "id": "default:defaults.queue_rule.batch_size",
       "kind": "default",
       "value": 1
@@ -3966,6 +3983,11 @@
       "id": "default:queue_rules.batch_max_wait_time",
       "kind": "default",
       "value": "30 seconds"
+    },
+    {
+      "id": "default:queue_rules.batch_pull_request",
+      "kind": "default",
+      "value": true
     },
     {
       "id": "default:queue_rules.batch_size",
