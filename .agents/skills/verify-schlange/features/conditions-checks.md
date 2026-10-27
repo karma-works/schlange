@@ -3,7 +3,7 @@ id: conditions-checks
 title: "Check attributes and check semantics"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "attr:check"
   - "attr:check-success"
@@ -31,6 +31,7 @@ source.
 
 ## Sub-features
 
+- `attributes`: built. All nine attributes are evaluated (`check`, `check-success`, `check-failure`, `check-neutral`, `check-skipped`, `check-cancelled`, `check-timed-out`, `check-stale`, `check-pending`; `crates/schlange-core/src/eval.rs`).
 - `success`: only `success` (built in the simulation).
 - `failure`: failure, cancelled, timed_out, action_required (built in the simulation).
 - `newest-run`: the run created last per name wins (built in the simulation, without check suites).

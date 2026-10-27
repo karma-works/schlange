@@ -3,7 +3,7 @@ id: conditions-files
 title: "Attribute `files` with regex"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "attr:files"
 problems:
@@ -19,9 +19,10 @@ with a negated regex with lookahead, which needs Python-compatible regex semanti
 
 ## Sub-features
 
-- `list`: all changed paths, renamed ones too.
-- `regex`: search like Python's `re.search`, lookahead through `fancy-regex`.
-- `negation`: `-files ~= …` means "no file matches".
+- `list`: built in the simulation (the scenario's changed paths); renames come from the forge adapter later.
+- `regex`: built. Search like Python's `re.search`, lookahead through `fancy-regex`; a difference test against Python is missing.
+- `negation`: built. `-files ~= …` means "no file matches".
+- `glob`: built with open questions (`*=`; whether `*` crosses `/` like Python is not settled).
 
 ## How to get to it (user POV)
 

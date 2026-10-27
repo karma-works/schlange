@@ -9,6 +9,8 @@ inventory:
   - "config:merge_queue.reset_on_external_merge"
   - "default:merge_queue.reset_on_external_merge"
   - "enum:reset_on_external_merge:*"
+unsupported:
+  - "attr:conflict"
 problems:
   - "MQ-27"
   - "MQ-06"
@@ -29,10 +31,10 @@ rebuilt by default. Landing happens only while the base still is the expected st
 - `conflict-base`: built. The forge reports that the pull request does not merge onto the base alone → dequeue with `CONFLICT_WITH_BASE_BRANCH`.
 - `conflict-ahead`: built. It merges onto the base but not on top of pull requests ahead → held with `CONFLICT_WITH_PULL_AHEAD` (stays queued, keeps its place); released when those leave; when one of them merges, the next build finds the conflict with the base and dequeues with `CONFLICT_WITH_BASE_BRANCH`.
 - `external-merge`: built for `always` (default): a base head the queue did not land discards every car and bisection (`MERGE_QUEUE_RESET`, stays queued) and rebuilds on the new base. A pull request merged by hand leaves with `PR_MANUALLY_MERGED`.
-- `never`: missing. `reset_on_external_merge: never` behaves like `always` (rebuilding keeps I0; Mergify's `never` keeps testing on the old base).
+- `never`: built. With `reset_on_external_merge: never` an external merge does not discard the running cars; they land on the new tip (still a compare-and-swap). I0 then checks each landed commit as the tested change applied to the actual parent (`cargo test -p schlange-forge --test regressions reset_on_external_merge_never`).
 - `semantic-conflict`: built through speculation: the later pull request is tested on top of the earlier one (`p1-semantic-conflict`; with a real compile script in a checkout, on both forges: `p1-semantic-conflict-compile`).
 - `line-level` (real git): built on `localgit`. Conflicts are git's own (`git merge-tree --write-tree`): edits to different lines of one file merge, edits to the same lines conflict (`cargo test -p schlange-forge --test localgit line_level_merge_differs_from_the_in_memory_model`, the matrix test).
-- `conflict` attribute: missing (no condition attribute).
+- `conflict` attribute: missing (listed as `unsupported`; the evaluator has no `conflict` attribute).
 
 ## How to get to it (user POV)
 

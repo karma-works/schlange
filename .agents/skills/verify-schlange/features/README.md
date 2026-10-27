@@ -46,9 +46,26 @@ behaviour in our own words. It then has exactly four H2 sections in this order:
 Frontmatter: `id` (= file name), `title`, `priority` (P1 = used by Arztagent or in effect as a
 default, P2 = rest of merge queue and workflow, P3 = CI Insights, Test Engine, Stacks,
 Dashboard), `arztagent` (bool), `status` (`missing` | `partial` | `conformant`), `inventory`,
-`problems` (`MQ-…`, `W-…`), `source` (documentation page). `status` feeds the support matrix
-of `schlange config validate` (stage 5): `missing` means unsupported. `conformant` needs green
-evidence and the critic's verdict (`AGENTS.md`).
+`unsupported` (optional), `problems` (`MQ-…`, `W-…`), `source` (documentation page).
+`conformant` needs green evidence and the critic's verdict (`AGENTS.md`).
+
+`status` and `unsupported` feed the support matrix of `schlange config validate` (stage 5),
+which decides per inventory entry the configuration uses (an option, action, attribute, enum
+value, or a default that takes effect):
+
+- feature `missing`: every entry of the feature is unsupported;
+- feature `partial`: an entry is unsupported when it matches a pattern in the feature's
+  `unsupported` list (same syntax as `inventory`, `*` matches any text), supported otherwise.
+  List there every option, attribute, enum value or default of the feature that is not built,
+  so that `config validate --strict` exits 2 for it. Leave out what is built, and say in the
+  `Sub-features` section why a not-built item is not listed (for example because a stage 4
+  error or another feature already flags every valid use of it);
+- feature `conformant`: every entry is supported; `unsupported` must be empty.
+
+The report names the reason per entry (`feature not built` or `not built in this partial
+feature`). A default counts as used where its parent exists in the configuration (some list
+element lacks the key) and no `defaults` section sets the option instead; `merge_queue` and
+`commands_restrictions` exist even when not written.
 
 ## How the map is built
 
@@ -59,7 +76,8 @@ evidence and the critic's verdict (`AGENTS.md`).
 - Every entry belongs to exactly one feature file through the frontmatter list `inventory`
   (IDs or patterns with `*`). The coverage test (`cargo test -p schlange-config --test
   coverage`) fails otherwise, and also when a problem ID does not exist, a P1 file names no
-  `MQ-` case, or a file lacks one of the four sections.
+  `MQ-` case, or a file lacks one of the four sections. Every `unsupported` pattern must match
+  an inventory entry that belongs to the same feature, and only `partial` features may have one.
 - Features `S-…` are Schlange's own (KONZEPT.md, section 8) and have no inventory entries.
 
 ## Features
@@ -77,10 +95,10 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [Action `queue`](action-queue.md) | partial | yes |
 | P1 | [Commands `queue`, `dequeue`, `refresh`](commands.md) | missing | yes |
 | P1 | [Who may run commands (`commands_restrictions`)](commands-restrictions.md) | missing | yes |
-| P1 | [Attributes `base`, `draft`, `label`, `author`, `sender`](conditions-basic.md) | missing | yes |
-| P1 | [Check attributes and check semantics](conditions-checks.md) | missing | yes |
-| P1 | [Dependabot attributes](conditions-dependabot.md) | missing | yes |
-| P1 | [Attribute `files` with regex](conditions-files.md) | missing | yes |
+| P1 | [Attributes `base`, `draft`, `label`, `author`, `sender`](conditions-basic.md) | partial | yes |
+| P1 | [Check attributes and check semantics](conditions-checks.md) | partial | yes |
+| P1 | [Dependabot attributes](conditions-dependabot.md) | partial | yes |
+| P1 | [Attribute `files` with regex](conditions-files.md) | partial | yes |
 | P1 | [Condition syntax and combinators](conditions-syntax.md) | partial | yes |
 | P1 | [Dependencies between pull requests (`Depends-On`)](depends-on.md) | missing | yes |
 | P1 | [Bot accounts for merge, draft and update](queue-bot-accounts.md) | missing | yes |
@@ -88,7 +106,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [Find and load the configuration file](config-file.md) | missing | yes |
 | P1 | [Validate a configuration](config-validation.md) | partial | yes |
 | P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | missing | yes |
-| P1 | [Workflow rules (`pull_request_rules`)](pull-request-rules.md) | missing | yes |
+| P1 | [Workflow rules (`pull_request_rules`)](pull-request-rules.md) | partial | yes |
 | P1 | [Batches (`batch_size`, `batch_max_wait_time`)](queue-batch.md) | partial | yes |
 | P1 | [Bisection of red batches](queue-bisection.md) | partial | yes |
 | P1 | [Foreign pushes to queue branches](queue-branch-edit.md) | partial | yes |
@@ -97,7 +115,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [Commit message on merge](queue-commit-message.md) | missing | yes |
 | P1 | [Conflicts and a moving base](queue-conflicts.md) | partial | yes |
 | P1 | [Dequeue with a reason](queue-dequeue-reasons.md) | partial | yes |
-| P1 | [Queue pull requests as drafts on `mergify/merge-queue/`](queue-draft-pr.md) | missing | yes |
+| P1 | [Queue pull requests as drafts on `mergify/merge-queue/`](queue-draft-pr.md) | partial | yes |
 | P1 | [Queue labels and status comments](queue-labels-comments.md) | missing | yes |
 | P1 | [Landing as compare-and-swap with evidence](queue-landing.md) | partial | yes |
 | P1 | [Merge method `squash`](queue-merge-method-squash.md) | partial | yes |
@@ -127,7 +145,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P2 | [Commands `backport`, `copy`, `rebase`, `squash`, `update`](commands-other.md) | missing |  |
 | P2 | [Deployment attributes](conditions-deployments.md) | missing |  |
 | P2 | [Further file and line attributes](conditions-files-other.md) | missing |  |
-| P2 | [Further pull request metadata](conditions-pr-metadata.md) | missing |  |
+| P2 | [Further pull request metadata](conditions-pr-metadata.md) | partial |  |
 | P2 | [Queue attributes](conditions-queue.md) | missing |  |
 | P2 | [Review attributes](conditions-reviews.md) | missing |  |
 | P2 | [Time and schedule](conditions-time.md) | missing |  |

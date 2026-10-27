@@ -25,7 +25,7 @@ the guilty one is dequeued. Without a setting there is no limit on attempts (Arz
 - `limit`: built. Documented rule: a part with several pull requests that fails in the last round leaves (`BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS`), parts before it that passed merge, parts after it go back with a fresh count. `batch_max_failure_resolution_attempts: 0` dequeues the whole batch with `BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS`; a red multi-PR part in the last round leaves with that code; with one parallel check the last round tests only the first part and drops the rest with `DROPPED_BY_BISECTION_ELIMINATION`.
 - `termination`: every round splits a strict prefix, so it ends without a limit (MQ-21); the property tests run random batches with and without limits.
 - `interaction`: two pull requests red only together → the later one leaves (`p1-semantic-conflict`, property tests with `SEM_A`/`SEM_B`).
-- `rerun-failed-only`, `skip_intermediate_results`, retries: missing.
+- `rerun-failed-only`, `skip_intermediate_results`: missing. Retries (`max_checks_retries`) happen before a red batch is split; see `queue-checks-timeout`.
 
 ## How to get to it (user POV)
 

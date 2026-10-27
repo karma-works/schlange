@@ -1,6 +1,7 @@
 //! The feature map: one Markdown file per feature with YAML frontmatter, plus the generated
 //! inventory (`_inventory.json`). Every inventory entry belongs to exactly one feature; the
-//! support matrix of the validator (stage 5) is derived from the features' `status`.
+//! support matrix of the validator (stage 5) is derived from the features' `status` and, for
+//! `partial` features, their `unsupported` list.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -34,7 +35,8 @@ impl Status {
         }
     }
 
-    /// Schlange supports a feature once it is at least partly built.
+    /// Schlange supports a feature once it is at least partly built. Entries of a `partial`
+    /// feature can still be unsupported; see [`FeatureMap::support`].
     pub fn is_supported(self) -> bool {
         !matches!(self, Status::Missing)
     }
@@ -51,6 +53,10 @@ pub struct Feature {
     /// Inventory IDs or patterns (`*` matches any text).
     #[serde(default)]
     pub inventory: Vec<String>,
+    /// Patterns of the feature's own inventory entries that are not built yet (only for
+    /// `partial` features). Stage 5 reports a used entry matching one as unsupported.
+    #[serde(default)]
+    pub unsupported: Vec<String>,
     /// Problem IDs (`MQ-…`, `W-…`).
     #[serde(default)]
     pub problems: Vec<String>,
@@ -124,6 +130,40 @@ pub fn parse_feature(file: &str, text: &str) -> Result<Feature, FeatureError> {
     feature.file = file.to_string();
     feature.body = rest[end + 5..].to_string();
     Ok(feature)
+}
+
+/// Why stage 5 considers an entry unsupported.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Unsupported {
+    /// The owning feature has `status: missing`.
+    FeatureMissing,
+    /// The owning feature is `partial` and lists the entry as not built.
+    NotBuilt { pattern: String },
+}
+
+impl Unsupported {
+    pub fn describe(&self) -> String {
+        match self {
+            Unsupported::FeatureMissing => "feature not built".into(),
+            Unsupported::NotBuilt { pattern } => {
+                format!("not built in this partial feature (`{pattern}`)")
+            }
+        }
+    }
+}
+
+impl Feature {
+    /// `None` when Schlange supports the (owned) entry `id`, else the reason.
+    pub fn support(&self, id: &str) -> Option<Unsupported> {
+        if !self.status.is_supported() {
+            return Some(Unsupported::FeatureMissing);
+        }
+        self.unsupported
+            .iter()
+            .find(|p| pattern_matches(p, id))
+            .map(|p| Unsupported::NotBuilt { pattern: p.clone() })
+    }
 }
 
 pub struct FeatureMap {
@@ -252,6 +292,24 @@ impl FeatureMap {
                     ));
                 }
             }
+            if !f.unsupported.is_empty() && f.status != Status::Partial {
+                problems.push(format!(
+                    "{}: `unsupported` is only allowed with status partial, found {}",
+                    f.id,
+                    f.status.as_str()
+                ));
+            }
+            for p in &f.unsupported {
+                let own = self.ids.iter().any(|id| {
+                    pattern_matches(p, id) && f.inventory.iter().any(|i| pattern_matches(i, id))
+                });
+                if !own {
+                    problems.push(format!(
+                        "{}: unsupported pattern `{p}` matches none of the feature's own inventory entries",
+                        f.id
+                    ));
+                }
+            }
         }
         problems
     }
@@ -297,8 +355,67 @@ mod tests {
         assert_eq!(f.priority, Priority::P1);
         assert_eq!(f.status, Status::Missing);
         assert_eq!(f.inventory, vec!["attr:base"]);
+        assert!(f.unsupported.is_empty());
+        assert_eq!(f.support("attr:base"), Some(Unsupported::FeatureMissing));
         assert!(f.body.contains("# X"));
         assert!(parse_feature("y.md", "# no frontmatter").is_err());
+    }
+
+    #[test]
+    fn unsupported_entries_of_a_partial_feature() {
+        let text = "---\nid: x\ntitle: \"X\"\npriority: P1\narztagent: true\nstatus: partial\n\
+                    inventory:\n  - \"attr:*\"\nunsupported:\n  - \"attr:b*\"\nsource: \"s\"\n---\n\n# X\n";
+        let f = parse_feature("x.md", text).unwrap();
+        assert_eq!(f.support("attr:author"), None);
+        assert_eq!(
+            f.support("attr:base"),
+            Some(Unsupported::NotBuilt {
+                pattern: "attr:b*".into()
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_patterns_must_hit_own_entries() {
+        let feature = |id: &str, status: &str, inv: &str, unsup: &str| {
+            let text = format!(
+                "---\nid: {id}\ntitle: \"X\"\npriority: P2\narztagent: false\nstatus: {status}\n\
+                 inventory:\n  - \"{inv}\"\nunsupported:\n  - \"{unsup}\"\nsource: \"s\"\n---\n\n# X\n"
+            );
+            parse_feature(&format!("{id}.md"), &text).unwrap()
+        };
+        let inventory = Inventory {
+            counts: BTreeMap::new(),
+            total: 2,
+            entries: ["attr:a", "attr:b"]
+                .map(|id| InventoryEntry {
+                    id: id.into(),
+                    kind: "attr".into(),
+                    ty: None,
+                })
+                .to_vec(),
+        };
+        let map = FeatureMap::new(
+            vec![
+                feature("fa", "partial", "attr:a", "attr:b"),
+                feature("fb", "conformant", "attr:b", "attr:b"),
+            ],
+            inventory,
+        );
+        let problems = map.coverage_problems();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("fa: unsupported pattern `attr:b`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("fb: `unsupported` is only allowed")),
+            "{problems:?}"
+        );
+        assert_eq!(problems.len(), 2, "{problems:?}");
     }
 
     #[test]
