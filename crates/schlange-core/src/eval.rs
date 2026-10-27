@@ -204,6 +204,28 @@ pub fn eval(
     }
 }
 
+/// Check names a condition list refers to with `check-*` attributes and `=`.
+pub fn referenced_checks(list: &[Condition]) -> Vec<String> {
+    fn walk(c: &Condition, out: &mut Vec<String>) {
+        match c {
+            Condition::Atom(a) => {
+                if a.attribute.starts_with("check")
+                    && let (Some(Operator::Eq), Some(v)) = (a.operator, &a.value)
+                    && !out.contains(v)
+                {
+                    out.push(v.clone());
+                }
+            }
+            Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| walk(c, out)),
+            Condition::Not(c) => walk(c, out),
+            Condition::Always => {}
+        }
+    }
+    let mut out = Vec::new();
+    list.iter().for_each(|c| walk(c, &mut out));
+    out
+}
+
 /// Evaluates a condition list (implicit `and`) and reports each condition's result.
 pub fn eval_list(
     list: &[Condition],
@@ -222,20 +244,11 @@ mod tests {
     use schlange_config::conditions::parse_atom;
 
     fn pr() -> PullRequest {
-        PullRequest {
-            number: 7,
-            author: "arztagent-bot".into(),
-            base: "main".into(),
-            head_ref: "feature".into(),
-            head_sha: "h2".into(),
-            title: "t".into(),
-            draft: false,
-            closed: false,
-            labels: ["ready".to_string()].into(),
-            files: vec!["src/main.rs".into(), ".github/workflows/ci.yml".into()],
-            dependabot_update_types: vec![],
-            checks: vec![],
-        }
+        let mut p = PullRequest::new(7, "arztagent-bot", "main", "feature", "h2");
+        p.title = "t".into();
+        p.labels = ["ready".to_string()].into();
+        p.files = vec!["src/main.rs".into(), ".github/workflows/ci.yml".into()];
+        p
     }
 
     fn run(name: &str, sha: &str, c: Option<Conclusion>, seq: u64) -> CheckRun {

@@ -1,7 +1,8 @@
 # Phase 0: Arztagent's real configuration decides who enters the queue.
 # Covers: pull_request_rules with action `queue`, queue_conditions, check semantics,
 # the constitution regex with lookahead, Dependabot update types, label `halt`, drafts.
-# The queue itself is a placeholder (no queue pull requests, no merges).
+# Since phase 1a the queue is real: queued pull requests are tested on a draft pull request
+# (batch of up to 5, 5 minutes wait) and land as squash commits.
 name: p0-queue-conditions
 description: Pull requests open, CI reports, queue_conditions decide enqueue and dequeue.
 config: ../crates/schlange-config/tests/golden/arztagent.yml
@@ -78,13 +79,13 @@ events:
   - { at: 20m, ready: 6 }
 
 expect:
-  - { pr: 1, queued: true, queue: default }
+  - { pr: 1, state: merged, queue: default }
   - { pr: 2, queued: false }
-  - { pr: 3, queued: true, queue: default }
+  - { pr: 3, state: merged, queue: default }
   - { pr: 4, queued: false }
   - { pr: 5, queued: false }
-  - { pr: 6, queued: true, queue: default }
+  - { pr: 6, state: merged, queue: default }
   - { pr: 7, queued: false }
   - { pr: 8, queued: false }
-  - { pr: 9, queued: true, queue: default }
+  - { pr: 9, state: merged, queue: default }
   - { pr: 10, queued: false }

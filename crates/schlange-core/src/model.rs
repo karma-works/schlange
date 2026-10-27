@@ -55,9 +55,39 @@ pub struct PullRequest {
     pub dependabot_update_types: Vec<String>,
     #[serde(default)]
     pub checks: Vec<CheckRun>,
+    /// Merged (by the queue or by hand). A merged pull request is also closed.
+    #[serde(default)]
+    pub merged: bool,
+    /// The base branch tip is not an ancestor of the head (the pull request is behind).
+    #[serde(default)]
+    pub behind_base: bool,
+    /// Tree id of the head commit, when the forge reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_tree: Option<String>,
 }
 
 impl PullRequest {
+    /// An open, ready pull request without labels, files or checks.
+    pub fn new(number: u64, author: &str, base: &str, head_ref: &str, head_sha: &str) -> Self {
+        PullRequest {
+            number,
+            author: author.to_string(),
+            base: base.to_string(),
+            head_ref: head_ref.to_string(),
+            head_sha: head_sha.to_string(),
+            title: String::new(),
+            draft: false,
+            closed: false,
+            labels: Default::default(),
+            files: vec![],
+            dependabot_update_types: vec![],
+            checks: vec![],
+            merged: false,
+            behind_base: false,
+            head_tree: None,
+        }
+    }
+
     /// The newest run per check name on the current head commit.
     pub fn current_checks(&self) -> Vec<&CheckRun> {
         let mut newest: Vec<&CheckRun> = Vec::new();
