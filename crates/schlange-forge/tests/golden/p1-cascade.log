@@ -29,8 +29,6 @@
 +0:11:00  reply     car 8 built at b7d5f0b, draft #1003
 +0:11:00  decision  build car 9 on mergify/merge-queue/8cd12edb01: base 5a8b940 + #2 #3 (checks #3)
 +0:11:00  reply     car 9 built at 56e9789, draft #1004
-+0:11:05  ci        #1001 check `full` completed on c55fc71: failure
-+0:11:10  ci        #1002 check `full` completed on 0c49b2c: failure
 +0:21:00  ci        #1003 check `full` completed on b7d5f0b: success
 +0:21:00  ci        #1004 check `full` completed on 56e9789: success
 +0:21:00  webhook   #1003 check `full` completed on b7d5f0b: success

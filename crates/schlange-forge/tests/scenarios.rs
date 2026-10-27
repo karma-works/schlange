@@ -6,13 +6,19 @@ use std::path::{Path, PathBuf};
 
 use schlange_forge::scenario::run_file;
 
+/// Every scenario under `scenarios/` and the critic's reproductions under
+/// `scenarios/regressions/`.
 fn scenarios() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .expect("scenarios dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
-        .collect();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
+    let mut files = Vec::new();
+    for dir in [root.clone(), root.join("regressions")] {
+        files.extend(
+            std::fs::read_dir(&dir)
+                .expect("scenarios dir")
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "yaml")),
+        );
+    }
     files.sort();
     files
 }

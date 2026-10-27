@@ -12,17 +12,25 @@
 //!   requests in the last round leaves the queue as a whole. With one parallel check, the last
 //!   round tests only the first part; the pull requests after it are dropped untested.
 //!
+//! - A test chosen to land that turns red on the fresh read before landing (a newer check run,
+//!   a flake) counts as a failure of the parts it holds: they are split again as the next
+//!   round, and the part that was to be split after the landing goes back to the queue. So a
+//!   round never waits on a car nobody decides (I2).
+//! - The culprit leaves with the code of the test that isolated it; the last pull request, when
+//!   every test passed, with the code of the failed batch (docs: "the checks of the failed batch
+//!   reported as the cause").
+//!
 //! Every round tests a strict prefix of the batch, so the split always ends (MQ-21).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use schlange_config::rules::Rules;
 
 use crate::engine::{CarPr, Decision, DequeueReason, EntryStatus, State, dequeue};
 use crate::queue::{Car, CarStatus, branch_name, close, requeue, rule};
-use crate::reasons as code;
+use crate::reasons::{self as code, static_code};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bisection {
     pub queue: String,
     /// The red batch being split, in queue order.
@@ -30,7 +38,8 @@ pub struct Bisection {
     pub parts: Vec<Vec<u64>>,
     /// 1 for the split of the batch that failed in the queue.
     pub round: u32,
-    pub code: &'static str,
+    #[serde(deserialize_with = "static_code::deserialize")]
+    pub code: crate::reasons::Code,
     pub text: String,
     /// Number of tests in this round.
     pub tests: usize,
@@ -173,7 +182,7 @@ pub(crate) fn abort(
         .collect();
     train.cars.retain(|c| c.test.is_none());
     for c in &tests {
-        close(c, out);
+        close(state, Some(base), c, out);
     }
     for n in b.batch {
         if !skip.contains(&n) {
@@ -215,6 +224,7 @@ pub(crate) fn fill(
         .map(|r| r.queue_branch_prefix.clone())
         .unwrap_or_else(|| "mergify/merge-queue/".into());
     let branch = branch_name(&prefix, base, id);
+    crate::queue::wake(state, state.now + crate::queue::REPLY_TIMEOUT, out);
     out.push(Decision::BuildCar {
         car: id,
         queue: b.queue.clone(),
@@ -235,9 +245,12 @@ pub(crate) fn fill(
         own,
         head_sha: None,
         tree: None,
-        started: 0,
-        status: CarStatus::Building,
+        started: state.now,
+        status: CarStatus::Building { since: state.now },
         test: Some(i),
+        attempt: 0,
+        measured: false,
+        drifted: false,
     });
 }
 
@@ -254,7 +267,7 @@ fn close_tests(state: &mut State, base: &str, keep: Option<u64>, out: &mut Vec<D
         .cars
         .retain(|c| c.test.is_none() || Some(c.id) == keep);
     for c in &gone {
-        close(c, out);
+        close(state, Some(base), c, out);
     }
 }
 
@@ -272,11 +285,16 @@ fn back_to_queue(state: &mut State, numbers: &[u64], out: &mut Vec<Decision>) {
     }
 }
 
+/// Dequeues the failing part: its single pull request with the failing test's code, or all of
+/// them when the limit forbids another split.
+#[allow(clippy::too_many_arguments)]
 fn dequeue_part(
     state: &mut State,
     rules: &Rules,
     b: &Bisection,
     part: &[u64],
+    code: &'static str,
+    text: &str,
     out: &mut Vec<Decision>,
 ) {
     if part.len() == 1 {
@@ -284,7 +302,7 @@ fn dequeue_part(
             state,
             rules,
             part[0],
-            DequeueReason::new(b.code, format!("found by splitting the batch: {}", b.text)),
+            DequeueReason::new(code, format!("found by splitting the batch: {text}")),
             out,
         );
     } else {
@@ -335,18 +353,20 @@ pub(crate) fn resolve(
     let Some(b) = train.bisection.clone() else {
         return false;
     };
-    if b.land.is_some() {
-        return false;
+    if let Some(land) = b.land {
+        return check_landing_test(state, rules, base, &b, land, out);
     }
     let test = |i: usize| train.cars.iter().find(|c| c.test == Some(i)).cloned();
     let slots = rules.merge_queue.max_parallel_checks as usize;
     let mut first_fail = None;
+    let mut fail_reason = (b.code, b.text.clone());
     let mut green = 0;
     for i in 0..b.tests {
         match test(i).map(|c| c.status) {
             Some(CarStatus::Green) => green += 1,
-            Some(CarStatus::Failed { .. }) => {
+            Some(CarStatus::Failed { code, text }) => {
                 first_fail = Some(i);
+                fail_reason = (code, text);
                 break;
             }
             None if green > 0 && train.cars.len() >= slots => {
@@ -426,7 +446,7 @@ pub(crate) fn resolve(
             Some(_) => {
                 close_tests(state, base, None, out);
                 state.trains.get_mut(base).expect("train").bisection = None;
-                dequeue_part(state, rules, &b, &first, out);
+                dequeue_part(state, rules, &b, &first, fail_reason.0, &fail_reason.1, out);
                 back_to_queue(state, &rest, out);
             }
         }
@@ -472,14 +492,69 @@ pub(crate) fn resolve(
             }
             back_to_queue(state, &after, out);
             if !split_again {
-                dequeue_part(state, rules, &b, &part, out);
+                dequeue_part(state, rules, &b, &part, fail_reason.0, &fail_reason.1, out);
             }
             if keep.is_none()
                 && let Some((part, round)) = next
             {
-                start(state, rules, base, &b.queue, part, round, b.code, &b.text);
+                start(
+                    state,
+                    rules,
+                    base,
+                    &b.queue,
+                    part,
+                    round,
+                    fail_reason.0,
+                    &fail_reason.1,
+                );
             }
         }
+    }
+    true
+}
+
+/// The round chose test `land` to land the passing parts. Normally it lands (`after_landing`).
+/// When it turns red on the fresh read before landing, that is a failure of the parts it holds:
+/// they become the next round, and the part waiting to be split after the landing goes back to
+/// the queue (it was tested on top of parts that no longer pass).
+fn check_landing_test(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    b: &Bisection,
+    land: u64,
+    out: &mut Vec<Decision>,
+) -> bool {
+    let train = &state.trains[base];
+    let Some(car) = train.cars.iter().find(|c| c.id == land).cloned() else {
+        // The landing test is gone without landing: nothing would ever decide the round.
+        abort(state, base, None, &[], out);
+        return true;
+    };
+    let CarStatus::Failed { code, text } = car.status.clone() else {
+        return false;
+    };
+    let train = state.trains.get_mut(base).expect("train");
+    train.cars.retain(|c| c.id != land);
+    train.bisection = None;
+    close(state, Some(base), &car, out);
+    let part = car.own.clone();
+    let rest: Vec<u64> = b
+        .batch
+        .iter()
+        .copied()
+        .filter(|n| !part.contains(n))
+        .collect();
+    back_to_queue(state, &rest, out);
+    let limit = rule(rules, &b.queue).and_then(|r| r.batch_max_failure_resolution_attempts);
+    if part.len() == 1 || limit.is_some_and(|l| b.round >= l) {
+        let b = Bisection {
+            round: b.round,
+            ..b.clone()
+        };
+        dequeue_part(state, rules, &b, &part, code, &text, out);
+    } else {
+        start(state, rules, base, &b.queue, part, b.round + 1, code, &text);
     }
     true
 }

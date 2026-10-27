@@ -23,8 +23,6 @@
 +0:06:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
 +0:06:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base 5a8b940 + #2 #1 (checks #1)
 +0:06:00  reply     car 7 built at ef67415, draft #1003
-+0:11:00  ci        #1000 check `full` completed on 3b9266c: success
-+0:11:00  ci        #1001 check `full` completed on 0552177: success
 +0:15:00  ci        #1002 check `full` completed on b7d5f0b: success
 +0:15:00  webhook   #1002 check `full` completed on b7d5f0b: success
 +0:15:00  decision  read #2 #1002 main mergify/merge-queue/f2f5067500 before acting

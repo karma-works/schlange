@@ -4,6 +4,7 @@
 pub mod bisect;
 pub mod engine;
 pub mod eval;
+pub mod journal;
 pub mod model;
 pub mod queue;
 pub mod reasons;

@@ -8,6 +8,7 @@
 
 pub mod ci;
 pub mod dsl;
+pub mod faults;
 pub mod git;
 pub mod invariants;
 #[cfg(feature = "localgit")]

@@ -1,49 +1,95 @@
 //! The queue of one base branch ("train"): serial mode with cumulative speculation.
 //!
 //! Car k tests the base plus the batches of cars 1..k. At most `max_parallel_checks` cars
-//! exist at a time (I4). Only the front car decides: it lands when green, or its failure is
-//! handled when red; a red car behind a running one waits, because the cause may lie ahead.
-//! When a car is discarded, every car behind it is discarded too (MQ-23). A red batch of
-//! several pull requests is split as described in `bisect`.
+//! exist at a time (I4), and a car that is being closed keeps its slot until the forge confirms
+//! that its draft is closed and its CI stopped. Only the front car decides: it lands when
+//! green, or its failure is handled when red; a red car behind a running one waits, because the
+//! cause may lie ahead. When a car is discarded, every car behind it is discarded too (MQ-23).
+//! A red batch of several pull requests is split as described in `bisect`.
+//!
+//! Every request to the forge can be lost, answered twice, answered late or answered with an
+//! error although it took effect (MQ-35). So no state waits forever for a reply: a car being
+//! built, verified, confirmed or landed, a car being closed, and the read of the base branch
+//! are all retried or resolved from a fresh read after [`REPLY_TIMEOUT`]. A landing whose
+//! outcome is unknown is resolved from the pull requests' `merged` state and the base tip; a
+//! pull request that later shows up merged after an uncertain landing counts as landed by the
+//! queue, and the compare-and-swap on the base means nothing lands twice.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use schlange_config::conditions::Condition;
 use schlange_config::rules::{BatchSize, ChecksTimeout, QueueRule, Rules};
 
 use crate::bisect;
 use crate::engine::{
-    CarPr, Decision, DequeueReason, EntryStatus, LandError, LandedCommit, Outcome, State, dequeue,
-    short,
+    CarPr, Closing, Decision, DequeueReason, EntryStatus, LandError, LandedCommit, Outcome, Sample,
+    State, dequeue, fingerprint, short,
 };
 use crate::eval::{self, Context};
-use crate::model::{Conclusion, PullRequest, Time};
-use crate::reasons as code;
+use crate::model::{CheckRun, Conclusion, PullRequest, Time};
+use crate::reasons::{self as code, static_code};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// How long the engine waits for a reply (or a fresh read) before it retries or resolves the
+/// request from a read. Virtual or real seconds.
+pub const REPLY_TIMEOUT: Time = 120;
+/// `checks_timeout: auto`: qualifying runs needed before a timeout applies (docs: about twenty
+/// in seven days).
+pub const AUTO_MIN_RUNS: usize = 20;
+/// `checks_timeout: auto`: the measurement window.
+pub const AUTO_WINDOW: Time = 7 * 86400;
+/// `checks_timeout: auto`: safety margin on the 95th percentile. The docs name a margin but not
+/// its size; 1.5 is our choice.
+pub const AUTO_MARGIN: f64 = 1.5;
+/// `checks_timeout: auto`: half-life of a run's weight ("recent runs weighted more heavily";
+/// the weighting is our choice).
+pub const AUTO_HALF_LIFE: Time = 86400;
+/// No checks timeout is shorter than this (docs: at least 60 seconds).
+pub const MIN_TIMEOUT: Time = 60;
+/// A wait that is due at once (after a restart).
+pub const EXPIRED: Time = Time::MAX;
+const BASE_HISTORY: usize = 64;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CarStatus {
-    /// `BuildCar` sent, no reply yet.
-    Building,
+    /// `BuildCar` sent at `since`, no reply yet.
+    Building {
+        since: Time,
+    },
     Running,
     Green,
     Failed {
-        code: &'static str,
+        #[serde(deserialize_with = "static_code::deserialize")]
+        code: crate::reasons::Code,
         text: String,
     },
     /// A fresh read was requested before landing.
     Verifying {
         token: u64,
+        since: Time,
     },
     /// The checks looked red or timed out; a fresh read was requested before acting on it
     /// (a lost webhook must not dequeue anything, MQ-33).
     Confirming {
         token: u64,
+        since: Time,
     },
-    Landing,
+    /// `Land` sent at `since`, no reply yet.
+    Landing {
+        since: Time,
+    },
+    /// The landing's outcome is unknown (lost reply, error, restart); a read was requested.
+    LandCheck {
+        token: u64,
+        since: Time,
+    },
+    /// The checks failed and are retried (`max_checks_retries`): the car is rebuilt on a fresh
+    /// draft as soon as a slot is free.
+    Retry,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Car {
     pub id: u64,
     pub queue: String,
@@ -61,17 +107,32 @@ pub struct Car {
     pub status: CarStatus,
     /// Index of the split test when the car belongs to a bisection.
     pub test: Option<usize>,
+    /// 0 for the first run, k for the k-th retry.
+    #[serde(default)]
+    pub attempt: u32,
+    /// Its runtime went into the `checks_timeout: auto` history.
+    #[serde(default)]
+    pub measured: bool,
+    /// The base moved outside the queue under it and the queue did not reset
+    /// (`reset_on_external_merge: never`) or its branch was edited: what lands is not exactly
+    /// the tested tree.
+    #[serde(default)]
+    pub drifted: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Train {
     pub base: String,
     pub base_sha: Option<String>,
     pub cars: Vec<Car>,
     pub halted: Option<String>,
     pub bisection: Option<bisect::Bisection>,
-    #[serde(skip)]
-    pub base_requested: bool,
+    /// An outstanding read of the base branch: token and time.
+    #[serde(default)]
+    pub base_request: Option<(u64, Time)>,
+    /// Earlier base tips, newest last: a read that shows one of them is stale (MQ-33).
+    #[serde(default)]
+    pub history: Vec<String>,
 }
 
 impl Train {
@@ -82,9 +143,21 @@ impl Train {
         }
     }
 
-    /// Branches of the queue's cars that exist on the forge.
+    /// Branches of the queue's cars that exist (or are being created) on the forge.
     pub fn branches(&self) -> Vec<String> {
         self.cars.iter().filter_map(|c| c.branch.clone()).collect()
+    }
+
+    fn set_base(&mut self, sha: String) {
+        if let Some(old) = self.base_sha.replace(sha.clone())
+            && old != sha
+        {
+            self.history.retain(|h| *h != old && *h != sha);
+            self.history.push(old);
+            if self.history.len() > BASE_HISTORY {
+                self.history.remove(0);
+            }
+        }
     }
 }
 
@@ -93,9 +166,13 @@ pub(crate) fn rule<'a>(rules: &'a Rules, name: &str) -> Option<&'a QueueRule> {
 }
 
 pub(crate) fn wake(state: &mut State, at: Time, out: &mut Vec<Decision>) {
-    if state.wakeups.insert(at) {
+    if at != EXPIRED && state.wakeups.insert(at) {
         out.push(Decision::WakeAt { at });
     }
+}
+
+fn due(state: &State, since: Time) -> bool {
+    since == EXPIRED || state.now >= since.saturating_add(REPLY_TIMEOUT)
 }
 
 pub fn is_car_draft(state: &State, number: u64) -> bool {
@@ -103,7 +180,7 @@ pub fn is_car_draft(state: &State, number: u64) -> bool {
         t.cars
             .iter()
             .any(|c| !c.in_place && c.draft == Some(number))
-    })
+    }) || state.closing.values().any(|c| c.draft == Some(number))
 }
 
 /// Deterministic queue branch name: the prefix and ten hex characters.
@@ -113,14 +190,45 @@ pub fn branch_name(prefix: &str, base: &str, car: u64) -> String {
     format!("{prefix}{}", &hex[..10])
 }
 
-pub(crate) fn close(car: &Car, out: &mut Vec<Decision>) {
-    if !car.in_place {
-        out.push(Decision::CloseCar {
-            car: car.id,
+/// The strict name pattern of a queue branch: a prefix and exactly ten lowercase hex
+/// characters (docs: queue branch cleanup). Only such branches are ever cleaned up (MQ-36).
+pub fn is_queue_branch(name: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|p| {
+        name.strip_prefix(p.as_str()).is_some_and(|rest| {
+            rest.len() == 10 && rest.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        })
+    })
+}
+
+/// Cars being closed that still hold a slot of `base`.
+pub fn closing_count(state: &State, base: &str) -> usize {
+    state
+        .closing
+        .values()
+        .filter(|c| c.base.as_deref() == Some(base))
+        .count()
+}
+
+/// Closes a car's draft and deletes its branch. The slot stays taken until the forge
+/// confirms (`CarClosed`) or the close is retried.
+pub(crate) fn close(state: &mut State, base: Option<&str>, car: &Car, out: &mut Vec<Decision>) {
+    if car.in_place {
+        return;
+    }
+    state.closing.insert(
+        car.id,
+        Closing {
+            base: base.map(str::to_string),
             branch: car.branch.clone(),
             draft: car.draft,
-        });
-    }
+            since: state.now,
+        },
+    );
+    out.push(Decision::CloseCar {
+        car: car.id,
+        branch: car.branch.clone(),
+        draft: car.draft,
+    });
 }
 
 /// Puts a queued pull request back to waiting, keeping its place, and says why its checks ended.
@@ -161,7 +269,7 @@ pub(crate) fn drop_cars_from(
     }
     let removed: Vec<Car> = train.cars.drain(from..).collect();
     for (i, car) in removed.iter().enumerate() {
-        close(car, out);
+        close(state, Some(base), car, out);
         let reason = if i == 0 { &first } else { &behind };
         for &n in &car.own {
             if !skip.contains(&n) {
@@ -206,6 +314,21 @@ pub(crate) fn discard_containing(
     else {
         return;
     };
+    let car = &train.cars[idx];
+    // The batch is rebuilt without the pull request when others stay in it; the cars behind
+    // were tested on top of the old batch.
+    let rebuilt = car.own.contains(&number) && car.own.len() > 1;
+    let behind = if rebuilt {
+        DequeueReason::assumed(
+            code::BATCH_AHEAD_REBUILT,
+            format!("the batch ahead was rebuilt without #{number}"),
+        )
+    } else {
+        DequeueReason::new(
+            code::PR_AHEAD_DEQUEUED,
+            format!("#{number} ahead in the queue left it"),
+        )
+    };
     drop_cars_from(
         state,
         base,
@@ -214,10 +337,7 @@ pub(crate) fn discard_containing(
             code::BATCH_REBUILT,
             format!("#{number} left this batch"),
         )),
-        Some(DequeueReason::new(
-            code::PR_AHEAD_DEQUEUED,
-            format!("#{number} ahead in the queue left it"),
-        )),
+        Some(behind),
         &[number],
         out,
     );
@@ -229,7 +349,7 @@ pub(crate) fn reset(state: &mut State, base: &str, reason: DequeueReason, out: &
     drop_cars_from(state, base, 0, Some(reason.clone()), Some(reason), &[], out);
 }
 
-fn find_car(state: &mut State, car: u64) -> Option<(String, usize)> {
+fn find_car(state: &State, car: u64) -> Option<(String, usize)> {
     state.trains.iter().find_map(|(b, t)| {
         t.cars
             .iter()
@@ -238,7 +358,6 @@ fn find_car(state: &mut State, car: u64) -> Option<(String, usize)> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn car_built(
     state: &mut State,
     car: u64,
@@ -246,11 +365,21 @@ pub(crate) fn car_built(
     head_sha: &str,
     tree: &str,
     draft: u64,
-    now: Time,
     out: &mut Vec<Decision>,
 ) {
+    let now = state.now;
     let Some((base, i)) = find_car(state, car) else {
-        // The car was discarded before the reply arrived: remove what the forge created.
+        // The car was discarded before the reply arrived (or the reply is a late duplicate):
+        // remove what the forge created.
+        let entry = state.closing.entry(car).or_insert(Closing {
+            base: None,
+            branch: None,
+            draft: None,
+            since: now,
+        });
+        entry.branch = Some(branch.to_string());
+        entry.draft = Some(draft);
+        entry.since = now;
         out.push(Decision::CloseCar {
             car,
             branch: Some(branch.to_string()),
@@ -259,6 +388,9 @@ pub(crate) fn car_built(
         return;
     };
     let c = &mut state.trains.get_mut(&base).expect("found").cars[i];
+    if !matches!(c.status, CarStatus::Building { .. }) {
+        return; // a duplicated reply
+    }
     c.branch = Some(branch.to_string());
     c.head_sha = Some(head_sha.to_string());
     c.tree = Some(tree.to_string());
@@ -269,6 +401,20 @@ pub(crate) fn car_built(
     state
         .branches
         .insert(branch.to_string(), head_sha.to_string());
+}
+
+/// The forge confirmed that a car's draft is closed, its branch deleted and its CI stopped.
+pub(crate) fn car_closed(state: &mut State, car: u64) {
+    if let Some(c) = state.closing.remove(&car) {
+        if let Some(b) = c.branch {
+            state.branches.remove(&b);
+        }
+        if let Some(d) = c.draft
+            && let Some(p) = state.pull_requests.get_mut(&d)
+        {
+            p.closed = true;
+        }
+    }
 }
 
 pub(crate) fn car_conflict(
@@ -284,9 +430,16 @@ pub(crate) fn car_conflict(
         return;
     };
     let train = state.trains.get_mut(&base).expect("found");
+    if !matches!(train.cars[i].status, CarStatus::Building { .. }) {
+        return;
+    }
     let removed: Vec<Car> = train.cars.drain(i..).collect();
     let in_bisection = removed.iter().any(|c| c.test.is_some());
     for c in &removed {
+        // Nothing was created for the conflicting car itself; the cars behind it exist.
+        if c.id != car {
+            close(state, Some(&base), c, out);
+        }
         for &n in &c.own {
             if n != number && !in_bisection {
                 requeue(state, n, None, out);
@@ -329,46 +482,99 @@ pub(crate) fn car_conflict(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Whether a `Land` for the pull request is in flight (or its outcome is being read).
+pub(crate) fn landing_in_flight(state: &State, number: u64) -> bool {
+    state.trains.values().any(|t| {
+        t.cars.iter().any(|c| {
+            c.own.contains(&number)
+                && matches!(
+                    c.status,
+                    CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+                )
+        })
+    })
+}
+
+/// A queued pull request merged by the queue: it leaves with outcome `merged`.
+pub(crate) fn record_merge(state: &mut State, number: u64, sha: &str, out: &mut Vec<Decision>) {
+    state.unconfirmed_land.remove(&number);
+    if let Some(pr) = state.pull_requests.get_mut(&number) {
+        pr.merged = true;
+        pr.closed = true;
+        if pr.merge_commit_sha.is_none() && !sha.is_empty() {
+            pr.merge_commit_sha = Some(sha.to_string());
+        }
+    }
+    if let Some(entry) = state.queued.remove(&number) {
+        state.outcomes.insert(
+            number,
+            Outcome::Merged {
+                sha: sha.to_string(),
+            },
+        );
+        out.push(Decision::Merged {
+            number,
+            queue: entry.queue,
+            sha: sha.to_string(),
+        });
+    }
+}
+
 pub(crate) fn landed(
     state: &mut State,
     rules: &Rules,
     car: u64,
     commits: &[LandedCommit],
     error: Option<&LandError>,
-    _now: Time,
     out: &mut Vec<Decision>,
 ) {
     let Some((base, i)) = find_car(state, car) else {
+        // A late reply for a landing the engine already resolved otherwise: record what it
+        // says landed.
+        for c in commits {
+            if state.queued.contains_key(&c.number) {
+                let base = state.queued[&c.number].base.clone();
+                discard_containing(state, rules, &base, c.number, out);
+                record_merge(state, c.number, &c.sha, out);
+            }
+        }
         return;
     };
+    let never = rules.merge_queue.reset_on_external_merge == "never";
+    if never
+        && commits.is_empty()
+        && let Some(LandError::BaseMoved { actual }) = error
+    {
+        // `reset_on_external_merge: never`: the queue stays as it is; land again on the new
+        // tip (still a compare-and-swap).
+        let actual = actual.clone();
+        let train = state.trains.get_mut(&base).expect("found");
+        train.history.retain(|h| *h != actual);
+        train.set_base(actual.clone());
+        for c in &mut train.cars {
+            c.drifted = true;
+        }
+        train.cars[i].status = CarStatus::Green;
+        state.branches.insert(base.clone(), actual);
+        return;
+    }
     let train = state.trains.get_mut(&base).expect("found");
     let c = train.cars.remove(i);
-    close(&c, out);
     for commit in commits {
-        train.base_sha = Some(commit.sha.clone());
+        if !commit.sha.is_empty() {
+            train.set_base(commit.sha.clone());
+        }
     }
-    if let Some(last) = commits.last() {
-        state.branches.insert(base.clone(), last.sha.clone());
+    if let Some(sha) = commits
+        .last()
+        .map(|c| c.sha.clone())
+        .filter(|s| !s.is_empty())
+    {
+        state.branches.insert(base.clone(), sha);
     }
+    close(state, Some(&base), &c, out);
     for commit in commits {
-        if let Some(pr) = state.pull_requests.get_mut(&commit.number) {
-            pr.merged = true;
-            pr.closed = true;
-        }
-        if let Some(entry) = state.queued.remove(&commit.number) {
-            state.outcomes.insert(
-                commit.number,
-                Outcome::Merged {
-                    sha: commit.sha.clone(),
-                },
-            );
-            out.push(Decision::Merged {
-                number: commit.number,
-                queue: entry.queue,
-                sha: commit.sha.clone(),
-            });
-        }
+        record_merge(state, commit.number, &commit.sha, out);
     }
     let landed: Vec<u64> = commits.iter().map(|c| c.number).collect();
     let rest: Vec<u64> = c
@@ -380,8 +586,11 @@ pub(crate) fn landed(
     let was_test = c.test.is_some();
     match error {
         None => {
-            let landed_tree = commits.last().map(|c| c.tree.clone());
-            if landed_tree.is_some() && landed_tree != c.tree {
+            let landed_tree = commits
+                .last()
+                .map(|c| c.tree.clone())
+                .filter(|t| !t.is_empty());
+            if !c.drifted && landed_tree.is_some() && landed_tree != c.tree {
                 // MQ-02: what landed is not what was tested. Stop everything.
                 let reason = format!(
                     "landed tree {} differs from tested tree {} of car {}",
@@ -403,7 +612,9 @@ pub(crate) fn landed(
             let reason = match err {
                 LandError::BaseMoved { actual } => {
                     if let Some(t) = state.trains.get_mut(&base) {
-                        t.base_sha = Some(actual.clone());
+                        // The compare-and-swap is authoritative, also over the stale-read guard.
+                        t.history.retain(|h| h != actual);
+                        t.set_base(actual.clone());
                     }
                     state.branches.insert(base.clone(), actual.clone());
                     DequeueReason::assumed(
@@ -412,16 +623,20 @@ pub(crate) fn landed(
                     )
                 }
                 LandError::HeadChanged { number } => {
-                    dequeue(
-                        state,
-                        rules,
-                        *number,
-                        DequeueReason::new(
-                            code::PULL_REQUEST_UPDATED,
-                            "the head changed between the test and the merge",
-                        ),
-                        out,
-                    );
+                    // After an uncertain landing the pull request may be closed because the
+                    // queue merged it already; the next read tells.
+                    if !state.unconfirmed_land.contains(number) {
+                        dequeue(
+                            state,
+                            rules,
+                            *number,
+                            DequeueReason::new(
+                                code::PULL_REQUEST_UPDATED,
+                                "the head changed between the test and the merge",
+                            ),
+                            out,
+                        );
+                    }
                     DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left the queue"))
                 }
                 LandError::Conflict { number } => {
@@ -464,15 +679,23 @@ pub(crate) enum Verdict {
     Green,
     Pending,
     Failed(&'static str, String),
+    /// The checks are fine, but these pull requests' own attributes fail the merge conditions
+    /// (a label, the title …). Not a CI failure: they leave with their own reason.
+    Attributes(Vec<(u64, String)>),
 }
 
 /// Merge conditions of a queue rule; without `merge_conditions` the queue conditions apply.
-fn merge_conditions(rule: &QueueRule) -> &[schlange_config::conditions::Condition] {
+fn merge_conditions(rule: &QueueRule) -> &[Condition] {
     if rule.merge_conditions.is_empty() {
         &rule.queue_conditions
     } else {
         &rule.merge_conditions
     }
+}
+
+/// Whether a condition depends on check runs (the queue draft's CI).
+fn uses_checks(c: &Condition) -> bool {
+    c.atoms().iter().any(|a| a.attribute.starts_with("check"))
 }
 
 /// The pull request as the merge conditions see it: its own attributes, the checks of the
@@ -486,34 +709,125 @@ fn car_view(state: &State, car: &Car, number: u64) -> Option<PullRequest> {
     Some(pr)
 }
 
-pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, now: Time) -> Verdict {
+fn history_key(queue: &str, base: &str) -> String {
+    format!("{queue}@{base}")
+}
+
+/// `checks_timeout: auto`: the weighted 95th percentile of the queue's recent successful first
+/// runs on this base, times [`AUTO_MARGIN`], at least [`MIN_TIMEOUT`]; `None` until
+/// [`AUTO_MIN_RUNS`] runs in [`AUTO_WINDOW`] exist (docs: merge-queue/lifecycle, checks timeout).
+pub fn auto_timeout(state: &State, queue: &str, base: &str) -> Option<Time> {
+    let samples = state.history.get(&history_key(queue, base))?;
+    let now = state.now;
+    let mut w: Vec<(Time, f64)> = samples
+        .iter()
+        .filter(|s| now.saturating_sub(s.at) <= AUTO_WINDOW)
+        .map(|s| {
+            let age = now.saturating_sub(s.at) as f64 / AUTO_HALF_LIFE as f64;
+            (s.secs, 0.5f64.powf(age))
+        })
+        .collect();
+    if w.len() < AUTO_MIN_RUNS {
+        return None;
+    }
+    w.sort_by_key(|x| x.0);
+    let total: f64 = w.iter().map(|x| x.1).sum();
+    let mut acc = 0.0;
+    let mut p95 = w.last().map(|x| x.0).unwrap_or(0);
+    for (secs, weight) in &w {
+        acc += weight;
+        if acc >= 0.95 * total {
+            p95 = *secs;
+            break;
+        }
+    }
+    Some(((p95 as f64 * AUTO_MARGIN).ceil() as Time).max(MIN_TIMEOUT))
+}
+
+/// The checks timeout of a car's queue on `base`, and whether it came from `auto`.
+fn timeout_of(state: &State, rule: &QueueRule, base: &str) -> Option<(Time, bool)> {
+    match rule.checks_timeout {
+        ChecksTimeout::Fixed(t) => Some((t, false)),
+        ChecksTimeout::Disabled => None,
+        ChecksTimeout::Auto => auto_timeout(state, &rule.name, base).map(|t| (t, true)),
+    }
+}
+
+/// Records a car's runtime for `checks_timeout: auto`. Only first attempts of normal cars count
+/// (not retries, not bisection tests, not in-place checks whose CI started before the car).
+fn record_run(state: &mut State, car: &Car, base: &str) {
+    if car.test.is_some() || car.attempt > 0 || car.in_place || car.measured || car.drifted {
+        return;
+    }
+    let now = state.now;
+    let samples = state
+        .history
+        .entry(history_key(&car.queue, base))
+        .or_default();
+    samples.push(Sample {
+        at: now,
+        secs: now.saturating_sub(car.started),
+    });
+    samples.retain(|s| now.saturating_sub(s.at) <= AUTO_WINDOW);
+}
+
+pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: Time) -> Verdict {
     let Some(rule) = rule(rules, &car.queue) else {
         return Verdict::Pending;
     };
+    if car.head_sha.is_none() || car.tree.is_none() {
+        return Verdict::Pending;
+    }
     let conds = merge_conditions(rule);
+    let check_conds: Vec<Condition> = conds.iter().filter(|c| uses_checks(c)).cloned().collect();
     let ctx = Context::default();
-    let mut all = true;
+    let mut checks_ok = true;
+    let mut attr_fail = Vec::new();
     let mut views = Vec::new();
     for &n in &car.own {
         let Some(view) = car_view(state, car, n) else {
             return Verdict::Pending;
         };
-        let (ok, _) = eval::eval_list(conds, &view, &ctx, &mut Vec::new());
-        all &= ok;
+        for (k, c) in conds.iter().enumerate() {
+            if !uses_checks(c) && !eval::eval(c, &view, &ctx, &mut Vec::new()) {
+                attr_fail.push((
+                    n,
+                    format!(
+                        "the pull request itself no longer meets merge condition {}",
+                        k + 1
+                    ),
+                ));
+                break;
+            }
+        }
+        let (ok, _) = eval::eval_list(&check_conds, &view, &ctx, &mut Vec::new());
+        checks_ok &= ok;
         views.push(view);
     }
-    if all {
-        return Verdict::Green;
+    if checks_ok {
+        return if attr_fail.is_empty() {
+            Verdict::Green
+        } else {
+            Verdict::Attributes(attr_fail)
+        };
     }
-    let runs = views
+    let runs: Vec<&CheckRun> = views
         .first()
         .map(|v| v.current_checks())
         .unwrap_or_default();
-    let referenced = eval::referenced_checks(conds);
-    let pending: Vec<&str> = runs
+    let referenced = eval::referenced_checks(&check_conds);
+    let relevant: Vec<&CheckRun> = if referenced.is_empty() {
+        runs.clone()
+    } else {
+        runs.iter()
+            .copied()
+            .filter(|r| referenced.contains(&r.name))
+            .collect()
+    };
+    let missing: Vec<&str> = referenced
         .iter()
-        .filter(|r| r.conclusion.is_none())
-        .map(|r| r.name.as_str())
+        .filter(|n| !runs.iter().any(|r| &r.name == *n))
+        .map(String::as_str)
         .collect();
     let failing = |c: Option<Conclusion>| {
         matches!(
@@ -526,25 +840,36 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, now: Time) -> Ver
             )
         )
     };
-    let failed_ref = runs
+    let red: Vec<&str> = relevant
         .iter()
-        .any(|r| referenced.contains(&r.name) && failing(r.conclusion));
-    if !runs.is_empty() && (pending.is_empty() || failed_ref) {
-        let hard = runs.iter().any(|r| {
+        .filter(|r| failing(r.conclusion))
+        .map(|r| r.name.as_str())
+        .collect();
+    // Every check the conditions name has reported and they are still false (for example a
+    // `neutral` where `success` is required).
+    let decided = !relevant.is_empty()
+        && missing.is_empty()
+        && relevant.iter().all(|r| r.conclusion.is_some());
+    let at = car.draft.map(|d| format!(" on #{d}")).unwrap_or_default();
+    if !red.is_empty() || decided {
+        let hard = relevant.iter().any(|r| {
             matches!(
                 r.conclusion,
                 Some(Conclusion::Failure | Conclusion::TimedOut | Conclusion::ActionRequired)
             )
         });
-        let cancelled = runs
+        let cancelled = relevant
             .iter()
             .any(|r| r.conclusion == Some(Conclusion::Cancelled));
-        let names: Vec<&str> = runs
-            .iter()
-            .filter(|r| failing(r.conclusion))
-            .map(|r| r.name.as_str())
-            .collect();
-        let at = car.draft.map(|d| format!(" on #{d}")).unwrap_or_default();
+        let names: Vec<&str> = if red.is_empty() {
+            relevant
+                .iter()
+                .filter(|r| r.conclusion != Some(Conclusion::Success))
+                .map(|r| r.name.as_str())
+                .collect()
+        } else {
+            red
+        };
         return if !hard && cancelled {
             Verdict::Failed(
                 code::CHECKS_INTERRUPTED,
@@ -563,19 +888,27 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, now: Time) -> Ver
             )
         };
     }
-    if let ChecksTimeout::Fixed(t) = rule.checks_timeout
+    if let Some((t, auto)) = timeout_of(state, rule, base)
         && now >= car.started + t
     {
-        let missing: Vec<&str> = referenced
+        let pending: Vec<&str> = runs
             .iter()
-            .filter(|n| !runs.iter().any(|r| &r.name == *n))
-            .map(String::as_str)
+            .filter(|r| r.conclusion.is_none())
+            .map(|r| r.name.as_str())
             .collect();
+        let how = if auto {
+            format!(
+                "checks did not pass within the automatic checks timeout of {t}s, derived from \
+                 this queue's recent CI runtime (set `checks_timeout` to a duration, or null to \
+                 disable it)"
+            )
+        } else {
+            format!("checks did not pass within {t}s")
+        };
         return Verdict::Failed(
             code::CHECKS_TIMEOUT,
             format!(
-                "checks did not pass within {}s; still running: [{}]; never reported: [{}]",
-                t,
+                "{how}; still running: [{}]; never reported: [{}]",
                 pending.join(", "),
                 missing.join(", ")
             ),
@@ -584,7 +917,45 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, now: Time) -> Ver
     Verdict::Pending
 }
 
+/// The reads a car needs before acting.
+fn refresh(state: &mut State, car: &Car, branches: Vec<String>, out: &mut Vec<Decision>) -> u64 {
+    let token = state.next_id();
+    let mut numbers = car.own.clone();
+    numbers.extend(car.draft.filter(|_| !car.in_place));
+    out.push(Decision::Refresh {
+        token,
+        numbers,
+        branches,
+    });
+    wake(state, state.now + REPLY_TIMEOUT, out);
+    token
+}
+
+/// Takes pull requests out of the queue whose own attributes fail the merge conditions; the
+/// `queue` action does not queue them again until they change.
+fn dequeue_for_attributes(
+    state: &mut State,
+    rules: &Rules,
+    list: Vec<(u64, String)>,
+    out: &mut Vec<Decision>,
+) {
+    for (n, text) in list {
+        if let Some(pr) = state.pull_requests.get(&n) {
+            let fp = fingerprint(pr);
+            state.blocked_attrs.insert(n, fp);
+        }
+        dequeue(
+            state,
+            rules,
+            n,
+            DequeueReason::assumed(code::PR_DEQUEUED, text),
+            out,
+        );
+    }
+}
+
 /// Re-evaluates running cars. A red or timed-out verdict is only believed after a fresh read.
+/// Returns whether the train changed shape.
 fn evaluate_cars(
     state: &mut State,
     rules: &Rules,
@@ -592,33 +963,46 @@ fn evaluate_cars(
     now: Time,
     token: Option<u64>,
     out: &mut Vec<Decision>,
-) {
+) -> bool {
+    // An accepted branch edit: the tree of the edited head, once the draft read shows it.
+    for i in 0..state.trains[base].cars.len() {
+        let car = &state.trains[base].cars[i];
+        if car.tree.is_none()
+            && let (Some(d), Some(h)) = (car.draft, car.head_sha.clone())
+            && let Some(pr) = state.pull_requests.get(&d)
+            && pr.head_sha == h
+        {
+            let tree = pr.head_tree.clone();
+            state.trains.get_mut(base).expect("train").cars[i].tree = tree;
+        }
+    }
     let cars = state.trains[base].cars.clone();
     for (i, car) in cars.iter().enumerate() {
         let confirmed = match car.status {
             CarStatus::Running => false,
-            CarStatus::Confirming { token: t } if token == Some(t) => true,
+            CarStatus::Confirming { token: t, .. } if token == Some(t) => true,
             _ => continue,
         };
-        let v = verdict(state, rules, car, now);
-        let status = match v {
-            Verdict::Green => CarStatus::Green,
+        let status = match verdict(state, rules, car, base, now) {
+            Verdict::Green => {
+                record_run(state, car, base);
+                state.trains.get_mut(base).expect("train").cars[i].measured = true;
+                CarStatus::Green
+            }
             Verdict::Failed(code, text) if confirmed => CarStatus::Failed { code, text },
-            Verdict::Failed(..) => {
-                let t = state.next_id();
-                let mut numbers = car.own.clone();
-                numbers.extend(car.draft.filter(|_| !car.in_place));
-                out.push(Decision::Refresh {
-                    token: t,
-                    numbers,
-                    branches: car.branch.iter().cloned().collect(),
-                });
-                CarStatus::Confirming { token: t }
+            Verdict::Attributes(list) if confirmed => {
+                dequeue_for_attributes(state, rules, list, out);
+                return true;
+            }
+            Verdict::Failed(..) | Verdict::Attributes(_) => {
+                let branches = car.branch.iter().cloned().collect();
+                let token = refresh(state, car, branches, out);
+                CarStatus::Confirming { token, since: now }
             }
             Verdict::Pending if confirmed => CarStatus::Running,
             Verdict::Pending => {
-                if let Some(ChecksTimeout::Fixed(t)) =
-                    rule(rules, &car.queue).map(|r| r.checks_timeout)
+                if let Some((t, _)) =
+                    rule(rules, &car.queue).and_then(|r| timeout_of(state, r, base))
                 {
                     wake(state, car.started + t, out);
                 }
@@ -626,6 +1010,193 @@ fn evaluate_cars(
             }
         };
         state.trains.get_mut(base).expect("train").cars[i].status = status;
+    }
+    false
+}
+
+/// Removes a car whose build is in doubt (error, lost reply, restart) and cleans up whatever
+/// the forge may have created; its pull requests get a new car.
+fn abandon_car(state: &mut State, base: &str, id: u64, out: &mut Vec<Decision>) {
+    let Some(i) = state.trains[base].cars.iter().position(|c| c.id == id) else {
+        return;
+    };
+    let car = state.trains[base].cars[i].clone();
+    if car.test.is_some() {
+        // A bisection test: `bisect::fill` builds it again.
+        state.trains.get_mut(base).expect("train").cars.remove(i);
+        close(state, Some(base), &car, out);
+    } else {
+        drop_cars_from(state, base, i, None, None, &[], out);
+    }
+}
+
+/// The landing's outcome is unknown: read the pull requests and the base.
+fn land_unknown(state: &mut State, base: &str, i: usize, out: &mut Vec<Decision>) {
+    let car = state.trains[base].cars[i].clone();
+    for &n in &car.own {
+        state.unconfirmed_land.insert(n);
+    }
+    let token = refresh(state, &car, vec![base.to_string()], out);
+    state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::LandCheck {
+        token,
+        since: state.now,
+    };
+}
+
+/// Retries or resolves every request of `base` that waited too long for its reply.
+fn timeouts(state: &mut State, base: &str, out: &mut Vec<Decision>) {
+    let cars = state.trains[base].cars.clone();
+    for car in cars {
+        let Some(i) = state.trains[base].cars.iter().position(|c| c.id == car.id) else {
+            continue;
+        };
+        let since = match car.status {
+            CarStatus::Building { since }
+            | CarStatus::Verifying { since, .. }
+            | CarStatus::Confirming { since, .. }
+            | CarStatus::Landing { since }
+            | CarStatus::LandCheck { since, .. } => since,
+            _ => continue,
+        };
+        if !due(state, since) {
+            wake(state, since + REPLY_TIMEOUT, out);
+            continue;
+        }
+        let now = state.now;
+        match car.status {
+            CarStatus::Building { .. } => abandon_car(state, base, car.id, out),
+            CarStatus::Landing { .. } => land_unknown(state, base, i, out),
+            CarStatus::LandCheck { .. } => land_unknown(state, base, i, out),
+            CarStatus::Verifying { .. } => {
+                let mut branches = vec![base.to_string()];
+                branches.extend(car.branch.clone());
+                let token = refresh(state, &car, branches, out);
+                state.trains.get_mut(base).expect("train").cars[i].status =
+                    CarStatus::Verifying { token, since: now };
+            }
+            CarStatus::Confirming { .. } => {
+                let branches = car.branch.iter().cloned().collect();
+                let token = refresh(state, &car, branches, out);
+                state.trains.get_mut(base).expect("train").cars[i].status =
+                    CarStatus::Confirming { token, since: now };
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Retries closes the forge did not confirm.
+fn closing_timeouts(state: &mut State, out: &mut Vec<Decision>) {
+    let ids: Vec<u64> = state.closing.keys().copied().collect();
+    for id in ids {
+        let c = state.closing[&id].clone();
+        if !due(state, c.since) {
+            wake(state, c.since + REPLY_TIMEOUT, out);
+            continue;
+        }
+        state.closing.get_mut(&id).expect("closing").since = state.now;
+        wake(state, state.now + REPLY_TIMEOUT, out);
+        out.push(Decision::CloseCar {
+            car: id,
+            branch: c.branch,
+            draft: c.draft,
+        });
+    }
+}
+
+/// Deletes queue branches (strict name pattern) and closes queue drafts that no car uses:
+/// leftovers of lost replies, errors or a crash (docs: queue branch cleanup; MQ-36).
+fn collect_garbage(state: &mut State, rules: &Rules, out: &mut Vec<Decision>) {
+    let prefixes: Vec<String> = rules
+        .queue_rules
+        .iter()
+        .map(|q| q.queue_branch_prefix.clone())
+        .collect();
+    let mut known: Vec<String> = state.trains.values().flat_map(|t| t.branches()).collect();
+    known.extend(state.closing.values().filter_map(|c| c.branch.clone()));
+    let known_drafts: Vec<u64> = state
+        .trains
+        .values()
+        .flat_map(|t| t.cars.iter().filter_map(|c| c.draft))
+        .chain(state.closing.values().filter_map(|c| c.draft))
+        .collect();
+    let mut leftovers: Vec<String> = state
+        .branches
+        .keys()
+        .filter(|b| is_queue_branch(b, &prefixes) && !known.contains(b))
+        .cloned()
+        .collect();
+    for p in state.pull_requests.values() {
+        if !p.closed
+            && is_queue_branch(&p.head_ref, &prefixes)
+            && !known.contains(&p.head_ref)
+            && !known_drafts.contains(&p.number)
+            && !leftovers.contains(&p.head_ref)
+        {
+            leftovers.push(p.head_ref.clone());
+        }
+    }
+    for branch in leftovers {
+        let draft = state
+            .pull_requests
+            .values()
+            .find(|p| p.head_ref == branch && !p.closed)
+            .map(|p| (p.number, p.base.clone()));
+        let id = state.next_id();
+        state.closing.insert(
+            id,
+            Closing {
+                base: draft.as_ref().map(|d| d.1.clone()),
+                branch: Some(branch.clone()),
+                draft: draft.as_ref().map(|d| d.0),
+                since: state.now,
+            },
+        );
+        out.push(Decision::CloseCar {
+            car: id,
+            branch: Some(branch),
+            draft: draft.map(|d| d.0),
+        });
+    }
+}
+
+/// The checks of the front car failed and `max_checks_retries` allows another attempt: the car
+/// is rebuilt on a fresh draft (docs: automatic CI retries). The cars behind keep running: the
+/// retried batch is the same pull requests at the same heads.
+fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec<Decision>) {
+    let old = state.trains[base].cars[0].clone();
+    let max = rule(rules, &old.queue).map_or(0, |r| r.max_checks_retries);
+    let prefix = rule(rules, &old.queue)
+        .map(|r| r.queue_branch_prefix.clone())
+        .unwrap_or_else(|| "mergify/merge-queue/".into());
+    close(state, Some(base), &old, out);
+    let id = state.next_id();
+    let car = Car {
+        id,
+        branch: Some(branch_name(&prefix, base, id)),
+        draft: None,
+        in_place: false,
+        head_sha: None,
+        tree: None,
+        started: state.now,
+        status: CarStatus::Retry,
+        attempt: old.attempt + 1,
+        measured: false,
+        ..old.clone()
+    };
+    state.trains.get_mut(base).expect("train").cars[0] = car;
+    for &n in &old.own {
+        if let Some(e) = state.queued.get_mut(&n) {
+            e.status = EntryStatus::InCar { car: id };
+            out.push(Decision::ChecksEnded {
+                number: n,
+                queue: e.queue.clone(),
+                reason: DequeueReason::assumed(
+                    code::CHECKS_RETRIED,
+                    format!("retry {} of {max}: {text}", old.attempt + 1),
+                ),
+            });
+        }
     }
 }
 
@@ -649,26 +1220,23 @@ fn front(
     }
     match &car.status {
         CarStatus::Green => {
-            let t = state.next_id();
-            let mut numbers = car.own.clone();
-            numbers.extend(car.draft.filter(|_| !car.in_place));
             let mut branches = vec![base.to_string()];
             branches.extend(car.branch.clone());
-            state.trains.get_mut(base).expect("train").cars[0].status =
-                CarStatus::Verifying { token: t };
-            out.push(Decision::Refresh {
+            let t = refresh(state, &car, branches, out);
+            state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Verifying {
                 token: t,
-                numbers,
-                branches,
-            });
+                since: now,
+            };
             false
         }
-        CarStatus::Verifying { token: t } if token == Some(*t) => {
-            let v = verdict(state, rules, &car, now);
-            let train = state.trains.get_mut(base).expect("train");
-            match (v, train.base_sha.clone(), car.tree.clone()) {
+        CarStatus::Verifying { token: t, .. } if token == Some(*t) => {
+            let v = verdict(state, rules, &car, base, now);
+            let expected = state.trains[base].base_sha.clone();
+            match (v, expected, car.tree.clone()) {
                 (Verdict::Green, Some(expected), Some(tree)) => {
-                    train.cars[0].status = CarStatus::Landing;
+                    state.trains.get_mut(base).expect("train").cars[0].status =
+                        CarStatus::Landing { since: now };
+                    wake(state, now + REPLY_TIMEOUT, out);
                     out.push(Decision::Land {
                         car: car.id,
                         queue: car.queue.clone(),
@@ -684,14 +1252,63 @@ fn front(
                     });
                     false
                 }
+                (Verdict::Attributes(list), ..) => {
+                    // The fresh read is the confirmation.
+                    dequeue_for_attributes(state, rules, list, out);
+                    true
+                }
                 _ => {
-                    train.cars[0].status = CarStatus::Running;
+                    state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Running;
                     true
                 }
             }
         }
+        CarStatus::LandCheck { token: t, .. } if token == Some(*t) => {
+            let order: Vec<u64> = car
+                .prs
+                .iter()
+                .filter(|p| car.own.contains(&p.number))
+                .map(|p| p.number)
+                .collect();
+            let mut commits = Vec::new();
+            for &n in &order {
+                match state.pull_requests.get(&n) {
+                    Some(pr) if pr.merged => commits.push(LandedCommit {
+                        number: n,
+                        sha: pr.merge_commit_sha.clone().unwrap_or_default(),
+                        tree: String::new(),
+                    }),
+                    _ => break,
+                }
+            }
+            let tip = state.branches.get(base).cloned();
+            let expected = state.trains[base].base_sha.clone();
+            if commits.len() == order.len() {
+                landed(state, rules, car.id, &commits, None, out);
+            } else if !commits.is_empty() || (tip.is_some() && tip != expected) {
+                let actual = tip.unwrap_or_default();
+                landed(
+                    state,
+                    rules,
+                    car.id,
+                    &commits,
+                    Some(&LandError::BaseMoved { actual }),
+                    out,
+                );
+            } else {
+                // Nothing landed (as far as this read shows): verify and land again. The
+                // compare-and-swap on the base and the forge's refusal to merge a closed pull
+                // request keep this from landing twice.
+                state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Green;
+            }
+            true
+        }
         CarStatus::Failed { code, text } if car.test.is_none() => {
             let (code, text) = (*code, text.clone());
+            if rule(rules, &car.queue).is_some_and(|r| car.attempt < r.max_checks_retries) {
+                retry(state, rules, base, &text, out);
+                return true;
+            }
             drop_cars_from(
                 state,
                 base,
@@ -709,7 +1326,7 @@ fn front(
             );
             let train = state.trains.get_mut(base).expect("train");
             let failed = train.cars.remove(0);
-            close(&failed, out);
+            close(state, Some(base), &failed, out);
             bisect::batch_failed(state, rules, base, &failed, code, &text, out);
             true
         }
@@ -734,12 +1351,18 @@ fn release_held(state: &mut State, base: &str) {
 
 fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &mut Vec<Decision>) {
     let known = state.branches.get(base).cloned();
-    let train = state.trains.get_mut(base).expect("train");
+    let now = state.now;
+    let never = rules.merge_queue.reset_on_external_merge == "never";
+    let train = &state.trains[base];
     match (train.base_sha.clone(), known) {
         (_, None) => {
-            if !train.base_requested {
-                train.base_requested = true;
+            let ask = train
+                .base_request
+                .is_none_or(|(_, since)| due(state, since));
+            if ask {
                 let token = state.next_id();
+                state.trains.get_mut(base).expect("train").base_request = Some((token, now));
+                wake(state, now + REPLY_TIMEOUT, out);
                 out.push(Decision::Refresh {
                     token,
                     numbers: vec![],
@@ -747,40 +1370,92 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
                 });
             }
         }
-        (None, Some(sha)) => train.base_sha = Some(sha),
-        (Some(old), Some(sha)) if old != sha => {
-            train.base_sha = Some(sha.clone());
-            // `reset_on_external_merge: never` is not built: Schlange always rebuilds, which
-            // keeps I0. See queue-conflicts.md.
-            reset(
-                state,
-                base,
-                DequeueReason::assumed(
-                    code::MERGE_QUEUE_RESET,
-                    format!(
-                        "the base branch moved outside the queue ({} → {})",
-                        short(&old),
-                        short(&sha)
-                    ),
-                ),
-                out,
-            );
+        (None, Some(sha)) => {
+            let train = state.trains.get_mut(base).expect("train");
+            train.base_request = None;
+            train.set_base(sha);
         }
-        _ => {}
+        (Some(old), Some(sha)) if old != sha => {
+            let train = state.trains.get_mut(base).expect("train");
+            train.base_request = None;
+            if train.history.contains(&sha) {
+                // A lagging read shows an older tip (read after write, MQ-33): ignore it.
+                state.branches.insert(base.to_string(), old);
+            } else if never {
+                // `reset_on_external_merge: never`: the queue stays as it is and lands on the
+                // new tip.
+                train.set_base(sha);
+                for c in &mut train.cars {
+                    c.drifted = true;
+                }
+            } else {
+                train.set_base(sha.clone());
+                reset(
+                    state,
+                    base,
+                    DequeueReason::assumed(
+                        code::MERGE_QUEUE_RESET,
+                        format!(
+                            "the base branch moved outside the queue ({} → {})",
+                            short(&old),
+                            short(&sha)
+                        ),
+                    ),
+                    out,
+                );
+            }
+        }
+        _ => {
+            state.trains.get_mut(base).expect("train").base_request = None;
+        }
     }
     // Foreign pushes to queue branches (MQ-08): the tested state no longer holds.
     loop {
         let train = &state.trains[base];
-        let foreign = train
-            .cars
-            .iter()
-            .position(|c| match (&c.branch, &c.head_sha) {
-                (Some(b), Some(h)) => state.branches.get(b).is_some_and(|s| s != h),
-                _ => false,
-            });
+        let foreign = train.cars.iter().position(|c| {
+            !matches!(c.status, CarStatus::Building { .. })
+                && match (&c.branch, &c.head_sha) {
+                    (Some(b), Some(h)) => state.branches.get(b).is_some_and(|s| s != h),
+                    _ => false,
+                }
+        });
         let Some(i) = foreign else { break };
         let car = train.cars[i].clone();
         let branch = car.branch.clone().unwrap_or_default();
+        let accept = car.test.is_none()
+            && rule(rules, &car.queue).is_some_and(|r| r.allow_queue_branch_edit);
+        if accept {
+            // `allow_queue_branch_edit: true`: the edited batch keeps going on the pushed head;
+            // the batches behind it are torn down and recomposed (docs: editing the batch
+            // branch). The tree is taken from the draft once a read shows the new head.
+            let head = state.branches[&branch].clone();
+            let tree = car
+                .draft
+                .and_then(|d| state.pull_requests.get(&d))
+                .filter(|d| d.head_sha == head)
+                .and_then(|d| d.head_tree.clone());
+            let c = &mut state.trains.get_mut(base).expect("train").cars[i];
+            c.head_sha = Some(head);
+            c.tree = tree;
+            c.started = now;
+            c.status = CarStatus::Running;
+            c.measured = true;
+            c.drifted = true;
+            let reason = DequeueReason::assumed(
+                code::BATCH_AHEAD_BRANCH_EDITED,
+                format!("`{branch}` ahead was edited; the batch is rebuilt"),
+            );
+            drop_cars_from(
+                state,
+                base,
+                i + 1,
+                Some(reason.clone()),
+                Some(reason),
+                &[],
+                out,
+            );
+            continue;
+        }
         drop_cars_from(
             state,
             base,
@@ -811,6 +1486,64 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
     }
 }
 
+/// After a restart from the journal: every outstanding request is due at once, timers are
+/// gone. The fresh read that follows resolves the rest.
+pub(crate) fn expire_all(state: &mut State) {
+    state.wakeups.clear();
+    for t in state.trains.values_mut() {
+        if let Some((_, since)) = &mut t.base_request {
+            *since = EXPIRED;
+        }
+        for c in &mut t.cars {
+            match &mut c.status {
+                CarStatus::Building { since }
+                | CarStatus::Verifying { since, .. }
+                | CarStatus::Confirming { since, .. }
+                | CarStatus::Landing { since }
+                | CarStatus::LandCheck { since, .. } => *since = EXPIRED,
+                _ => {}
+            }
+        }
+    }
+    for c in state.closing.values_mut() {
+        c.since = EXPIRED;
+    }
+}
+
+/// The forge answered a side effect with an error. The effect may or may not have happened
+/// (a "lying" 5xx, MQ-35), so the engine never assumes either.
+pub(crate) fn side_effect_failed(state: &mut State, decision: &Decision, out: &mut Vec<Decision>) {
+    match decision {
+        Decision::BuildCar { car, .. } => {
+            if let Some((base, i)) = find_car(state, *car)
+                && matches!(
+                    state.trains[&base].cars[i].status,
+                    CarStatus::Building { .. }
+                )
+            {
+                abandon_car(state, &base, *car, out);
+            }
+        }
+        Decision::CheckInPlace { car, .. } => {
+            if let Some((base, _)) = find_car(state, *car) {
+                abandon_car(state, &base, *car, out);
+            }
+        }
+        Decision::Land { car, .. } => {
+            if let Some((base, i)) = find_car(state, *car)
+                && matches!(
+                    state.trains[&base].cars[i].status,
+                    CarStatus::Landing { .. }
+                )
+            {
+                land_unknown(state, &base, i, out);
+            }
+        }
+        // A close or a read is retried after the reply timeout.
+        _ => {}
+    }
+}
+
 pub fn process_trains(
     state: &mut State,
     rules: &Rules,
@@ -818,6 +1551,8 @@ pub fn process_trains(
     token: Option<u64>,
     out: &mut Vec<Decision>,
 ) {
+    collect_garbage(state, rules, out);
+    closing_timeouts(state, out);
     let bases: Vec<String> = state.trains.keys().cloned().collect();
     for base in bases {
         base_and_foreign_pushes(state, rules, &base, out);
@@ -825,9 +1560,10 @@ pub fn process_trains(
             continue;
         }
         release_held(state, &base);
+        timeouts(state, &base, out);
         for _ in 0..64 {
-            evaluate_cars(state, rules, &base, now, token, out);
-            let mut changed = bisect::resolve(state, rules, &base, out);
+            let mut changed = evaluate_cars(state, rules, &base, now, token, out);
+            changed |= bisect::resolve(state, rules, &base, out);
             changed |= front(state, rules, &base, now, token, out);
             if !changed {
                 break;
@@ -864,18 +1600,58 @@ pub fn in_place_allowed(rules: &Rules, rule: &QueueRule) -> bool {
         && !rule.two_step()
 }
 
-/// Starts at most one car: the next bisection test or the next batch.
+/// Batch size: `min` while the queue is light, growing toward `max` when the backlog is deeper
+/// than the free slots can drain at the smaller size (docs: dynamic batch sizing).
+pub fn batch_size(size: BatchSize, backlog: u32, free_slots: u32) -> u32 {
+    match size {
+        BatchSize::Fixed(n) => n,
+        BatchSize::Range { min, max } => backlog.div_ceil(free_slots.max(1)).clamp(min, max),
+    }
+}
+
+/// Starts at most one car: a retry, the next bisection test or the next batch.
 fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<Decision>) {
     let slots = rules.merge_queue.max_parallel_checks as usize;
+    let busy = state.trains[base].cars.len() + closing_count(state, base);
     let train = &state.trains[base];
     let Some(base_sha) = train.base_sha.clone() else {
         return;
     };
-    if train.cars.len() >= slots
+    if let Some(i) = train.cars.iter().position(|c| c.status == CarStatus::Retry) {
+        // The retry is already counted among the cars.
+        if busy <= slots {
+            let car = train.cars[i].clone();
+            let prs: Vec<CarPr> = car
+                .prs
+                .iter()
+                .filter(|p| state.queued.contains_key(&p.number))
+                .cloned()
+                .collect();
+            let c = &mut state.trains.get_mut(base).expect("train").cars[i];
+            c.prs = prs.clone();
+            c.base_sha = base_sha.clone();
+            c.status = CarStatus::Building { since: now };
+            wake(state, now + REPLY_TIMEOUT, out);
+            out.push(Decision::BuildCar {
+                car: car.id,
+                queue: car.queue.clone(),
+                base_branch: base.to_string(),
+                branch: car.branch.clone().expect("retry branch"),
+                base_sha,
+                prs,
+                own: car.own.clone(),
+            });
+        }
+        return;
+    }
+    if busy >= slots
         || train.cars.iter().any(|c| {
             matches!(
                 c.status,
-                CarStatus::Building | CarStatus::Failed { .. } | CarStatus::Landing
+                CarStatus::Building { .. }
+                    | CarStatus::Failed { .. }
+                    | CarStatus::Landing { .. }
+                    | CarStatus::LandCheck { .. }
             )
         })
     {
@@ -898,11 +1674,8 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         .take_while(|n| state.queued[n].queue == queue)
         .collect();
     let total = group.len() as u32;
-    let (size, needed) = match rule.batch_size {
-        BatchSize::Fixed(n) => (n, n),
-        BatchSize::Range { min, max } => (total.div_ceil(slots as u32).clamp(min, max), min),
-    };
-    if total < needed {
+    let size = batch_size(rule.batch_size, total, (slots - busy) as u32);
+    if total < rule.batch_size.min() {
         let since = group
             .iter()
             .map(|n| state.queued[n].waiting_since)
@@ -953,8 +1726,11 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         head_sha: None,
         tree: None,
         started: now,
-        status: CarStatus::Building,
+        status: CarStatus::Building { since: now },
         test: None,
+        attempt: 0,
+        measured: false,
+        drifted: false,
     };
     if in_place {
         let pr = pr.expect("checked");
@@ -970,6 +1746,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     } else {
         let branch = branch_name(&rule.queue_branch_prefix, base, id);
         car.branch = Some(branch.clone());
+        wake(state, now + REPLY_TIMEOUT, out);
         out.push(Decision::BuildCar {
             car: id,
             queue,
@@ -986,4 +1763,59 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         }
     }
     state.trains.get_mut(base).expect("train").cars.push(car);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_batch_size_divides_the_backlog_by_free_slots() {
+        let r = BatchSize::Range { min: 1, max: 2 };
+        // Docs: five checks, 1..2: three queued → batches of one; ten → batches of two.
+        assert_eq!(batch_size(r, 3, 5), 1);
+        assert_eq!(batch_size(r, 10, 5), 2);
+        // After two batches of two, eight are left for four free slots: still two.
+        assert_eq!(batch_size(r, 8, 4), 2);
+        assert_eq!(batch_size(r, 2, 1), 2);
+        assert_eq!(batch_size(BatchSize::Range { min: 2, max: 10 }, 1, 5), 2);
+        assert_eq!(batch_size(BatchSize::Fixed(5), 1, 5), 5);
+    }
+
+    #[test]
+    fn auto_timeout_needs_history_and_has_a_floor() {
+        let mut s = State {
+            now: 10 * 86400,
+            ..State::default()
+        };
+        assert_eq!(auto_timeout(&s, "q", "main"), None);
+        let runs: Vec<Sample> = (0..19)
+            .map(|k| Sample {
+                at: s.now - k * 3600,
+                secs: 600,
+            })
+            .collect();
+        s.history.insert(history_key("q", "main"), runs);
+        assert_eq!(
+            auto_timeout(&s, "q", "main"),
+            None,
+            "19 runs are not enough"
+        );
+        s.history
+            .get_mut(&history_key("q", "main"))
+            .unwrap()
+            .push(Sample {
+                at: s.now,
+                secs: 1200,
+            });
+        // Twenty runs: the 95th percentile of 19 × 600 s and 1 × 1200 s, times the margin.
+        assert_eq!(auto_timeout(&s, "q", "main"), Some(1800));
+        // Old runs fall out of the window.
+        s.now += 8 * 86400;
+        assert_eq!(auto_timeout(&s, "q", "main"), None);
+        // Short runs: at least 60 s.
+        let quick: Vec<Sample> = (0..20).map(|_| Sample { at: s.now, secs: 5 }).collect();
+        s.history.insert(history_key("q", "dev"), quick);
+        assert_eq!(auto_timeout(&s, "q", "dev"), Some(60));
+    }
 }

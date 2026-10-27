@@ -9,6 +9,9 @@
 //!   files: { README.md: "hello\n" }
 //! seed: 1                               # flake seed
 //! faults: standard                      # standard (default) | none | {seed, drop, ...}
+//! forge_faults: standard                # none (default) | standard: lost, late, duplicated
+//!                                       # and lying replies, base races, lagging reads, CI
+//!                                       # timing; added to the disturbed run (I5)
 //! ci:                                   # every pull request and queue draft runs these
 //!   - check: ci-ok
 //!     duration: 3m
@@ -281,6 +284,8 @@ struct ScenarioSpec {
     #[serde(default)]
     faults: Option<FaultsSpec>,
     #[serde(default)]
+    forge_faults: Option<String>,
+    #[serde(default)]
     max_time: Option<String>,
     #[serde(default)]
     ci: Vec<CiSpec>,
@@ -445,6 +450,13 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         steps.push((at, action));
     }
 
+    let forge_faults = match spec.forge_faults.as_deref() {
+        None | Some("none") => None,
+        Some("standard") => Some(crate::faults::ForgeFaults::standard(
+            spec.seed.wrapping_add(7),
+        )),
+        Some(n) => return Err(fmt(format!("unknown forge_faults `{n}`"))),
+    };
     let faults = match &spec.faults {
         None => Some(Faults::standard(spec.seed.wrapping_add(1))),
         Some(FaultsSpec::Named(n)) if n == "none" => None,
@@ -493,6 +505,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         expect_base: spec.expect_base,
         expect_log: spec.expect_log,
         faults,
+        forge_faults,
         flake_seed: spec.seed,
         max_time,
     })

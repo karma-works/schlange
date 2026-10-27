@@ -58,7 +58,6 @@
 +0:10:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 5a8b940 + #3 #1 #9 (checks #3 #1 #9)
 +0:10:00  reply     car 6 built at 87b6895, draft #1001
 +0:11:00  ci        #1001 check `Risk class and data protection` completed on 87b6895: success
-+0:11:30  ci        #1000 check `ci-ok` completed on 36436a2: success
 +0:13:00  ci        #1001 check `ci-ok` completed on 87b6895: success
 +0:13:00  webhook   #1001 check `ci-ok` completed on 87b6895: success
 +0:13:00  decision  read #3 #1 #9 #1001 main mergify/merge-queue/744dfff868 before acting
@@ -68,8 +67,6 @@
 +0:13:00  decision  #3 merged as 243bdbc
 +0:13:00  decision  #1 merged as e32fbe0
 +0:13:00  decision  #9 merged as 5f0ade6
-+0:13:30  ci        #1000 check `KI-Review` completed on 36436a2: success
-+0:15:00  ci        #1001 check `KI-Review` completed on 87b6895: success
 +0:20:00  action    #6 ready for review
 +0:20:00  webhook   #6 ready_for_review
 +0:20:00  decision  enqueue #6 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
@@ -84,4 +81,3 @@
 +0:28:00  reply     car 9 landed #6 as 1f8dd46
 +0:28:00  decision  close car 9, delete mergify/merge-queue/8cd12edb01, close #1002
 +0:28:00  decision  #6 merged as 1f8dd46
-+0:30:00  ci        #1002 check `KI-Review` completed on 47ddd08: success

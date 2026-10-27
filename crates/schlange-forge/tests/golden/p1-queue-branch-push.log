@@ -18,9 +18,6 @@
 +0:04:00  decision  dequeue #1 from `default`: DRAFT_PULL_REQUEST_CHANGED: someone else pushed to the queue branch `mergify/merge-queue/c0afd78982`
 +0:04:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #2 (checks #2)
 +0:04:00  reply     car 5 built at b7d5f0b, draft #1002
-+0:11:00  ci        #1000 check `full` completed on ecd3e04: success
-+0:11:00  ci        #1001 check `full` completed on 405b1bd: success
-+0:14:00  ci        #1000 check `full` completed on 5fad80a: success
 +0:14:00  ci        #1002 check `full` completed on b7d5f0b: success
 +0:14:00  webhook   #1002 check `full` completed on b7d5f0b: success
 +0:14:00  decision  read #2 #1002 main mergify/merge-queue/f2f5067500 before acting

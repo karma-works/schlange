@@ -4,19 +4,35 @@
 //!
 //! - **I0** Every commit on a base branch is the initial commit, a commit made outside the
 //!   queue, or a queue landing whose tree equals the tree the queue built and tested for exactly
-//!   that prefix, on top of exactly the base it assumed; the car's checks were green. With
-//!   batches and `squash`, the commits inside a batch are prefixes of the tested branch whose
-//!   checks ran only on the batch's tip (Mergify's semantics too); for batch size 1 the check
-//!   is strict per commit.
+//!   that prefix, on top of exactly the base it assumed, and the car was green.
+//!   - *Batches* (Mergify's semantics): with `squash`, the commits of one batch are prefixes of
+//!     the tested batch branch, and checks ran only on its tip. Each commit is the tested
+//!     prefix tree; only the tip tree had checks of its own.
+//!   - *Strict per commit* (every queue rule has batch size 1): every landed commit's tree is a
+//!     tree on which the checks ran (the car's tip), one commit per landing.
+//!   - *Green is never vacuous*: when the merge conditions name no check, the tree must still
+//!     have been a car whose draft existed on the queue branch (or the pull request itself in
+//!     place) and the merge conditions held on that view right before landing.
+//!   - *`reset_on_external_merge: never`*: the user opts out of retesting after an external
+//!     commit. A landing on a base that moved outside the queue must then equal the tested
+//!     change applied to the actual parent (three-way merge of tested base, actual parent and
+//!     tested prefix), not the tested tree itself.
 //! - **I1** No pull request lands whose queue or merge conditions were false at landing time
-//!   (on the forge's truth) or whose head is not the tested head.
+//!   (on the forge's truth), whose head is not the head recorded when its car was built (the
+//!   tested head), or that already landed (nothing lands twice, also across crashes).
 //! - **I2** At quiescence every queued pull request was merged or dequeued with a reason; a
 //!   queue that halted on purpose (tree mismatch) is reported with its reason.
-//! - **I3** After every step, the queue branches on the forge (prefix plus ten hex characters)
-//!   and the open draft pull requests are exactly those of the engine's cars.
-//! - **I4** At no step more cars (running speculative checks) than `max_parallel_checks`.
-//! - **I5** Same end state (merged pull requests, base trees, pull requests left queued) with
-//!   perfect and with disturbed webhook delivery; compared by the runner.
+//! - **I3** The queue branches on the forge (prefix plus ten hex characters) and the open queue
+//!   drafts are exactly those of the engine's cars: after every step, and at quiescence. With
+//!   forge faults or crashes a side effect can be in flight or in doubt, so after every step
+//!   only "everything on the forge is known to the engine (a car or a close in progress)" is
+//!   checked, and the exact equality at quiescence (KONZEPT's definition).
+//! - **I4** At no step more than `max_parallel_checks` cars per base in the engine (cars plus
+//!   cars being closed) and on the forge (queue drafts that are open or whose CI still runs
+//!   after closing).
+//! - **I5** Same end state (merged pull requests, outcomes with dequeue reasons, base trees,
+//!   pull requests left queued) with perfect and with disturbed delivery; compared by the
+//!   runner and the property tests.
 //!
 //! The checker reads commits, trees, parents and refs through the forge's [`GitStore`], so on
 //! the `localgit` forge it judges the real repository on disk: the first-parent history of the
@@ -30,9 +46,10 @@ use schlange_config::rules::Rules;
 use schlange_core::State;
 use schlange_core::eval::{self, Context};
 use schlange_core::model::PullRequest;
+use schlange_core::queue::{closing_count, is_queue_branch};
 
-use crate::git::{GitStore, Sha};
-use crate::sim::SimForge;
+use crate::git::{GitStore, Repo, Sha};
+use crate::sim::{BOT, SimForge};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct InvariantState {
@@ -45,19 +62,29 @@ pub struct InvariantState {
 #[derive(Debug, Default)]
 pub struct Checker {
     pub results: BTreeMap<&'static str, InvariantState>,
+    /// Forge faults or crashes: I3 per step checks only that the engine knows everything on
+    /// the forge; the exact equality is checked at quiescence.
+    pub relaxed_steps: bool,
     landings_seen: usize,
     accounted: BTreeSet<Sha>,
     landed_commits: BTreeSet<Sha>,
+    landed_prs: BTreeMap<u64, u64>,
+    noted_modes: bool,
 }
 
 pub const IDS: [&str; 6] = ["I0", "I1", "I2", "I3", "I4", "I5"];
 
-fn is_queue_branch(name: &str, prefixes: &[String]) -> bool {
-    prefixes.iter().any(|p| {
-        name.strip_prefix(p.as_str()).is_some_and(|rest| {
-            rest.len() == 10 && rest.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
-        })
-    })
+fn prefixes(rules: &Rules) -> Vec<String> {
+    rules
+        .queue_rules
+        .iter()
+        .map(|q| q.queue_branch_prefix.clone())
+        .collect()
+}
+
+/// Strict per-commit I0 applies when no queue batches.
+fn strict_i0(rules: &Rules) -> bool {
+    rules.queue_rules.iter().all(|q| q.batch_size.max() == 1)
 }
 
 impl Checker {
@@ -79,7 +106,10 @@ impl Checker {
     }
 
     pub fn note(&mut self, id: &'static str, msg: String) {
-        self.results.get_mut(id).expect("known id").notes.push(msg);
+        let notes = &mut self.results.get_mut(id).expect("known id").notes;
+        if !notes.contains(&msg) {
+            notes.push(msg);
+        }
     }
 
     pub fn violated(&self) -> bool {
@@ -89,21 +119,51 @@ impl Checker {
     /// Runs after every simulated step, once the engine's decisions were carried out.
     pub fn after_step<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules) {
         let t = forge.now();
+        if !self.noted_modes {
+            self.noted_modes = true;
+            if strict_i0(rules) {
+                self.note("I0", "strict per-commit mode (batch size 1)".into());
+            } else {
+                self.note(
+                    "I0",
+                    "batch mode: commits inside a batch are tested prefixes, checks ran on the tip"
+                        .into(),
+                );
+            }
+            if self.relaxed_steps {
+                self.note(
+                    "I3",
+                    "forge faults or crashes: per step only \"the engine knows every queue branch \
+                     and draft\"; exact equality at quiescence"
+                        .into(),
+                );
+            }
+        }
         self.landings(forge, rules, t);
         self.base_history(forge, t);
-        self.branches(forge, state, rules, t);
+        self.branches(forge, state, rules, t, false);
         self.parallel(forge, state, rules, t);
     }
 
     fn landings<G: GitStore>(&mut self, forge: &SimForge<G>, rules: &Rules, t: u64) {
         let new: Vec<_> = forge.landings[self.landings_seen..].to_vec();
         self.landings_seen = forge.landings.len();
+        let never = rules.merge_queue.reset_on_external_merge == "never";
         for l in new {
             if l.commits.is_empty() {
                 continue;
             }
             for c in &l.commits {
                 self.landed_commits.insert(c.sha.clone());
+                let first = self.landed_prs.insert(c.number, l.car);
+                self.check("I1", first.is_none(), t, || {
+                    format!(
+                        "#{} landed twice (cars {} and {})",
+                        c.number,
+                        first.unwrap_or(0),
+                        l.car
+                    )
+                });
             }
             let Some(car) = forge.cars.get(&l.car) else {
                 self.check("I0", false, t, || {
@@ -124,17 +184,20 @@ impl Checker {
             for c in &l.commits {
                 let before = l.before.iter().find(|p| p.number == c.number);
                 let requested = l.requested.iter().find(|p| p.number == c.number);
-                let tested = car.prefix.iter().find(|(n, ..)| *n == c.number);
-                let heads_ok = match (before, requested) {
-                    (Some(b), Some(r)) => {
+                let tested = car.heads.iter().find(|(n, _)| *n == c.number);
+                let heads_ok = match (before, requested, tested) {
+                    (Some(b), Some(r), Some((_, h))) => {
                         b.head_sha == r.head_sha
-                            && (car.in_place || tested.is_some())
+                            && r.head_sha == *h
                             && pr_head_in_car(forge, car, b)
                     }
                     _ => false,
                 };
                 self.check("I1", heads_ok, t, || {
-                    format!("#{} landed with a head that was not tested", c.number)
+                    format!(
+                        "#{} landed with a head that was not the tested head",
+                        c.number
+                    )
                 });
                 let (Some(rule), Some(conds), Some(before)) = (rule, &merge_conds, before) else {
                     self.check("I1", false, t, || {
@@ -154,6 +217,30 @@ impl Checker {
                     format!("#{} landed while its merge conditions were false", c.number)
                 });
                 green &= m_ok;
+                // Green is not vacuous: without a named check, the conditions must at least
+                // have been evaluated on the queue branch's draft (or in place).
+                if eval::referenced_checks(conds).is_empty() {
+                    self.note(
+                        "I0",
+                        "merge conditions name no check: green means the conditions held on \
+                         the car's draft (or in place) right before landing"
+                            .into(),
+                    );
+                    let evaluated = if car.in_place {
+                        car.head == before.head_sha
+                    } else {
+                        l.draft_before.as_ref().is_some_and(|d| {
+                            d.head_sha == car.head
+                                && d.head_ref == car.branch.clone().unwrap_or_default()
+                        })
+                    };
+                    self.check("I0", evaluated, t, || {
+                        format!(
+                            "#{} landed without its conditions evaluated on a queue branch",
+                            c.number
+                        )
+                    });
+                }
             }
             // I0: every landed commit is the tested prefix, on the assumed base.
             let first = l.commits[0].number;
@@ -162,13 +249,55 @@ impl Checker {
                 continue;
             };
             let parent = forge.repo.parents(&l.commits[0].sha).first().cloned();
-            let expected_parent_tree = if idx0 == 0 {
-                forge.repo.tree_id_of(&car.base_sha)
+            let expected_parent = if idx0 == 0 {
+                car.base_sha.clone()
             } else {
-                car.prefix[idx0 - 1].2.clone()
+                car.prefix[idx0 - 1].1.clone()
             };
-            let parent_ok =
-                parent.is_some_and(|p| forge.repo.tree_id_of(&p) == expected_parent_tree);
+            let expected_parent_tree = forge.repo.tree_id_of(&expected_parent);
+            let parent_ok = parent
+                .as_ref()
+                .is_some_and(|p| forge.repo.tree_id_of(p) == expected_parent_tree);
+            if !parent_ok && never && parent.is_some() {
+                // `reset_on_external_merge: never`: the tested change on the actual parent.
+                self.note(
+                    "I0",
+                    "reset_on_external_merge: never: a landing after an external commit is \
+                     checked as the tested change applied to the actual parent"
+                        .into(),
+                );
+                let mut prev_tested = expected_parent;
+                for (k, c) in l.commits.iter().enumerate() {
+                    let Some((n, tested, _)) = car.prefix.get(idx0 + k).cloned() else {
+                        self.check("I0", false, t, || {
+                            format!("#{} is not in its car", c.number)
+                        });
+                        break;
+                    };
+                    let actual_parent = forge.repo.parents(&c.sha).first().cloned();
+                    let expected = actual_parent.and_then(|p| {
+                        Repo::merge_trees(
+                            &forge.repo.tree(&prev_tested),
+                            &forge.repo.tree(&p),
+                            &forge.repo.tree(&tested),
+                        )
+                        .ok()
+                    });
+                    let ok = n == c.number && expected == Some(forge.repo.tree(&c.sha));
+                    self.check("I0", ok, t, || {
+                        format!(
+                            "commit {} of #{} is not the tested change on its parent",
+                            &c.sha[..7],
+                            c.number
+                        )
+                    });
+                    prev_tested = tested;
+                }
+                self.check("I0", green, t, || {
+                    format!("car {} landed without green merge checks", car.id)
+                });
+                continue;
+            }
             self.check("I0", parent_ok, t, || {
                 format!(
                     "#{first} landed on a base whose tree is not the one car {} was tested on",
@@ -189,6 +318,22 @@ impl Checker {
                         &c.sha[..7],
                         c.number,
                         car.id
+                    )
+                });
+            }
+            if strict_i0(rules) {
+                let tip = l
+                    .commits
+                    .last()
+                    .map(|c| forge.repo.tree_id_of(&c.sha))
+                    .unwrap_or_default();
+                let ok = l.commits.len() == 1 && tip == car.tree;
+                self.check("I0", ok, t, || {
+                    format!(
+                        "strict mode: car {} landed {} commits; the landed tree is not the tree \
+                         its checks ran on",
+                        car.id,
+                        l.commits.len()
                     )
                 });
             }
@@ -218,12 +363,15 @@ impl Checker {
         }
     }
 
-    fn branches<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules, t: u64) {
-        let prefixes: Vec<String> = rules
-            .queue_rules
-            .iter()
-            .map(|q| q.queue_branch_prefix.clone())
-            .collect();
+    fn branches<G: GitStore>(
+        &mut self,
+        forge: &SimForge<G>,
+        state: &State,
+        rules: &Rules,
+        t: u64,
+        quiescent: bool,
+    ) {
+        let prefixes = prefixes(rules);
         let on_forge: BTreeSet<String> = forge
             .repo
             .ref_names()
@@ -231,9 +379,6 @@ impl Checker {
             .filter(|r| is_queue_branch(r, &prefixes))
             .collect();
         let in_use: BTreeSet<String> = state.trains.values().flat_map(|t| t.branches()).collect();
-        self.check("I3", on_forge == in_use, t, || {
-            format!("queue branches on the forge {on_forge:?} ≠ branches in use {in_use:?}")
-        });
         let drafts: BTreeSet<u64> = forge.open_drafts().iter().map(|p| p.number).collect();
         let car_drafts: BTreeSet<u64> = state
             .trains
@@ -245,6 +390,31 @@ impl Checker {
                     .filter_map(|c| c.draft)
             })
             .collect();
+        if self.relaxed_steps && !quiescent {
+            let mut known = in_use.clone();
+            known.extend(state.closing.values().filter_map(|c| c.branch.clone()));
+            let unknown: Vec<&String> = on_forge.difference(&known).collect();
+            self.check("I3", unknown.is_empty(), t, || {
+                format!("queue branches on the forge the engine does not know: {unknown:?}")
+            });
+            let stray: Vec<u64> = forge
+                .open_drafts()
+                .iter()
+                .filter(|p| {
+                    !known.contains(&p.head_ref)
+                        && !car_drafts.contains(&p.number)
+                        && !state.closing.values().any(|c| c.draft == Some(p.number))
+                })
+                .map(|p| p.number)
+                .collect();
+            self.check("I3", stray.is_empty(), t, || {
+                format!("open queue drafts the engine does not know: {stray:?}")
+            });
+            return;
+        }
+        self.check("I3", on_forge == in_use, t, || {
+            format!("queue branches on the forge {on_forge:?} ≠ branches in use {in_use:?}")
+        });
         self.check("I3", drafts == car_drafts, t, || {
             format!("open draft pull requests {drafts:?} ≠ drafts of cars {car_drafts:?}")
         });
@@ -252,15 +422,17 @@ impl Checker {
 
     fn parallel<G: GitStore>(&mut self, forge: &SimForge<G>, state: &State, rules: &Rules, t: u64) {
         let max = rules.merge_queue.max_parallel_checks as usize;
-        for (base, train) in &state.trains {
-            let cars = train.cars.len();
-            let drafts = forge
-                .open_drafts()
-                .iter()
-                .filter(|p| &p.base == base)
-                .count();
-            self.check("I4", cars <= max && drafts <= max, t, || {
-                format!("{cars} cars and {drafts} drafts on {base}, max_parallel_checks {max}")
+        let mut bases: BTreeSet<String> = state.trains.keys().cloned().collect();
+        bases.extend(forge.base_branches.iter().cloned());
+        for base in bases {
+            let cars = state.trains.get(&base).map_or(0, |t| t.cars.len());
+            let closing = closing_count(state, &base);
+            let drafts = forge.drafts_with_ci(&base);
+            self.check("I4", cars + closing <= max && drafts <= max, t, || {
+                format!(
+                    "{cars} cars + {closing} closing in the engine, {drafts} queue drafts open or \
+                     running CI on {base}; max_parallel_checks {max}"
+                )
             });
         }
     }
@@ -290,13 +462,34 @@ impl Checker {
                     .is_some_and(|t| t.halted.is_some())
             });
         self.check("I2", ok, t, || "queued pull requests left".into());
-        self.branches(forge, state, rules, t);
+        self.branches(forge, state, rules, t, true);
         let leftover: Vec<String> = state.trains.values().flat_map(|t| t.branches()).collect();
         self.check(
             "I3",
             leftover.is_empty() || !state.queued.is_empty(),
             t,
             || format!("queue branches left after quiescence: {leftover:?}"),
+        );
+        self.check("I3", state.closing.is_empty(), t, || {
+            format!("closes never confirmed: {:?}", state.closing.keys())
+        });
+        let running: Vec<u64> = forge
+            .base_branches
+            .iter()
+            .flat_map(|b| {
+                forge
+                    .open_drafts()
+                    .into_iter()
+                    .filter(move |p| &p.base == b && p.author == BOT)
+                    .map(|p| p.number)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        self.check(
+            "I4",
+            running.is_empty() || !state.queued.is_empty(),
+            t,
+            || format!("queue drafts still open at quiescence: {running:?}"),
         );
     }
 }
@@ -324,7 +517,7 @@ fn merge_view(pr: &PullRequest, draft: Option<&PullRequest>, head: &str) -> Pull
 
 #[cfg(test)]
 mod tests {
-    use super::{Checker, is_queue_branch};
+    use super::Checker;
     use crate::git::Tree;
     use crate::sim::SimForge;
     use schlange_config::rules::Rules;
@@ -352,14 +545,10 @@ mod tests {
         c.after_step(&forge, &state, &rules);
         assert!(!c.results["I0"].violations.is_empty());
         assert!(!c.results["I3"].violations.is_empty());
-    }
-
-    #[test]
-    fn strict_queue_branch_pattern() {
-        let p = vec!["mergify/merge-queue/".to_string()];
-        assert!(is_queue_branch("mergify/merge-queue/a76b1f3d25", &p));
-        assert!(!is_queue_branch("mergify/merge-queue/a76b1f3d2", &p));
-        assert!(!is_queue_branch("mergify/merge-queue/my-branch", &p));
-        assert!(!is_queue_branch("mergify/merge-queue/A76B1F3D25", &p));
+        // Relaxed (forge faults): a branch the engine does not know is still a violation.
+        let mut r = Checker::new();
+        r.relaxed_steps = true;
+        r.after_step(&forge, &state, &rules);
+        assert!(!r.results["I3"].violations.is_empty());
     }
 }
