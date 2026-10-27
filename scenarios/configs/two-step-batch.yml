@@ -1,0 +1,22 @@
+# Two-step CI with batches of 4 and two parallel checks (bisection runs two splits at once).
+merge_queue:
+  max_parallel_checks: 2
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 4
+    batch_max_wait_time: 2 minutes
+    queue_conditions:
+      - base = main
+      - -label = halt
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

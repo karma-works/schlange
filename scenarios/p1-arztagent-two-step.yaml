@@ -1,0 +1,49 @@
+# Arztagent's two-step CI (queue-two-step, MQ-18, MQ-42) with its real `.mergify.yml`:
+# on a pull request, `ci-ok` is the quick check (3 minutes) and `KI-Review` runs; on the queue's
+# draft pull request (`mergify/merge-queue/*` head) `ci-ok` runs the full suite (20 minutes) and
+# `KI-Review` does not run at all. queue_conditions see the quick checks on the pull request;
+# merge_conditions (`check-success = ci-ok`) see the full suite on the draft.
+# #2 passes the quick check but breaks the full suite: the batch of three fails, bisection
+# finds #2, the others land. #1, #2 and #3 are queued together, so they share one batch.
+name: p1-arztagent-two-step
+description: Quick checks on the pull request queue it; the full suite on the queue draft decides.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+    runs_on: pull_request
+  - check: ci-ok
+    duration: 20m
+    runs_on: queue
+    fail_when_contains: BREAKS_FULL_SUITE
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: { backend/a.py: "a = 1\n" } }
+  - { number: 2, author: arztagent-bot, files: { backend/b.py: "b = 1  # BREAKS_FULL_SUITE\n" } }
+  - { number: 3, author: karma-works, files: { docs/c.md: "c\n" } }
+  - number: 4
+    author: dependabot[bot]
+    dependabot_update_type: version-update:semver-minor
+    files: { package.json: "{\"x\": \"1.1\"}\n" }
+    checks: { KI-Review: none }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 2h, open: 4 }
+
+expect:
+  - { pr: 1, state: merged, queue: default }
+  - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+expect_log:
+  - "(checks #1 #2 #3)"
+  - "check `ci-ok` completed"

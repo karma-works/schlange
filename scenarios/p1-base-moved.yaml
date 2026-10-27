@@ -1,0 +1,36 @@
+# The base moves outside the queue (MQ-06, MQ-47; queue-conflicts `external-merge`): while two
+# cars run, someone pushes a hotfix straight to main. With the default
+# `reset_on_external_merge: always` every car is discarded (MERGE_QUEUE_RESET) and rebuilt on
+# the new main. Nothing lands on top of a base it was not tested on (I0).
+name: p1-base-moved
+description: A direct push to main discards the speculation; cars are rebuilt and land.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, push_base: { files: { hotfix.txt: "hotfix\n" } } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_base:
+  hotfix.txt: "hotfix\n"
+  a.txt: "a\n"
+  b.txt: "b\n"
+expect_log:
+  - "MERGE_QUEUE_RESET"
+  - "direct push to main"

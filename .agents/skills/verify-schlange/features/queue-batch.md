@@ -3,7 +3,7 @@ id: queue-batch
 title: "Batches (`batch_size`, `batch_max_wait_time`)"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "config:queue_rules.batch_size"
   - "config:queue_rules.batch_size.*"
@@ -25,10 +25,11 @@ Without settings, the batch size is 1 and the wait time 30 seconds.
 
 ## Sub-features
 
-- `size`: fixed size, or a minimum and a maximum.
-- `wait-time`: duration as text (`5 minutes`), virtual clock in the simulation.
-- `default`: size 1, wait time 30 seconds.
-- `change-while-waiting`: configuration change while a batch waits.
+- `size`: built for a fixed size. A `{min, max}` range is built as: size = `ceil(waiting / max_parallel_checks)` clamped to `[min, max]`, waiting only while fewer than `min` are waiting.
+- `wait-time`: built. Duration text parsed (`5 minutes`, `1 min`, seconds); the timer runs on the virtual clock from the earliest `waiting_since` of the batch; a pull request put back after a discarded car keeps its original wait start, so it is not delayed twice.
+- `default`: built. Size 1, wait 30 seconds (`QueueRule::new`).
+- `grouping`: missing. Mergify groups by scopes and changed directories within a window; Schlange takes the next pull requests in queue order.
+- `change-while-waiting`: missing (configuration is fixed per run in the simulation).
 
 ## How to get to it (user POV)
 
@@ -40,10 +41,12 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- **Planned.** Virtual clock: 4 pull requests, then 5 minutes of silence → a batch of 4 starts.
+- **Wait, then a partial batch; a full batch at once.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml`. Three pull requests are queued at +0:05 and `build car … (checks #1 #2 #3)` appears at +0:10 (after 5 minutes); five queued at +0:35 start at once: `(checks #4 #5 #6 #7 #8)` at +0:35. Each batch lands as one squash commit per pull request. Exit 0.
+- **Dynamic size.** `cargo test -p schlange-forge --test dsl dynamic_batch_size_spreads_over_slots`.
 
 ## Gotchas
 
-- A pull request must not wait forever below the minimum (MQ-26).
-- Batches raise CI cost when they fail (MQ-28).
+- A pull request must not wait forever below the minimum (MQ-26): the wait timer always fires a `Tick`, and I2 checks at quiescence that nothing is left queued.
+- Batches raise CI cost when they fail (MQ-28); not measured yet.
+- Mergify fills batches by similarity (scopes, directories), not strictly in queue order; Schlange's batches can therefore differ from Mergify's for the same queue. Not tested against Mergify.
+- The dynamic-size formula is our reading of the documented examples (3 pull requests and 5 checks → three batches of 1; 10 → five of 2); the exact algorithm is not public.

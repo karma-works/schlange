@@ -1,0 +1,42 @@
++0:00:00  action    #1 opened by bot on main, files: lib.rs
++0:00:10  action    #2 opened by bot on main, files: app.rs
++0:00:20  action    #3 opened by bot on main, files: docs.md
++0:01:00  ci        #1 check `quick` completed on e076f41: success
++0:01:00  webhook   #1 check `quick` completed on e076f41: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:01:00  reply     car 2 built at 83a7d58, draft #1000
++0:01:10  ci        #2 check `quick` completed on 676df12: success
++0:01:10  webhook   #2 check `quick` completed on 676df12: success
++0:01:10  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:01:10  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #1 #2 (checks #2)
++0:01:10  reply     car 4 built at b1e01c3, draft #1001
++0:01:20  ci        #3 check `quick` completed on 9ea17d6: success
++0:01:20  webhook   #3 check `quick` completed on 9ea17d6: success
++0:01:20  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
++0:01:20  decision  build car 6 on mergify/merge-queue/744dfff868: base 5a8b940 + #1 #2 #3 (checks #3)
++0:01:20  reply     car 6 built at 37c7601, draft #1002
++0:11:00  ci        #1000 check `full` completed on 83a7d58: success
++0:11:00  webhook   #1000 check `full` completed on 83a7d58: success
++0:11:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:11:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:11:00  reply     car 2 landed #1 as e076f41
++0:11:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:11:00  decision  #1 merged as e076f41
++0:11:10  ci        #1001 check `full` completed on b1e01c3: failure
++0:11:10  webhook   #1001 check `full` completed on b1e01c3: failure
++0:11:10  decision  read #2 #1001 mergify/merge-queue/34fd968ed0 before acting
++0:11:10  decision  close car 6, delete mergify/merge-queue/744dfff868, close #1002
++0:11:10  decision  checks of #3 ended, stays queued: BATCH_AHEAD_FAILED: the batch ahead failed: merge conditions are false on #1001; failed: full
++0:11:10  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
++0:11:10  decision  dequeue #2 from `default`: CHECKS_FAILED: merge conditions are false on #1001; failed: full
++0:11:10  decision  build car 9 on mergify/merge-queue/8cd12edb01: base e076f41 + #3 (checks #3)
++0:11:10  reply     car 9 built at 15fd6ce, draft #1003
++0:11:20  ci        #1002 check `full` completed on 37c7601: failure
++0:21:10  ci        #1003 check `full` completed on 15fd6ce: success
++0:21:10  webhook   #1003 check `full` completed on 15fd6ce: success
++0:21:10  decision  read #3 #1003 main mergify/merge-queue/8cd12edb01 before acting
++0:21:10  decision  land car 9: squash #3 onto main if it is still e076f41
++0:21:10  reply     car 9 landed #3 as 703d659
++0:21:10  decision  close car 9, delete mergify/merge-queue/8cd12edb01, close #1003
++0:21:10  decision  #3 merged as 703d659

@@ -98,6 +98,27 @@ fn glob_to_regex(glob: &str) -> String {
     re
 }
 
+thread_local! {
+    /// Compiled patterns. The engine re-evaluates every pull request after every event, and
+    /// compiling a lookahead pattern each time dominates the run time. A pure cache: same
+    /// pattern, same regex.
+    static REGEXES: std::cell::RefCell<std::collections::HashMap<String, Option<fancy_regex::Regex>>> =
+        Default::default();
+}
+
+fn regex_match(pattern: &str, shown: &str, actual: &str) -> Result<bool, EvalError> {
+    REGEXES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let re = cache
+            .entry(pattern.to_string())
+            .or_insert_with(|| fancy_regex::Regex::new(pattern).ok());
+        match re {
+            Some(re) => Ok(re.is_match(actual).unwrap_or(false)),
+            None => Err(EvalError::BadRegex(shown.to_string())),
+        }
+    })
+}
+
 fn compare_scalar(
     attribute: &str,
     op: Operator,
@@ -107,14 +128,8 @@ fn compare_scalar(
     Ok(match op {
         Operator::Eq => actual == expected,
         Operator::Ne => actual != expected,
-        Operator::Regex => fancy_regex::Regex::new(expected)
-            .map_err(|_| EvalError::BadRegex(expected.to_string()))?
-            .is_match(actual)
-            .unwrap_or(false),
-        Operator::Glob => fancy_regex::Regex::new(&glob_to_regex(expected))
-            .map_err(|_| EvalError::BadRegex(expected.to_string()))?
-            .is_match(actual)
-            .unwrap_or(false),
+        Operator::Regex => regex_match(expected, expected, actual)?,
+        Operator::Glob => regex_match(&glob_to_regex(expected), expected, actual)?,
         Operator::Ge | Operator::Gt | Operator::Le | Operator::Lt => {
             let ordering = match (actual.parse::<f64>(), expected.parse::<f64>()) {
                 (Ok(a), Ok(e)) => a.partial_cmp(&e),
@@ -204,6 +219,28 @@ pub fn eval(
     }
 }
 
+/// Check names a condition list refers to with `check-*` attributes and `=`.
+pub fn referenced_checks(list: &[Condition]) -> Vec<String> {
+    fn walk(c: &Condition, out: &mut Vec<String>) {
+        match c {
+            Condition::Atom(a) => {
+                if a.attribute.starts_with("check")
+                    && let (Some(Operator::Eq), Some(v)) = (a.operator, &a.value)
+                    && !out.contains(v)
+                {
+                    out.push(v.clone());
+                }
+            }
+            Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| walk(c, out)),
+            Condition::Not(c) => walk(c, out),
+            Condition::Always => {}
+        }
+    }
+    let mut out = Vec::new();
+    list.iter().for_each(|c| walk(c, &mut out));
+    out
+}
+
 /// Evaluates a condition list (implicit `and`) and reports each condition's result.
 pub fn eval_list(
     list: &[Condition],
@@ -222,20 +259,11 @@ mod tests {
     use schlange_config::conditions::parse_atom;
 
     fn pr() -> PullRequest {
-        PullRequest {
-            number: 7,
-            author: "arztagent-bot".into(),
-            base: "main".into(),
-            head_ref: "feature".into(),
-            head_sha: "h2".into(),
-            title: "t".into(),
-            draft: false,
-            closed: false,
-            labels: ["ready".to_string()].into(),
-            files: vec!["src/main.rs".into(), ".github/workflows/ci.yml".into()],
-            dependabot_update_types: vec![],
-            checks: vec![],
-        }
+        let mut p = PullRequest::new(7, "arztagent-bot", "main", "feature", "h2");
+        p.title = "t".into();
+        p.labels = ["ready".to_string()].into();
+        p.files = vec!["src/main.rs".into(), ".github/workflows/ci.yml".into()];
+        p
     }
 
     fn run(name: &str, sha: &str, c: Option<Conclusion>, seq: u64) -> CheckRun {

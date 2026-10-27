@@ -1,36 +1,60 @@
-//! Scenarios: a YAML description of a repository's pull requests, CI and events over time,
-//! run against the simulated forge. Output: an event log and an invariant report.
+//! Scenarios as YAML: a repository, pull requests, CI and events over time, run against the
+//! simulated forge (`runner`). Output: an event log, expectations and an invariant report.
 //!
 //! ```yaml
 //! name: example
 //! config: ../crates/schlange-config/tests/golden/arztagent.yml   # relative to this file
-//! ci:                                   # every pull request runs these checks
+//! repo:                                 # optional; default: main with README.md
+//!   base: main
+//!   files: { README.md: "hello\n" }
+//! seed: 1                               # flake seed
+//! faults: standard                      # standard (default) | none | {seed, drop, ...}
+//! ci:                                   # every pull request and queue draft runs these
 //!   - check: ci-ok
 //!     duration: 3m
 //!     conclusion: success               # or failure, cancelled, …, none (never reports)
+//!     runs_on: both                     # both | pull_request | queue
+//!     fail_when_contains: [BUG]         # fail when a file contains a marker
+//!     fail_when_all: [A, B]             # fail when both markers are present (MQ-01)
+//!     fail_when_prs: [1, 2]             # fail when both pull requests are present
+//!     hang_when_contains: HANG          # never report when a file contains a marker
+//!     flake_rate: 0.1
 //! pull_requests:
 //!   - number: 1
 //!     author: arztagent-bot
-//!     files: [src/lib.rs]
-//!     checks: { ci-ok: failure }        # per-PR override
+//!     files: [src/lib.rs]               # or a map path → content
+//!     checks: { ci-ok: failure }        # per-PR override, on the pull request only
 //! events:
 //!   - { at: 0s, open: 1 }
 //!   - { at: 10m, label: { pr: 1, name: halt } }
+//!   - { at: 11m, push: { pr: 1, files: { src/lib.rs: "v2\n" } } }
+//!   - { at: 12m, push_base: { files: { hotfix.txt: "x\n" } } }
+//!   - { at: 13m, merge_manually: 2 }
+//!   - { at: 14m, push_queue_branch: 3 }
 //! expect:
-//!   - { pr: 1, queued: true, queue: default }
+//!   - { pr: 1, state: merged }          # merged | dequeued | queued | open | closed
+//!   - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
+//!   - { pr: 3, queued: false }          # phase-0 form: in the queue at the end?
+//! expect_merged_order: [1, 3]
+//! expect_base: { src/lib.rs: "v2\n" }
+//! expect_log: ["build car"]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use schlange_config::rules::{Rules, parse_duration};
-use schlange_core::model::{Conclusion, PullRequest, Time};
-use schlange_core::{Decision, Event, State, step};
+use schlange_core::model::{Conclusion, Time};
 
-use crate::Forge;
-use crate::sim::{Action, CiScript, SimForge};
+use crate::ci::{CiScript, RunsOn};
+use crate::git::Tree;
+pub use crate::runner::{
+    EndState, ExpectState, Expectation, ExpectationResult, InvariantResult, LogEntry, RunReport,
+    Scenario, clock, run,
+};
+use crate::sim::{Action, Faults, PrDef};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScenarioError {
@@ -63,8 +87,37 @@ impl<'de> Deserialize<'de> for Outcome {
     }
 }
 
+impl Outcome {
+    fn conclusion(self) -> Option<Conclusion> {
+        match self {
+            Outcome::Reports(c) => Some(c),
+            Outcome::Never => None,
+        }
+    }
+}
+
 fn success() -> Outcome {
     Outcome::Reports(Conclusion::Success)
+}
+
+/// One marker or a list of them.
+#[derive(Debug, Deserialize, Default)]
+#[serde(untagged)]
+enum OneOrMany {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn list(&self) -> Vec<String> {
+        match self {
+            OneOrMany::None => vec![],
+            OneOrMany::One(s) => vec![s.clone()],
+            OneOrMany::Many(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +129,35 @@ struct CiSpec {
     duration: String,
     #[serde(default = "success")]
     conclusion: Outcome,
+    #[serde(default)]
+    runs_on: Option<String>,
+    #[serde(default)]
+    fail_when_contains: OneOrMany,
+    #[serde(default)]
+    fail_when_all: Vec<String>,
+    #[serde(default)]
+    fail_when_prs: Vec<u64>,
+    #[serde(default)]
+    hang_when_contains: OneOrMany,
+    #[serde(default)]
+    flake_rate: f64,
+}
+
+/// Files: a list of paths (content generated per pull request) or a map path → content.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+enum FilesSpec {
+    List(Vec<String>),
+    Map(BTreeMap<String, String>),
+}
+
+impl FilesSpec {
+    fn resolve(&self, generated: impl Fn(&str) -> String) -> Vec<(String, String)> {
+        match self {
+            FilesSpec::List(paths) => paths.iter().map(|p| (p.clone(), generated(p))).collect(),
+            FilesSpec::Map(m) => m.iter().map(|(p, c)| (p.clone(), c.clone())).collect(),
+        }
+    }
 }
 
 fn main_branch() -> String {
@@ -96,7 +178,7 @@ struct PrSpec {
     #[serde(default)]
     labels: BTreeSet<String>,
     #[serde(default)]
-    files: Vec<String>,
+    files: Option<FilesSpec>,
     #[serde(default)]
     dependabot_update_type: Option<String>,
     #[serde(default)]
@@ -115,7 +197,15 @@ struct LabelSpec {
 struct PushSpec {
     pr: u64,
     #[serde(default)]
-    files: Option<Vec<String>>,
+    files: Option<FilesSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushBaseSpec {
+    #[serde(default)]
+    branch: Option<String>,
+    files: FilesSpec,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +218,9 @@ enum StepAction {
     Draft(u64),
     Ready(u64),
     Close(u64),
+    PushBase(PushBaseSpec),
+    MergeManually(u64),
+    PushQueueBranch(u64),
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,13 +230,37 @@ struct StepSpec {
     action: StepAction,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Expectation {
-    pub pr: u64,
-    pub queued: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue: Option<String>,
+struct RepoSpec {
+    #[serde(default = "main_branch")]
+    base: String,
+    #[serde(default)]
+    files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaultSpec {
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    drop: f64,
+    #[serde(default)]
+    duplicate: f64,
+    #[serde(default)]
+    delay: f64,
+    #[serde(default)]
+    max_delay: Option<String>,
+    #[serde(default)]
+    reconcile_every: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FaultsSpec {
+    Named(String),
+    Custom(FaultSpec),
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,149 +271,48 @@ struct ScenarioSpec {
     description: String,
     config: String,
     #[serde(default)]
+    repo: Option<RepoSpec>,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    faults: Option<FaultsSpec>,
+    #[serde(default)]
+    max_time: Option<String>,
+    #[serde(default)]
     ci: Vec<CiSpec>,
     pull_requests: Vec<PrSpec>,
     events: Vec<StepSpec>,
     #[serde(default)]
     expect: Vec<Expectation>,
+    #[serde(default)]
+    expect_merged_order: Option<Vec<u64>>,
+    #[serde(default)]
+    expect_base: BTreeMap<String, String>,
+    #[serde(default)]
+    expect_log: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct LogEntry {
-    pub t: Time,
-    pub kind: &'static str,
-    pub text: String,
+/// Content a pull request writes to a path given only by name.
+pub fn generated_content(path: &str, number: u64) -> String {
+    format!("{path} changed by #{number}\n")
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpectationResult {
-    pub expected: Expectation,
-    pub actual_queued: bool,
-    pub actual_queue: Option<String>,
-    pub ok: bool,
+/// Default base tree of a scenario.
+pub fn default_base_files() -> Tree {
+    [(
+        "README.md".to_string(),
+        "Schlange test repository\n".to_string(),
+    )]
+    .into()
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct InvariantResult {
-    pub id: &'static str,
-    pub status: &'static str,
-    pub note: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunReport {
-    pub scenario: String,
-    pub description: String,
-    pub config: String,
-    pub passed: bool,
-    pub end_time: Time,
-    pub log: Vec<LogEntry>,
-    pub expectations: Vec<ExpectationResult>,
-    pub invariants: Vec<InvariantResult>,
-    /// Parts of the queue that are placeholders in this phase.
-    pub placeholders: Vec<&'static str>,
-}
-
-const INVARIANTS: [(&str, &str); 6] = [
-    ("I0", "base commits equal tested trees; needs merging"),
-    (
-        "I1",
-        "no landing on false conditions or changed head; needs merging",
-    ),
-    (
-        "I2",
-        "every queued pull request is merged or dequeued with a reason; needs the queue",
-    ),
-    (
-        "I3",
-        "temporary branches equal used branches after quiescence; needs queue branches",
-    ),
-    (
-        "I4",
-        "running checks within max_parallel_checks; needs speculation",
-    ),
-    (
-        "I5",
-        "same end state with disturbed webhook delivery; needs fault injection",
-    ),
-];
-
-/// Formats virtual time as `+h:mm:ss`.
-pub fn clock(t: Time) -> String {
-    format!("+{}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60)
-}
-
-fn describe_event(ev: &Event) -> String {
-    match ev {
-        Event::PullRequestOpened { pull_request: p } => format!(
-            "#{} opened by {} on {}{}{}",
-            p.number,
-            p.author,
-            p.base,
-            if p.draft { " (draft)" } else { "" },
-            if p.files.is_empty() {
-                String::new()
-            } else {
-                format!(", files: {}", p.files.join(" "))
-            }
-        ),
-        Event::PullRequestSynchronized {
-            number, head_sha, ..
-        } => format!("#{number} pushed, head {head_sha}"),
-        Event::ReadyForReview { number } => format!("#{number} ready for review"),
-        Event::ConvertedToDraft { number } => format!("#{number} converted to draft"),
-        Event::Labeled { number, label } => format!("#{number} labeled {label}"),
-        Event::Unlabeled { number, label } => format!("#{number} unlabeled {label}"),
-        Event::CheckRun { number, run } => match run.conclusion {
-            None => format!("#{number} check `{}` started on {}", run.name, run.head_sha),
-            Some(c) => format!(
-                "#{number} check `{}` completed: {}",
-                run.name,
-                serde_json::to_value(c)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default()
-            ),
-        },
-        Event::Closed { number } => format!("#{number} closed"),
-    }
-}
-
-fn describe_decision(d: &Decision) -> String {
-    match d {
-        Decision::Enqueue {
-            number,
-            queue,
-            rule,
-        } => {
-            format!("enqueue #{number} into `{queue}` (rule `{rule}`)")
-        }
-        Decision::Dequeue {
-            number,
-            queue,
-            reason,
-        } => format!(
-            "dequeue #{number} from `{queue}`: {}{}",
-            reason.code.map(|c| format!("{c}: ")).unwrap_or_default(),
-            reason.text
-        ),
-        Decision::EvaluationError { number, message } => {
-            format!("#{number}: condition not evaluable, counts as false: {message}")
-        }
-    }
-}
-
-/// Loads and runs a scenario file.
-pub fn run_file(path: &Path) -> Result<RunReport, ScenarioError> {
-    let text = std::fs::read_to_string(path).map_err(|source| ScenarioError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+/// Parses a scenario from YAML; `dir` resolves the configuration path.
+pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
     let fmt = |message: String| ScenarioError::Format {
         path: path.to_path_buf(),
         message,
     };
-    let spec: ScenarioSpec = serde_yaml_ng::from_str(&text).map_err(|e| fmt(e.to_string()))?;
+    let spec: ScenarioSpec = serde_yaml_ng::from_str(text).map_err(|e| fmt(e.to_string()))?;
     let config_path = path.parent().unwrap_or(Path::new(".")).join(&spec.config);
     let config_text =
         std::fs::read_to_string(&config_path).map_err(|source| ScenarioError::Io {
@@ -307,78 +323,100 @@ pub fn run_file(path: &Path) -> Result<RunReport, ScenarioError> {
         path: config_path.clone(),
         message: e.to_string(),
     })?;
+    let dur = |what: &str, s: &str| {
+        parse_duration(s).ok_or_else(|| fmt(format!("{what}: bad duration `{s}`")))
+    };
 
-    let mut forge = SimForge::new();
-    let ci_default: Vec<(String, Option<String>, Time, Outcome)> = spec
-        .ci
-        .iter()
-        .map(|c| {
-            parse_duration(&c.duration)
-                .map(|d| (c.check.clone(), c.app.clone(), d, c.conclusion))
-                .ok_or_else(|| {
-                    fmt(format!(
-                        "check `{}`: bad duration `{}`",
-                        c.check, c.duration
-                    ))
-                })
-        })
-        .collect::<Result<_, _>>()?;
-    let mut prs: BTreeMap<u64, (PullRequest, Vec<CiScript>)> = BTreeMap::new();
+    let mut scripts = Vec::new();
+    for c in &spec.ci {
+        let mut s = CiScript::new(
+            &c.check,
+            dur(&format!("check `{}`", c.check), &c.duration)?,
+            c.conclusion.conclusion(),
+        );
+        s.app = c.app.clone();
+        s.runs_on = match c.runs_on.as_deref() {
+            None | Some("both") => RunsOn::Both,
+            Some("pull_request") => RunsOn::PullRequest,
+            Some("queue") => RunsOn::Queue,
+            Some(o) => return Err(fmt(format!("check `{}`: unknown runs_on `{o}`", c.check))),
+        };
+        s.fail_when_contains = c.fail_when_contains.list();
+        s.fail_when_all = c.fail_when_all.clone();
+        s.fail_when_prs = c.fail_when_prs.clone();
+        s.hang_when_contains = c.hang_when_contains.list();
+        s.flake_rate = c.flake_rate;
+        scripts.push(s);
+    }
+
+    let mut prs = Vec::new();
     for p in &spec.pull_requests {
         for name in p.checks.keys() {
-            if !ci_default.iter().any(|(c, ..)| c == name) {
+            if !scripts.iter().any(|s| &s.check == name) {
                 return Err(fmt(format!("#{}: check `{name}` is not in `ci`", p.number)));
             }
         }
-        let ci = ci_default
+        let n = p.number;
+        let files = p
+            .files
+            .as_ref()
+            .map(|f| f.resolve(|path| generated_content(path, n)))
+            .unwrap_or_else(|| vec![(format!("pr-{n}.txt"), generated_content("pr", n))]);
+        let pr_scripts = scripts
             .iter()
-            .map(|(check, app, duration, outcome)| {
-                let outcome = p.checks.get(check).copied().unwrap_or(*outcome);
-                CiScript {
-                    check: check.clone(),
-                    app: app.clone(),
-                    duration: *duration,
-                    conclusion: match outcome {
-                        Outcome::Reports(c) => Some(c),
-                        Outcome::Never => None,
-                    },
+            .map(|s| {
+                let mut s = s.clone();
+                if let Some(o) = p.checks.get(&s.check) {
+                    s.conclusion = o.conclusion();
                 }
+                s
             })
             .collect();
-        let pr = PullRequest {
-            number: p.number,
+        prs.push(PrDef {
+            number: n,
             author: p.author.clone(),
+            title: if p.title.is_empty() {
+                format!("Pull request {n}")
+            } else {
+                p.title.clone()
+            },
             base: p.base.clone(),
-            head_ref: format!("pr-{}", p.number),
-            head_sha: format!("pr-{}-0", p.number),
-            title: p.title.clone(),
             draft: p.draft,
-            closed: false,
             labels: p.labels.clone(),
-            files: p.files.clone(),
+            files,
             dependabot_update_types: p.dependabot_update_type.iter().cloned().collect(),
-            checks: vec![],
-        };
-        prs.insert(p.number, (pr, ci));
+            scripts: pr_scripts,
+        });
     }
+    let (base, base_files) = match &spec.repo {
+        Some(r) if !r.files.is_empty() => (r.base.clone(), r.files.clone()),
+        Some(r) => (r.base.clone(), default_base_files()),
+        None => ("main".to_string(), default_base_files()),
+    };
+
+    let mut steps = Vec::new();
     for s in &spec.events {
-        let at = parse_duration(&s.at).ok_or_else(|| fmt(format!("bad time `{}`", s.at)))?;
+        let at = dur("event", &s.at)?;
         let known = |n: u64| {
-            if prs.contains_key(&n) {
+            if prs.iter().any(|p| p.number == n) {
                 Ok(n)
             } else {
                 Err(fmt(format!("event at {}: unknown pull request #{n}", s.at)))
             }
         };
         let action = match &s.action {
-            StepAction::Open(n) => {
-                let (pr, ci) = prs.get(&known(*n)?).cloned().expect("checked");
-                Action::Open(Box::new(pr), ci)
+            StepAction::Open(n) => Action::Open(known(*n)?),
+            StepAction::Push(p) => {
+                let n = known(p.pr)?;
+                Action::Push {
+                    number: n,
+                    files: p
+                        .files
+                        .as_ref()
+                        .map(|f| f.resolve(|path| format!("{path} pushed at {} by #{n}\n", s.at)))
+                        .unwrap_or_default(),
+                }
             }
-            StepAction::Push(p) => Action::Push {
-                number: known(p.pr)?,
-                files: p.files.clone(),
-            },
             StepAction::Label(l) => Action::Label {
                 number: known(l.pr)?,
                 label: l.name.clone(),
@@ -390,125 +428,77 @@ pub fn run_file(path: &Path) -> Result<RunReport, ScenarioError> {
             StepAction::Draft(n) => Action::Draft { number: known(*n)? },
             StepAction::Ready(n) => Action::Ready { number: known(*n)? },
             StepAction::Close(n) => Action::Close { number: known(*n)? },
+            StepAction::PushBase(b) => Action::PushBase {
+                branch: b.branch.clone().unwrap_or_else(|| base.clone()),
+                files: b
+                    .files
+                    .resolve(|path| format!("{path} pushed directly at {}\n", s.at)),
+            },
+            StepAction::MergeManually(n) => Action::MergeManually(known(*n)?),
+            StepAction::PushQueueBranch(n) => Action::PushQueueBranch(known(*n)?),
         };
-        forge.schedule(at, action);
+        steps.push((at, action));
     }
 
-    let mut state = State::default();
-    let mut log = Vec::new();
-    while let Some((t, event)) = forge.next_event() {
-        log.push(LogEntry {
-            t,
-            kind: "event",
-            text: describe_event(&event),
-        });
-        let (next, decisions) = step(&state, &rules, &event, t);
-        state = next;
-        for d in decisions {
-            log.push(LogEntry {
-                t,
-                kind: "decision",
-                text: describe_decision(&d),
-            });
-            forge.execute(&d).map_err(|e| fmt(e.to_string()))?;
+    let faults = match &spec.faults {
+        None => Some(Faults::standard(spec.seed.wrapping_add(1))),
+        Some(FaultsSpec::Named(n)) if n == "none" => None,
+        Some(FaultsSpec::Named(n)) if n == "standard" => {
+            Some(Faults::standard(spec.seed.wrapping_add(1)))
         }
-    }
+        Some(FaultsSpec::Named(n)) => return Err(fmt(format!("unknown faults `{n}`"))),
+        Some(FaultsSpec::Custom(f)) => Some(Faults {
+            seed: f.seed,
+            drop: f.drop,
+            duplicate: f.duplicate,
+            delay: f.delay,
+            max_delay: f
+                .max_delay
+                .as_deref()
+                .map(|d| dur("max_delay", d))
+                .transpose()?
+                .unwrap_or(30),
+            reconcile_every: f
+                .reconcile_every
+                .as_deref()
+                .map(|d| dur("reconcile_every", d))
+                .transpose()?
+                .unwrap_or(60),
+        }),
+    };
+    let max_time: Time = spec
+        .max_time
+        .as_deref()
+        .map(|d| dur("max_time", d))
+        .transpose()?
+        .unwrap_or(7 * 86400);
 
-    let expectations: Vec<ExpectationResult> = spec
-        .expect
-        .iter()
-        .map(|e| {
-            let actual_queue = forge.queue.queued.get(&e.pr).cloned();
-            let actual_queued = actual_queue.is_some();
-            let ok = actual_queued == e.queued && (e.queue.is_none() || e.queue == actual_queue);
-            ExpectationResult {
-                expected: e.clone(),
-                actual_queued,
-                actual_queue,
-                ok,
-            }
-        })
-        .collect();
-    let invariants = INVARIANTS
-        .iter()
-        .map(|(id, note)| InvariantResult {
-            id,
-            status: "not_checked",
-            note,
-        })
-        .collect();
-    Ok(RunReport {
-        scenario: spec.name,
+    Ok(Scenario {
+        name: spec.name,
         description: spec.description,
         config: spec.config,
-        passed: !expectations.is_empty() && expectations.iter().all(|e| e.ok),
-        end_time: forge.now(),
-        log,
-        expectations,
-        invariants,
-        placeholders: vec![
-            "queue: entries are recorded only; no queue pull requests, speculation, batches, bisection or merges",
-            "merge_conditions are not evaluated",
-            "dequeue reasons: Mergify codes for these paths are not determined yet",
-            "fault injection: none",
-        ],
+        rules,
+        base,
+        base_files,
+        queue_scripts: scripts,
+        prs,
+        steps,
+        expect: spec.expect,
+        expect_merged_order: spec.expect_merged_order,
+        expect_base: spec.expect_base,
+        expect_log: spec.expect_log,
+        faults,
+        flake_seed: spec.seed,
+        max_time,
     })
 }
 
-impl RunReport {
-    pub fn to_text(&self) -> String {
-        let mut out = format!("scenario {} (config {})\n", self.scenario, self.config);
-        out.push_str("\nevent log\n");
-        for e in &self.log {
-            out.push_str(&format!("  {}  {:<8}  {}\n", clock(e.t), e.kind, e.text));
-        }
-        out.push_str("\nexpectations\n");
-        for e in &self.expectations {
-            out.push_str(&format!(
-                "  {}  #{} queued={}{} (actual queued={}{})\n",
-                if e.ok { "PASS" } else { "FAIL" },
-                e.expected.pr,
-                e.expected.queued,
-                e.expected
-                    .queue
-                    .as_ref()
-                    .map(|q| format!(" queue={q}"))
-                    .unwrap_or_default(),
-                e.actual_queued,
-                e.actual_queue
-                    .as_ref()
-                    .map(|q| format!(" queue={q}"))
-                    .unwrap_or_default(),
-            ));
-        }
-        out.push_str("\ninvariants\n");
-        for i in &self.invariants {
-            out.push_str(&format!("  {}  {}  ({})\n", i.id, i.status, i.note));
-        }
-        out.push_str("\nplaceholders\n");
-        for p in &self.placeholders {
-            out.push_str(&format!("  - {p}\n"));
-        }
-        out.push_str(&format!(
-            "\nresult: {} at {}\n",
-            if self.passed { "PASS" } else { "FAIL" },
-            clock(self.end_time)
-        ));
-        out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn phase0_scenario_passes() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios/p0-queue-conditions.yaml");
-        let report = run_file(&path).unwrap();
-        let failed: Vec<_> = report.expectations.iter().filter(|e| !e.ok).collect();
-        assert!(failed.is_empty(), "{}\n{failed:?}", report.to_text());
-        assert!(report.log.iter().any(|e| e.text.starts_with("dequeue #5")));
-    }
+/// Loads and runs a scenario file.
+pub fn run_file(path: &Path) -> Result<RunReport, ScenarioError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ScenarioError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let scenario = parse(&text, path)?;
+    Ok(run(&scenario))
 }

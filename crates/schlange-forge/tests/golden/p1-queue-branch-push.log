@@ -1,0 +1,30 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:00:00  action    #2 opened by bot on main, files: b.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  ci        #2 check `quick` completed on bba8845: success
++0:01:00  webhook   #1 check `quick` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:01:00  reply     car 2 built at ecd3e04, draft #1000
++0:01:00  webhook   #2 check `quick` completed on bba8845: success
++0:01:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #1 #2 (checks #2)
++0:01:00  reply     car 4 built at 405b1bd, draft #1001
++0:04:00  action    foreign push to mergify/merge-queue/c0afd78982: 5fad80a
++0:04:00  webhook   push to mergify/merge-queue/c0afd78982
++0:04:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:04:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
++0:04:00  decision  checks of #2 ended, stays queued: BATCH_AHEAD_BRANCH_EDITED: someone else pushed to `mergify/merge-queue/c0afd78982` ahead
++0:04:00  decision  dequeue #1 from `default`: DRAFT_PULL_REQUEST_CHANGED: someone else pushed to the queue branch `mergify/merge-queue/c0afd78982`
++0:04:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #2 (checks #2)
++0:04:00  reply     car 5 built at b7d5f0b, draft #1002
++0:11:00  ci        #1000 check `full` completed on ecd3e04: success
++0:11:00  ci        #1001 check `full` completed on 405b1bd: success
++0:14:00  ci        #1000 check `full` completed on 5fad80a: success
++0:14:00  ci        #1002 check `full` completed on b7d5f0b: success
++0:14:00  webhook   #1002 check `full` completed on b7d5f0b: success
++0:14:00  decision  read #2 #1002 main mergify/merge-queue/f2f5067500 before acting
++0:14:00  decision  land car 5: squash #2 onto main if it is still 5a8b940
++0:14:00  reply     car 5 landed #2 as bba8845
++0:14:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1002
++0:14:00  decision  #2 merged as bba8845

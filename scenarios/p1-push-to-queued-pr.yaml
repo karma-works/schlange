@@ -1,0 +1,35 @@
+# A push to a queued pull request (MQ-07, queue-landing `head-bound`): every decision is bound
+# to the head SHA it was queued with. #1 is pushed while its car runs: it leaves the queue with
+# PULL_REQUEST_UPDATED, the car behind it is discarded (PR_AHEAD_DEQUEUED) and rebuilt. The new
+# head passes its quick check, the `queue` action queues it again, and it lands with the new
+# content, never with the old one.
+name: p1-push-to-queued-pr
+description: A pushed pull request leaves the queue; its new head is queued and lands.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "first version\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, push: { pr: 1, files: { a.txt: "second version\n" } } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [2, 1]
+expect_base:
+  a.txt: "second version\n"
+expect_log:
+  - "dequeue #1 from `default`: PULL_REQUEST_UPDATED"
+  - "checks of #2 ended, stays queued: PR_AHEAD_DEQUEUED"

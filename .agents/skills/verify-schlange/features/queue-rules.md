@@ -3,7 +3,7 @@ id: queue-rules
 title: "Queue rules (`queue_rules`)"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "config:queue_rules"
   - "config:queue_rules.name"
@@ -21,9 +21,12 @@ queue conditions it meets, unless the `queue` action names one. Arztagent has ex
 
 ## Sub-features
 
-- `list`: up to 50 queues; their order is the order of selection.
-- `name`: unique name that actions and commands refer to.
-- `selection`: without a name, the first queue that matches.
+- `list`: built. Every queue rule with its options is parsed (`crates/schlange-config/src/rules.rs`): conditions, `merge_method`, `batch_size`, `batch_max_wait_time`, `checks_timeout`, `batch_max_failure_resolution_attempts`, `queue_branch_prefix`, `allow_queue_branch_edit`, `max_checks_retries`, and `merge_queue.*` (`max_parallel_checks`, `mode`, `reset_on_external_merge`, `skip_intermediate_results`).
+- `name`: built.
+- `selection`: built. Without a name, the first queue whose `queue_conditions` hold.
+- `order`: built. One queue per base branch; entries of earlier queue rules go first, a batch never mixes queue rules. Mergify's exact ordering across queue rules is not verified.
+- `retarget`: built. A pull request whose base branch changes leaves with `BASE_BRANCH_CHANGED` (MQ-10).
+- `config-from-base`: missing (the simulation uses one fixed configuration, MQ-19).
 
 ## How to get to it (user POV)
 
@@ -35,9 +38,10 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. The simulation reads `queue_rules` and evaluates the `queue_conditions` of queue `default`.
-- **Planned.** The queue itself is a placeholder in phase 0.
+- **Arztagent's queue.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Pull requests #1, #3, #6, #9 are queued into `default` and land (`#3 merged as …`); the others never enter. Exit 0.
+- **Options.** `cargo test -p schlange-config --lib rules` parses Arztagent's queue options and every default.
 
 ## Gotchas
 
 - When a pull request's base changes, it must leave the queue and be evaluated again (MQ-10).
+- Several queue rules share one queue per base branch in Schlange; whether Mergify orders them by rule order exactly like this is not verified (priorities are `queue-priority`, missing).

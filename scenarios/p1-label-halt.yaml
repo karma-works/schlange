@@ -1,0 +1,34 @@
+# Label `halt` during the queue's CI (MQ-11, queue-two-step `dequeue`), with Arztagent's
+# configuration: queue_conditions are evaluated continuously, so the label removes #1 from the
+# queue while its draft pull request runs the full suite. The batch is rebuilt without it and
+# #2 lands alone. Removing the label later queues #1 again and it lands.
+name: p1-label-halt
+description: Label halt during the queue's CI dequeues; removing it queues the pull request again.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: [backend/a.py] }
+  - { number: 2, author: arztagent-bot, files: [backend/b.py] }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 11m, label: { pr: 1, name: halt } }
+  - { at: 1h, unlabel: { pr: 1, name: halt } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [2, 1]
+expect_log:
+  - "dequeue #1 from `default`: PR_DEQUEUED"
+  - "checks of #2 ended, stays queued: BATCH_REBUILT"

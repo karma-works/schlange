@@ -1,0 +1,28 @@
+# Checks in place (queue-draft-pr `in-place`): all five conditions hold (max_parallel_checks 1,
+# serial, batch size 1, no retries, single-step CI), so an up-to-date pull request is checked
+# on its own branch with no queue branch and no draft pull request. #2 is behind main once #1
+# has landed; Mergify would update it in place, Schlange tests it through a draft pull request
+# instead (documented deviation).
+name: p1-in-place
+description: Single-step CI with one parallel check checks an up-to-date pull request in place.
+config: configs/in-place.yml
+
+ci:
+  - check: ci
+    duration: 2m
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_log:
+  - "car 2: check #1 in place"
+  - "on mergify/merge-queue/"
