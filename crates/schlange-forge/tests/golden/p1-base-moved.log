@@ -19,9 +19,9 @@
 +0:05:00  action    direct push to main: 02fd98e
 +0:05:00  webhook   push to main
 +0:05:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
-+0:05:00  decision  checks of #1 ended, stays queued: MERGE_QUEUE_RESET (code assumed): the base branch moved outside the queue (5a8b940 → 02fd98e)
++0:05:00  decision  checks of #1 ended, stays queued: MERGE_QUEUE_RESET: the base branch moved outside the queue (5a8b940 → 02fd98e)
 +0:05:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
-+0:05:00  decision  checks of #2 ended, stays queued: MERGE_QUEUE_RESET (code assumed): the base branch moved outside the queue (5a8b940 → 02fd98e)
++0:05:00  decision  checks of #2 ended, stays queued: MERGE_QUEUE_RESET: the base branch moved outside the queue (5a8b940 → 02fd98e)
 +0:05:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 02fd98e + #1 (checks #1)
 +0:05:00  reply     car 5 built at e8df987, draft #1002
 +0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.

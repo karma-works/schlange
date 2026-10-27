@@ -232,7 +232,8 @@ pub fn closing_count(state: &State, base: &str) -> usize {
 
 /// Whether a pending retry still waits for the close of the attempt it replaces.
 pub fn retry_waits_for_close(state: &State, car: &Car) -> bool {
-    car.replaces.is_some_and(|old| state.closing.contains_key(&old))
+    car.replaces
+        .is_some_and(|old| state.closing.contains_key(&old))
 }
 
 /// Closes a car's draft and deletes its branch. The slot stays taken until the forge
@@ -342,31 +343,29 @@ pub(crate) fn discard_containing(
     };
     let car = &train.cars[idx];
     // The batch is rebuilt without the pull request when others stay in it; the cars behind
-    // were tested on top of the old batch.
-    let rebuilt = car.own.contains(&number) && car.own.len() > 1;
+    // were tested on top of the old batch. When the pull request is not one of the first
+    // removed car's own (it was ahead of it: in an earlier car, or landing), that car lost a
+    // pull request ahead.
+    let own = car.own.contains(&number);
+    let rebuilt = own && car.own.len() > 1;
+    let ahead = DequeueReason::new(
+        code::PR_AHEAD_DEQUEUED,
+        format!("#{number} ahead in the queue left it"),
+    );
     let behind = if rebuilt {
-        DequeueReason::assumed(
+        DequeueReason::new(
             code::BATCH_AHEAD_REBUILT,
             format!("the batch ahead was rebuilt without #{number}"),
         )
     } else {
-        DequeueReason::new(
-            code::PR_AHEAD_DEQUEUED,
-            format!("#{number} ahead in the queue left it"),
-        )
+        ahead.clone()
     };
-    drop_cars_from(
-        state,
-        base,
-        idx,
-        Some(DequeueReason::new(
-            code::BATCH_REBUILT,
-            format!("#{number} left this batch"),
-        )),
-        Some(behind),
-        &[number],
-        out,
-    );
+    let first = if own {
+        DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left this batch"))
+    } else {
+        ahead
+    };
+    drop_cars_from(state, base, idx, Some(first), Some(behind), &[number], out);
 }
 
 /// Discards every car and a bisection; every pull request waits again.
@@ -632,9 +631,6 @@ pub(crate) fn landed(
             }
         }
         Some(err) => {
-            for n in rest {
-                requeue(state, n, None, out);
-            }
             let reason = match err {
                 LandError::BaseMoved { actual } => {
                     if let Some(t) = state.trains.get_mut(&base) {
@@ -663,22 +659,34 @@ pub(crate) fn landed(
                             out,
                         );
                     }
-                    DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left the queue"))
+                    DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left this batch"))
                 }
                 LandError::Conflict { number } => {
-                    dequeue(
-                        state,
-                        rules,
-                        *number,
+                    // A car tested on exactly this base cannot conflict with it; after an
+                    // external commit that `reset_on_external_merge: never` did not retest, the
+                    // conflict is one with the base branch.
+                    let reason = if c.drifted {
+                        DequeueReason::new(
+                            code::CONFLICT_WITH_BASE_BRANCH,
+                            "the pull request no longer merges onto the base branch, which moved \
+                             outside the queue (reset_on_external_merge: never)",
+                        )
+                    } else {
                         DequeueReason::new(
                             code::PR_UNEXPECTEDLY_FAILED_TO_MERGE,
                             "the squash merge did not apply",
-                        ),
-                        out,
-                    );
-                    DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left the queue"))
+                        )
+                    };
+                    dequeue(state, rules, *number, reason, out);
+                    DequeueReason::new(code::BATCH_REBUILT, format!("#{number} left this batch"))
                 }
             };
+            // The car's own pull requests that did not land wait again, with the reason; the
+            // cars behind were discarded with them (`PR_AHEAD_DEQUEUED` when a pull request
+            // ahead of them left).
+            for n in rest {
+                requeue(state, n, Some(reason.clone()), out);
+            }
             reset(state, &base, reason, out);
         }
     }
@@ -688,7 +696,7 @@ fn halt(state: &mut State, base: &str, reason: String, out: &mut Vec<Decision>) 
     reset(
         state,
         base,
-        DequeueReason::new(code::MERGE_QUEUE_RESET, "the queue halted"),
+        DequeueReason::assumed(code::MERGE_QUEUE_RESET, "the queue halted"),
         out,
     );
     if let Some(t) = state.trains.get_mut(base) {
@@ -1240,7 +1248,7 @@ fn retry(state: &mut State, rules: &Rules, base: &str, text: &str, out: &mut Vec
             out.push(Decision::ChecksEnded {
                 number: n,
                 queue: e.queue.clone(),
-                reason: DequeueReason::assumed(
+                reason: DequeueReason::new(
                     code::CHECKS_RETRIED,
                     format!("retry {} of {max}: {text}", old.attempt + 1),
                 ),
@@ -1482,7 +1490,7 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
                 reset(
                     state,
                     base,
-                    DequeueReason::assumed(
+                    DequeueReason::new(
                         code::MERGE_QUEUE_RESET,
                         format!(
                             "the base branch moved outside the queue ({} → {})",
@@ -1529,7 +1537,7 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
             c.started = now;
             c.status = CarStatus::Running;
             c.measured = true;
-            let reason = DequeueReason::assumed(
+            let reason = DequeueReason::new(
                 code::BATCH_AHEAD_BRANCH_EDITED,
                 format!("`{branch}` ahead was edited; the batch is rebuilt"),
             );
@@ -1544,14 +1552,17 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
             );
             continue;
         }
+        // Without `allow_queue_branch_edit` the edit is a failure of the batch: every pull
+        // request embarked in the branch leaves (docs: queue rules, allow_queue_branch_edit),
+        // also those ahead that the branch carries; the cars behind lost pull requests ahead.
         drop_cars_from(
             state,
             base,
             i,
             None,
             Some(DequeueReason::new(
-                code::BATCH_AHEAD_BRANCH_EDITED,
-                format!("someone else pushed to `{branch}` ahead"),
+                code::PR_AHEAD_DEQUEUED,
+                format!("someone else pushed to `{branch}` ahead; its pull requests left"),
             )),
             &[],
             out,
@@ -1559,7 +1570,8 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
         if car.test.is_some() {
             bisect::abort(state, base, None, &[], out);
         }
-        for n in car.own {
+        let embarked: Vec<u64> = car.prs.iter().map(|p| p.number).collect();
+        for n in embarked {
             dequeue(
                 state,
                 rules,
@@ -1571,6 +1583,45 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
                 out,
             );
         }
+    }
+}
+
+/// Someone closed a car's draft pull request (`BATCH_PULL_REQUEST_CLOSED`): its checks cannot
+/// finish. The car and the cars behind it are torn down; the pull requests stay queued and get
+/// a new car (that they stay queued is our choice: nothing about them failed).
+fn closed_drafts(state: &mut State, base: &str, out: &mut Vec<Decision>) {
+    loop {
+        let train = &state.trains[base];
+        let closed = train.cars.iter().position(|c| {
+            !c.in_place
+                && !matches!(c.status, CarStatus::Building { .. })
+                && c.draft
+                    .and_then(|d| state.pull_requests.get(&d))
+                    .is_some_and(|d| d.closed && !d.merged)
+        });
+        let Some(i) = closed else { break };
+        let car = train.cars[i].clone();
+        let at = car.draft.map(|d| format!("#{d}")).unwrap_or_default();
+        let reason = DequeueReason::new(
+            code::BATCH_PULL_REQUEST_CLOSED,
+            format!("the batch pull request {at} was closed outside the queue"),
+        );
+        if car.test.is_some() {
+            bisect::abort(state, base, Some(reason), &[], out);
+            continue;
+        }
+        drop_cars_from(
+            state,
+            base,
+            i,
+            Some(reason),
+            Some(DequeueReason::assumed(
+                code::BATCH_AHEAD_REBUILT,
+                format!("the batch pull request {at} ahead was closed; the batch is rebuilt"),
+            )),
+            &[],
+            out,
+        );
     }
 }
 
@@ -1657,6 +1708,7 @@ pub fn process_trains(
     let bases: Vec<String> = state.trains.keys().cloned().collect();
     for base in bases {
         base_and_foreign_pushes(state, rules, &base, out);
+        closed_drafts(state, &base, out);
         if state.trains[&base].halted.is_some() {
             continue;
         }

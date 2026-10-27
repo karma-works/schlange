@@ -1,8 +1,14 @@
 //! Why a pull request's queue checks ended, with Mergify's codes (`queue-dequeue-reason`).
 //!
 //! The codes are the schema's enum. The mapping from a situation to a code is ours, from the
-//! public documentation. Where the documentation does not say which code a path uses, the
-//! reason is marked `assumed` and the feature file `queue-dequeue-reasons.md` lists it.
+//! public documentation. A reason is *not* `assumed` when the documentation names the code for
+//! that path (`checks-failed`, `checks-timeout`, `checks-interrupted`,
+//! `batch-max-failure-resolution-attempts`, `dropped-by-bisection-elimination`) or when the
+//! code's own name states exactly that path (`CHECKS_RETRIED` for a retry, `MERGE_QUEUE_RESET`
+//! for a reset after an external merge, `PR_AHEAD_DEQUEUED` for a car that lost a pull request
+//! ahead, …). Where we picked the closest code for a path the name does not state (a closed
+//! pull request as `PR_DEQUEUED`, a halt as `MERGE_QUEUE_RESET`), the reason is `assumed` and the
+//! feature file `queue-dequeue-reasons.md` lists it.
 
 use serde::{Deserialize, Deserializer, Serialize};
 

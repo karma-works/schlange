@@ -16,7 +16,7 @@
 +0:11:00  webhook   timer
 +0:11:00  decision  read #1 #1000 mergify/merge-queue/c0afd78982 before acting
 +0:11:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
-+0:11:00  decision  checks of #1 ended, stays queued: CHECKS_RETRIED (code assumed): retry 1 of 1: checks did not pass within 600s; still running: [full]; never reported: []
++0:11:00  decision  checks of #1 ended, stays queued: CHECKS_RETRIED: retry 1 of 1: checks did not pass within 600s; still running: [full]; never reported: []
 +0:11:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
 +0:11:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #1 (checks #1)
 +0:11:00  reply     car 5 built at fbda876, draft #1001

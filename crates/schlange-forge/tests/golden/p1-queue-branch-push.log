@@ -20,7 +20,7 @@
 +0:04:00  webhook   push to mergify/merge-queue/c0afd78982
 +0:04:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
 +0:04:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
-+0:04:00  decision  checks of #2 ended, stays queued: BATCH_AHEAD_BRANCH_EDITED: someone else pushed to `mergify/merge-queue/c0afd78982` ahead
++0:04:00  decision  checks of #2 ended, stays queued: PR_AHEAD_DEQUEUED: someone else pushed to `mergify/merge-queue/c0afd78982` ahead; its pull requests left
 +0:04:00  decision  dequeue #1 from `default`: DRAFT_PULL_REQUEST_CHANGED: someone else pushed to the queue branch `mergify/merge-queue/c0afd78982`
 +0:04:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #2 (checks #2)
 +0:04:00  reply     car 5 built at b7d5f0b, draft #1002

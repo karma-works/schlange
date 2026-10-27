@@ -20,7 +20,7 @@ pub enum Conclusion {
     Stale,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     pub name: String,
     /// Slug of the app that published the run (`github-actions`); `None` if unknown.
