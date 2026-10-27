@@ -23,7 +23,9 @@ KONZEPT.md's P1 list; added after checking Arztagent's rules.
 
 ## Sub-features
 
-- `parse`: lines `Depends-On: #<n>` in the description, also several; other repositories by URL.
+- `parse`: lines `Depends-On: #<n>` in the description, also several; `owner/repo#<n>` and pull request URLs for other repositories.
+- `limits`: the documented maximum number of dependencies; unresolvable references and owner restrictions are reported, not ignored.
+- `cycles`: mutual dependencies never merge; report them.
 - `hold`: the pull request is not queued while a named pull request is open.
 - `release`: once the last named pull request is merged, the pull request is evaluated again.
 - `closed-dependency`: a named pull request closed without merge keeps holding (report it).

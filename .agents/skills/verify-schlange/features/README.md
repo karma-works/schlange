@@ -64,7 +64,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 
 ## Features
 
-84 files: P1 34, P2 45, P3 5.
+86 files: P1 35, P2 46, P3 5.
 
 | Priority | Feature | Status | Arztagent |
 |---|---|---|---|
@@ -83,6 +83,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [Attribute `files` with regex](conditions-files.md) | missing | yes |
 | P1 | [Condition syntax and combinators](conditions-syntax.md) | partial | yes |
 | P1 | [Dependencies between pull requests (`Depends-On`)](depends-on.md) | missing | yes |
+| P1 | [Built-in protection: configuration changed](merge-protections-builtin.md) | missing | yes |
 | P1 | [Find and load the configuration file](config-file.md) | missing | yes |
 | P1 | [Validate a configuration](config-validation.md) | partial | yes |
 | P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | missing | yes |
@@ -136,7 +137,8 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P2 | [Conflict resolvers (experimental)](conflict-resolvers.md) | missing |  |
 | P2 | [Event log](events.md) | missing |  |
 | P2 | [Merge protections and auto-merge](merge-protections.md) | missing |  |
-| P2 | [Built-in protection: configuration changed](merge-protections-builtin.md) | missing |  |
+| P2 | [Built-in protection `Merge-After`](merge-after.md) | missing |  |
+| P2 | [Direct merge without queue CI](direct-merge.md) | missing |  |
 | P2 | [Bot accounts for merge, draft and update](queue-bot-accounts.md) | missing |  |
 | P2 | [Scheduled freeze](queue-freeze.md) | missing |  |
 | P2 | [Other merge methods](queue-merge-methods-other.md) | missing |  |

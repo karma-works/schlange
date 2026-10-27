@@ -1,0 +1,100 @@
+{
+  "feature": "feature-map",
+  "verdict": "deviating",
+  "findings": [
+    {
+      "subfeature": "Inventory generation and assignment",
+      "verdict": "conformant",
+      "evidence": "`cargo run -q -p inventory -- --check` reports the inventory up to date; `cargo test -p schlange-config --test coverage` passes all 7 tests, including exact-one-feature assignment.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "Direct Merge",
+      "verdict": "missing",
+      "evidence": "`.research/mergify/merge-queue_direct-merge.md` documents automatic merging without queue CI when eligible. No feature file describes this behavior; `queue-draft-pr.md:23` describes the alternative path inaccurately.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "Merge-After protection",
+      "verdict": "missing",
+      "evidence": "`.research/mergify/merge-protections_builtin.md`, “Merge-After,” documents an automatic PR-body protection. No feature file covers it.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "merge-protections-builtin",
+      "verdict": "deviating",
+      "evidence": "`merge-protections-builtin.md:4-5` marks Configuration Changed P2 and `arztagent: false`. The pinned built-in-protections documentation says it applies automatically; Arztagent changes `.mergify.yml` through PRs (`PLAN-MERGIFY.md:197-252`). Its behavior is also barely described in `merge-protections-builtin.md:17-26`.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "queue-draft-pr",
+      "verdict": "deviating",
+      "evidence": "`queue-draft-pr.md:25-31` says an up-to-date single PR is tested in place by default. `.research/mergify/merge-queue_rules.md`, `allow_inplace_checks`, requires serial mode, one parallel check, batch size 1, no retries and single-step CI. Arztagent has batch size 5 and two-step CI.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "depends-on",
+      "verdict": "deviating",
+      "evidence": "`depends-on.md:24-29` omits `org/repo#123`, unresolved references, owner restrictions, cycles and the 50-dependency limit documented in `.research/mergify/merge-protections_builtin.md`, “Depends-On.”",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "MQ case coverage",
+      "verdict": "deviating",
+      "evidence": "`cargo test --workspace` and `sim run scenarios/p0-queue-conditions.yaml` pass, but the scenario reports I0–I5 `not_checked` and says queue PRs, merging and dequeue codes are placeholders. Most named MQ cases have no corresponding test or scenario.",
+      "severity": "major"
+    }
+  ],
+  "missing_tests": [
+    "MQ-01",
+    "MQ-02",
+    "MQ-03",
+    "MQ-04",
+    "MQ-05",
+    "MQ-06",
+    "MQ-07",
+    "MQ-08",
+    "MQ-10",
+    "MQ-13",
+    "MQ-15",
+    "MQ-18",
+    "MQ-19",
+    "MQ-20",
+    "MQ-21",
+    "MQ-22",
+    "MQ-23",
+    "MQ-24",
+    "MQ-25",
+    "MQ-26",
+    "MQ-27",
+    "MQ-28",
+    "MQ-29",
+    "MQ-30",
+    "MQ-31",
+    "MQ-32",
+    "MQ-33",
+    "MQ-34",
+    "MQ-35",
+    "MQ-36",
+    "MQ-37",
+    "MQ-38",
+    "MQ-39",
+    "MQ-40",
+    "MQ-41",
+    "MQ-42",
+    "MQ-43",
+    "MQ-44",
+    "MQ-45",
+    "MQ-46",
+    "MQ-47",
+    "MQ-48",
+    "MQ-49",
+    "MQ-50",
+    "MQ-51",
+    "MQ-52",
+    "MQ-53"
+  ],
+  "clean_room_ok": true,
+  "summary": "All 760 generated entries are assigned and the requested tests, scenario and configuration validation pass. The map still omits two documented behaviors, misclassifies an automatic Arztagent protection, and misstates when in-place checks occur. No copied Mergify prose was found in tracked files.",
+  "commit": "4bf50c9fa1cb774870788564aa98114d384d9bdc"
+}

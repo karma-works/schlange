@@ -20,15 +20,17 @@ source: "https://docs.mergify.com/merge-queue/draft-pull-requests"
 
 # Queue pull requests as drafts on `mergify/merge-queue/`
 
-For a batch or an outdated pull request the queue creates a temporary branch with a fixed prefix
-and a draft pull request on it. That pull request triggers the normal pull request CI. A single
-pull request that is already up to date may be tested in place.
+The queue tests on a temporary branch with a fixed prefix and a draft pull request on it, which
+triggers the normal pull request CI. Checking a pull request in place (on its own branch, without
+a draft) is not an option the user sets: it is computed, and happens only when the queue checks
+one pull request at a time in serial mode without retries and with single-step CI. Arztagent
+(batches of 5, two-step CI) therefore always gets draft pull requests.
 
 ## Sub-features
 
 - `prefix`: default `mergify/merge-queue/`, followed by a random hex part.
 - `draft-pr`: title and body refer to the contained pull requests.
-- `in-place`: on by default; an up-to-date single pull request is tested without a queue pull request.
+- `in-place`: computed, not configured: only when `max_parallel_checks` is 1, mode `serial`, batch size 1 (the max of a range), `max_checks_retries` 0 and `merge_conditions` empty or equal to `queue_conditions`. The option `allow_inplace_checks` is deprecated.
 - `cleanup`: branch and pull request disappear after merge or abort (I3).
 
 ## How to get to it (user POV)
