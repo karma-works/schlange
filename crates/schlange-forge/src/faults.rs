@@ -299,7 +299,10 @@ impl Wire {
 
     /// Carries out a decision on the forge and returns the replies due now.
     pub fn execute<G: GitStore>(&mut self, forge: &mut SimForge<G>, d: &Decision) -> Vec<Event> {
-        if self.faults.is_none() || !is_side_effect(d) {
+        // An in-place check calls nothing on a real forge (the pull request's own CI is
+        // watched); the simulated forge only records it for the checker, so it cannot fail.
+        if self.faults.is_none() || !is_side_effect(d) || matches!(d, Decision::CheckInPlace { .. })
+        {
             return forge.execute(d);
         }
         if let Decision::Land { base_branch, .. } = d
