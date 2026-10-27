@@ -13,12 +13,13 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 |---|---|
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map |
 | `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation |
-| `crates/schlange-forge` | `Forge` trait, simulated forge with virtual clock, scenario runner |
+| `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange` | the binary and its CLI |
 | `tools/inventory` | builds the feature inventory from the pinned Mergify sources |
 | `tools/fetch-mergify-sources`, `tools/mergify-sources.lock` | downloads and pins the sources |
 | `.agents/skills/verify-schlange/` | verification skill; `features/` is the feature map |
-| `scenarios/` | scenarios for `schlange sim run` |
+| `scenarios/` | scenarios for `schlange sim run`; `scenarios/configs/` holds their configurations |
+| `docs/mq-coverage.md` | which MQ case has which test |
 | `scripts/critic.sh` | independent critic (Codex CLI) |
 | `.critic/` | critic verdicts, checked in |
 
@@ -55,10 +56,13 @@ cargo test --workspace                      # includes the coverage test and gol
 cargo run -q -p inventory -- --check        # inventory matches the pinned sources
 cargo run -q -p schlange -- config validate <file>
 cargo run -q -p schlange -- sim run scenarios/p0-queue-conditions.yaml
+SCHLANGE_PBT_CASES=2000 cargo test -p schlange-forge --test properties   # long property run
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 
-Golden files: `UPDATE_GOLDEN=1 cargo test -p schlange-config --test golden`, then review the diff.
+Golden files: `UPDATE_GOLDEN=1 cargo test -p schlange-config --test golden` (validator) and
+`UPDATE_GOLDEN=1 cargo test -p schlange-forge --test scenarios` (scenario event logs), then
+review the diff.
 
 ## Exit codes of `schlange`
 

@@ -3,7 +3,7 @@ id: queue-landing
 title: "Landing as compare-and-swap with evidence"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory: []
 problems:
   - "MQ-02"
@@ -12,6 +12,10 @@ problems:
   - "MQ-31"
   - "MQ-32"
   - "MQ-35"
+  - "MQ-07"
+  - "MQ-11"
+  - "MQ-29"
+  - "MQ-30"
 source: "https://docs.mergify.com/merge-queue/lifecycle"
 ---
 
@@ -23,11 +27,14 @@ journal entry precedes every side effect.
 
 ## Sub-features
 
-- `cas`: expected old SHA of the base, never `force`.
-- `head-bound`: every transition is bound to the head SHA (I1).
-- `tree-check`: tree of the landed commit = tested tree (I0), otherwise halt.
-- `journal`: restart after a crash from journal plus forge state.
-- `unclear-error`: after a 5xx or timeout, read the state first, never land twice.
+- `fresh-read`: built. A green front car first asks for a fresh read (`Refresh`) of its pull requests, its draft, the base and its branch; only if queue and merge conditions still hold on that read does the engine decide `Land` (MQ-11: a lost label webhook cannot let a pull request land).
+- `cas`: built. `Land` carries the expected base SHA; the forge squashes each pull request and moves the base by compare-and-swap, never forced. A moved base refuses the landing (`BaseMoved`) and resets the queue.
+- `head-bound`: built. Every queue entry and car is bound to the head SHA it was queued and tested with; a different head dequeues (`PULL_REQUEST_UPDATED`) and the forge refuses to land a head that is not the tested one (I1).
+- `tree-check`: built. After landing, the engine compares the landed tree with the tested tree; on a difference it halts the queue of that base (`Halt`), MQ-02. The invariant checker independently checks every base commit against the tested prefix trees (I0).
+- `webhooks-are-hints`: built in the simulation. A delivered webhook only names a pull request or branch; the runner reads the truth and gives it to the engine. Faults drop, duplicate and delay deliveries; a periodic reconciliation reads everything (MQ-29, MQ-30).
+- `journal`, `crash-restart`: missing (no persistence yet).
+- `unclear-error`: missing (the simulated forge never lies about a write; 5xx after a successful write is not injected yet, MQ-35).
+- `one-writer`: by construction in the simulation (one engine per run); leases and fencing are missing (MQ-32).
 
 ## How to get to it (user POV)
 
@@ -39,9 +46,12 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- **Planned.** Deterministic simulation with a crash at every side effect; model checking.
+- **Every scenario.** `target/release/schlange sim run scenarios/p1-base-moved.yaml` shows `read #1 #1002 main mergify/merge-queue/… before acting`, then `land car 5: squash #1 onto main if it is still 02fd98e`, `car 5 landed #1 as …`; the report lists `I0  checked`, `I1  checked` and `I5  checked` with the disturbed run's dropped and duplicated deliveries.
+- **Refusals and halt.** `cargo test -p schlange-core --test queue` (`landed_tree_differs_from_tested_tree_halts_the_queue`, `landing_refused_because_the_base_moved_resets_the_queue`, `landing_refused_because_the_head_moved_dequeues`, `a_stale_green_is_rechecked_before_landing`, `a_label_seen_only_in_the_fresh_read_prevents_landing`).
+- **Random.** `cargo test -p schlange-forge --test properties` (I0 and I1 after every step).
 
 ## Gotchas
 
 - No Mergify configuration path, but the core of the drop-in promise.
+- The tree check compares the last landed commit with the car's tree. Commits inside a batch are checked by the invariant checker against the car's prefix trees, not by the engine.
+- A halted queue keeps its pull requests queued; I2 reports them as held by the halt, with the reason.

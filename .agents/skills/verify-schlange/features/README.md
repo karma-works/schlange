@@ -74,7 +74,7 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [`schlange pr explain`](S-EXPLAIN.md) | missing |  |
 | P1 | [Shadow mode](S-SHADOW.md) | missing |  |
 | P1 | [Scenarios in the simulated forge](S-SIM.md) | partial |  |
-| P1 | [Action `queue`](action-queue.md) | missing | yes |
+| P1 | [Action `queue`](action-queue.md) | partial | yes |
 | P1 | [Commands `queue`, `dequeue`, `refresh`](commands.md) | missing | yes |
 | P1 | [Who may run commands (`commands_restrictions`)](commands-restrictions.md) | missing | yes |
 | P1 | [Attributes `base`, `draft`, `label`, `author`, `sender`](conditions-basic.md) | missing | yes |
@@ -87,21 +87,21 @@ evidence and the critic's verdict (`AGENTS.md`).
 | P1 | [Validate a configuration](config-validation.md) | partial | yes |
 | P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | missing | yes |
 | P1 | [Workflow rules (`pull_request_rules`)](pull-request-rules.md) | missing | yes |
-| P1 | [Batches (`batch_size`, `batch_max_wait_time`)](queue-batch.md) | missing | yes |
-| P1 | [Bisection of red batches](queue-bisection.md) | missing | yes |
-| P1 | [Foreign pushes to queue branches](queue-branch-edit.md) | missing | yes |
+| P1 | [Batches (`batch_size`, `batch_max_wait_time`)](queue-batch.md) | partial | yes |
+| P1 | [Bisection of red batches](queue-bisection.md) | partial | yes |
+| P1 | [Foreign pushes to queue branches](queue-branch-edit.md) | partial | yes |
 | P1 | [Required checks from branch protection and rulesets](queue-branch-protection.md) | missing | yes |
-| P1 | [Check timeout and retries (defaults)](queue-checks-timeout.md) | missing | yes |
+| P1 | [Check timeout and retries (defaults)](queue-checks-timeout.md) | partial | yes |
 | P1 | [Commit message on merge](queue-commit-message.md) | missing | yes |
-| P1 | [Conflicts and a moving base](queue-conflicts.md) | missing | yes |
-| P1 | [Dequeue with a reason](queue-dequeue-reasons.md) | missing | yes |
+| P1 | [Conflicts and a moving base](queue-conflicts.md) | partial | yes |
+| P1 | [Dequeue with a reason](queue-dequeue-reasons.md) | partial | yes |
 | P1 | [Queue pull requests as drafts on `mergify/merge-queue/`](queue-draft-pr.md) | missing | yes |
 | P1 | [Queue labels and status comments](queue-labels-comments.md) | missing | yes |
-| P1 | [Landing as compare-and-swap with evidence](queue-landing.md) | missing | yes |
-| P1 | [Merge method `squash`](queue-merge-method-squash.md) | missing | yes |
-| P1 | [Queue rules (`queue_rules`)](queue-rules.md) | missing | yes |
-| P1 | [Serial, cumulative speculation](queue-speculation.md) | missing | yes |
-| P1 | [Two-step CI (`queue_conditions` and `merge_conditions`)](queue-two-step.md) | missing | yes |
+| P1 | [Landing as compare-and-swap with evidence](queue-landing.md) | partial | yes |
+| P1 | [Merge method `squash`](queue-merge-method-squash.md) | partial | yes |
+| P1 | [Queue rules (`queue_rules`)](queue-rules.md) | partial | yes |
+| P1 | [Serial, cumulative speculation](queue-speculation.md) | partial | yes |
+| P1 | [Two-step CI (`queue_conditions` and `merge_conditions`)](queue-two-step.md) | partial | yes |
 | P2 | [MCP server](S-MCP.md) | missing |  |
 | P2 | [`schlange config simulate`](S-SIMULATE.md) | missing |  |
 | P2 | [Action `assign`](action-assign.md) | missing |  |

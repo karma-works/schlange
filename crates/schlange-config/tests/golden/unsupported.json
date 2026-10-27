@@ -133,42 +133,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/queue_rules",
-      "line": 5,
-      "column": 1,
-      "message": "`config:queue_rules` is not supported by Schlange yet (feature queue-rules, P1, missing)",
-      "feature": "queue-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/merge_conditions",
-      "line": 8,
-      "column": 5,
-      "message": "`config:queue_rules.merge_conditions` is not supported by Schlange yet (feature queue-two-step, P1, missing)",
-      "feature": "queue-two-step"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/merge_method",
-      "line": 7,
-      "column": 5,
-      "message": "`config:queue_rules.merge_method` is not supported by Schlange yet (feature queue-merge-method-squash, P1, missing)",
-      "feature": "queue-merge-method-squash"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/name",
-      "line": 6,
-      "column": 5,
-      "message": "`config:queue_rules.name` is not supported by Schlange yet (feature queue-rules, P1, missing)",
-      "feature": "queue-rules"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/shared",
       "line": 2,
       "column": 1,
@@ -249,20 +213,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `merge_queue.max_parallel_checks` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
-      "feature": "queue-speculation"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.mode` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
-      "feature": "queue-speculation"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `merge_queue.queue_controls_comment` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
       "feature": "queue-labels-comments"
     },
@@ -272,20 +222,6 @@
       "pointer": "",
       "message": "default `merge_queue.queued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
       "feature": "queue-labels-comments"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.reset_on_external_merge` is in effect but not supported by Schlange yet (feature queue-conflicts, P1, missing)",
-      "feature": "queue-conflicts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `merge_queue.skip_intermediate_results` is in effect but not supported by Schlange yet (feature queue-speculation, P1, missing)",
-      "feature": "queue-speculation"
     },
     {
       "stage": "support",
@@ -319,43 +255,8 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `queue_rules.allow_queue_branch_edit` is in effect but not supported by Schlange yet (feature queue-branch-edit, P1, missing)",
-      "feature": "queue-branch-edit"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.batch_max_wait_time` is in effect but not supported by Schlange yet (feature queue-batch, P1, missing)",
-      "feature": "queue-batch"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.batch_size` is in effect but not supported by Schlange yet (feature queue-batch, P1, missing)",
-      "feature": "queue-batch"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing)",
       "feature": "queue-branch-protection"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.checks_timeout` is in effect but not supported by Schlange yet (feature queue-checks-timeout, P1, missing)",
-      "feature": "queue-checks-timeout"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.max_checks_retries` is in effect but not supported by Schlange yet (feature queue-checks-timeout, P1, missing)",
-      "feature": "queue-checks-timeout"
     },
     {
       "stage": "support",
@@ -500,32 +401,32 @@
       "id": "config:queue_rules",
       "feature": "queue-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules"
     },
     {
       "id": "config:queue_rules.merge_conditions",
       "feature": "queue-two-step",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/merge_conditions"
     },
     {
       "id": "config:queue_rules.merge_method",
       "feature": "queue-merge-method-squash",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/merge_method"
     },
     {
       "id": "config:queue_rules.name",
       "feature": "queue-rules",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/name"
     },
     {
@@ -610,15 +511,15 @@
       "id": "default:merge_queue.max_parallel_checks",
       "feature": "queue-speculation",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.mode",
       "feature": "queue-speculation",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.queue_controls_comment",
@@ -638,15 +539,15 @@
       "id": "default:merge_queue.reset_on_external_merge",
       "feature": "queue-conflicts",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.skip_intermediate_results",
       "feature": "queue-speculation",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.status_comments",
@@ -680,22 +581,22 @@
       "id": "default:queue_rules.allow_queue_branch_edit",
       "feature": "queue-branch-edit",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.batch_max_wait_time",
       "feature": "queue-batch",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.batch_size",
       "feature": "queue-batch",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.branch_protection_injection_mode",
@@ -708,15 +609,15 @@
       "id": "default:queue_rules.checks_timeout",
       "feature": "queue-checks-timeout",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.max_checks_retries",
       "feature": "queue-checks-timeout",
       "priority": "P1",
-      "status": "missing",
-      "supported": false
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.queue_branch_prefix",

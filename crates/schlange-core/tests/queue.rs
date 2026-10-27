@@ -259,6 +259,22 @@ fn the_same_snapshot_twice_changes_nothing() {
 }
 
 #[test]
+fn a_retargeted_pull_request_leaves_its_queue() {
+    // MQ-10: the base branch of a queued pull request changes.
+    let mut dr = Driver::new();
+    dr.queued_car();
+    let mut pr = PullRequest::new(1, "a", "release", "pr-1", "h1");
+    pr.checks = vec![run("quick", "h1", Some(Conclusion::Success), 1)];
+    let d = dr.snapshot(vec![pr], &[]);
+    assert!(
+        d.iter()
+            .any(|d| matches!(d, Decision::Dequeue { reason, .. }
+            if reason.code == Some(code::BASE_BRANCH_CHANGED)))
+    );
+    assert!(d.iter().any(|d| matches!(d, Decision::CloseCar { .. })));
+}
+
+#[test]
 fn branch_names_follow_the_prefix_and_ten_hex() {
     let b = branch_name("mergify/merge-queue/", "main", 7);
     let rest = b.strip_prefix("mergify/merge-queue/").unwrap();

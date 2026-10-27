@@ -3,7 +3,7 @@ id: queue-checks-timeout
 title: "Check timeout and retries (defaults)"
 priority: P1
 arztagent: true
-status: missing
+status: partial
 inventory:
   - "config:queue_rules.checks_timeout"
   - "default:queue_rules.checks_timeout"
@@ -14,6 +14,7 @@ problems:
   - "MQ-38"
   - "MQ-39"
   - "MQ-42"
+  - "MQ-33"
 source: "https://docs.mergify.com/merge-queue/rules"
 ---
 
@@ -25,10 +26,12 @@ retried by default.
 
 ## Sub-features
 
-- `auto`: value from recent run times, with a lower bound; no timeout before enough history.
-- `fixed`: duration as text.
-- `retries`: default 0.
-- `cancelled`: cancelled runs are reported with their own reason.
+- `fixed`: built. A duration (at least 60 s, smaller values are clamped) counted from the car's start; the car fails with `CHECKS_TIMEOUT`; the reason lists the checks still running and the referenced checks that never reported (MQ-37). A batch that times out is split like a red batch.
+- `null`: built (no timeout).
+- `auto`: missing. Schlange keeps no CI history, so `auto` applies no timeout, which is what Mergify does until it has about twenty qualifying runs. After that, Mergify uses the 95th percentile of successful first-attempt runtimes with an undocumented safety margin; not built.
+- `confirm`: built. A red or timed-out verdict is acted on only after a fresh read of the draft pull request; a lost webhook must not dequeue anything (MQ-33). Found by the property test.
+- `retries`: default 0 is the only behaviour; `max_checks_retries > 0` is parsed and ignored.
+- `cancelled`: built. Cancelled runs without a hard failure give `CHECKS_INTERRUPTED`; a failure together with a cancellation gives `CHECKS_FAILED`.
 
 ## How to get to it (user POV)
 
@@ -40,9 +43,11 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
-- **Planned.** Virtual clock: a check never starts → timeout with the list of missing checks.
+- **Hanging merge check.** Run `target/release/schlange sim run scenarios/p1-checks-timeout.yaml`. At +0:11 (10 minutes after the car started) `dequeue #1 … CHECKS_TIMEOUT: checks did not pass within 600s; still running: [full]; never reported: []`; #2 is rebuilt and lands. Exit 0.
+- **Lost webhook does not time out a green car.** `cargo test -p schlange-forge --test regressions lost_webhooks_are_repaired_by_reconciliation`.
 
 ## Gotchas
 
 - Rebuild `auto` only from its public description; compare the values in shadow mode (MQ-38).
+- With `auto` and a check that never reports, the queue waits forever (as Mergify does without history). The property tests therefore generate hanging checks only with a fixed timeout; with `auto` liveness (I2) cannot hold for a hanging CI.
+- A car fails without waiting for the timeout when the merge conditions are false and either no run is pending or a referenced check already failed. A referenced check that has not started yet while others are done counts as "nothing pending" only if no run at all is pending; a CI that creates its runs late could be judged too early (not seen in the simulation, where all runs start with the draft).

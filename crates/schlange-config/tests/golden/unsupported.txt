@@ -4,17 +4,9 @@ unsupported.yml: unsupported[support] feature conditions-basic (P1, missing): at
 unsupported.yml: unsupported[support] feature conditions-checks (P1, missing): attr:check-success (8:5)
 unsupported.yml: unsupported[support] feature config-shared (P2, missing): config:shared (2:1)
 unsupported.yml: unsupported[support] feature pull-request-rules (P1, missing): config:pull_request_rules (14:1), config:pull_request_rules.actions (18:5), config:pull_request_rules.conditions (16:5), config:pull_request_rules.name (15:5)
-unsupported.yml: unsupported[support] feature queue-batch (P1, missing): default:queue_rules.batch_max_wait_time, default:queue_rules.batch_size
-unsupported.yml: unsupported[support] feature queue-branch-edit (P1, missing): default:queue_rules.allow_queue_branch_edit
 unsupported.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
-unsupported.yml: unsupported[support] feature queue-checks-timeout (P1, missing): default:queue_rules.checks_timeout, default:queue_rules.max_checks_retries
-unsupported.yml: unsupported[support] feature queue-conflicts (P1, missing): default:merge_queue.reset_on_external_merge
 unsupported.yml: unsupported[support] feature queue-draft-pr (P1, missing): default:queue_rules.allow_inplace_checks, default:queue_rules.queue_branch_prefix
 unsupported.yml: unsupported[support] feature queue-labels-comments (P1, missing): default:merge_queue.dequeued_label, default:merge_queue.queue_controls_comment, default:merge_queue.queued_label, default:merge_queue.status_comments
-unsupported.yml: unsupported[support] feature queue-merge-method-squash (P1, missing): config:queue_rules.merge_method (7:5)
 unsupported.yml: unsupported[support] feature queue-merge-methods-other (P2, missing): enum:merge_method:rebase (7:5)
 unsupported.yml: unsupported[support] feature queue-priority (P2, missing): config:priority_rules (9:1), config:priority_rules.conditions (11:5), config:priority_rules.name (10:5), config:priority_rules.priority (13:5), default:priority_rules.allow_checks_interruption, enum:priority:high (13:5)
-unsupported.yml: unsupported[support] feature queue-rules (P1, missing): config:queue_rules (5:1), config:queue_rules.name (6:5)
-unsupported.yml: unsupported[support] feature queue-speculation (P1, missing): default:merge_queue.max_parallel_checks, default:merge_queue.mode, default:merge_queue.skip_intermediate_results
-unsupported.yml: unsupported[support] feature queue-two-step (P1, missing): config:queue_rules.merge_conditions (8:5)
-unsupported.yml: valid for Mergify; 48 entries not supported by Schlange yet (--strict makes this exit 2); stages not built yet: semantics
+unsupported.yml: valid for Mergify; 35 entries not supported by Schlange yet (--strict makes this exit 2); stages not built yet: semantics

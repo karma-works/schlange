@@ -309,7 +309,35 @@ fn merge_view(pr: &PullRequest, draft: Option<&PullRequest>, head: &str) -> Pull
 
 #[cfg(test)]
 mod tests {
-    use super::is_queue_branch;
+    use super::{Checker, is_queue_branch};
+    use crate::git::Tree;
+    use crate::sim::SimForge;
+    use schlange_config::rules::Rules;
+    use schlange_core::State;
+
+    #[test]
+    fn an_untested_commit_on_main_violates_i0_and_a_stray_branch_violates_i3() {
+        let rules = Rules::from_yaml("queue_rules:\n  - name: default\n").unwrap();
+        let mut forge = SimForge::new("main", Tree::new(), vec![], 0);
+        let state = State::default();
+        let mut c = Checker::new();
+        c.after_step(&forge, &state, &rules);
+        assert!(!c.violated());
+        let tip = forge.read_branch("main").unwrap();
+        let sneaky = forge.repo.commit(
+            [("x".to_string(), "untested".to_string())].into(),
+            vec![tip.clone()],
+            "sneaky",
+        );
+        forge.repo.update_ref("main", &tip, &sneaky).unwrap();
+        forge
+            .repo
+            .create_ref("mergify/merge-queue/0123456789", &sneaky)
+            .unwrap();
+        c.after_step(&forge, &state, &rules);
+        assert!(!c.results["I0"].violations.is_empty());
+        assert!(!c.results["I3"].violations.is_empty());
+    }
 
     #[test]
     fn strict_queue_branch_pattern() {
