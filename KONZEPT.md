@@ -166,14 +166,29 @@ schlange (ein statisches Binary)
 **Invarianten (werden nach jedem simulierten Schritt geprüft)**
 - **I0:** Jeder Commit auf der Base hat einen Tree, der einem Commit mit grünen Pflicht-Checks
   entspricht, getestet auf der damaligen Base.
-- **I1:** Kein PR landet, dessen Bedingungen zum Landezeitpunkt falsch sind oder dessen Head
-  sich seit dem Test geändert hat.
+  - *Bündel (Mergifys Semantik, nachgetragen):* Bei `squash` ist jeder Commit eines Bündels der
+    getestete Präfix-Tree des Bündel-Branches; Checks liefen nur auf dessen Spitze. Bei
+    Bündelgröße 1 gilt I0 streng pro Commit (der Checker hat dafür einen eigenen Modus).
+  - *„Grün“ ist nie leer:* Nennen die `merge_conditions` keinen Check, muss der Tree trotzdem
+    als Car mit Entwurfs-PR auf dem Queue-Branch (oder in place) bestanden haben, und die
+    Bedingungen müssen dort direkt vor dem Landen gegolten haben.
+  - *`reset_on_external_merge: never`:* Nach einem Fremd-Commit ist der gelandete Commit die
+    getestete Änderung auf dem tatsächlichen Elternteil (Dreiwege-Merge), nicht der getestete
+    Tree selbst; der Nutzer verzichtet damit ausdrücklich aufs Neutesten.
+- **I1:** Kein PR landet, dessen Bedingungen zum Landezeitpunkt falsch sind, dessen Head nicht
+  der beim Bau des Cars aufgezeichnete getestete Head ist, oder der schon gelandet ist (nichts
+  landet zweimal, auch nicht über Abstürze hinweg). Voraussetzung: Der Prüf-Read vor dem Landen
+  ist konsistent und frisch (sonst liest die Engine neu).
 - **I2:** Kein PR geht verloren: Jeder eingereihte PR wird gemerged oder mit Grund ausgetragen
   (Lebendigkeit).
-- **I3:** Nach Ruhe gilt: temporäre Branches = genutzte Branches.
-- **I4:** Laufende Checks ≤ `max_parallel_checks`; Slots werden auf jedem Ausgang frei.
-- **I5:** Mit perfekter und mit gestörter Webhook-Zustellung ist der Endzustand nach dem
-  Abgleich gleich.
+- **I3:** Nach Ruhe gilt: temporäre Branches = genutzte Branches. (Ohne Forge-Fehler auch nach
+  jedem Schritt; mit Forge-Fehlern oder Abstürzen nach jedem Schritt nur: alles auf dem Forge
+  kennt die Engine.)
+- **I4:** Laufende Checks ≤ `max_parallel_checks`; Slots werden auf jedem Ausgang frei. Ein
+  Car zählt, bis der Forge das Schließen bestätigt; CI auf geschlossenen Entwürfen zählt, bis
+  sie abgebrochen ist.
+- **I5:** Mit perfekter und mit gestörter Zustellung (Webhooks, Forge-Antworten, Abstürze) ist
+  der Endzustand nach dem Abgleich gleich, Dequeue-Gründe eingeschlossen.
 
 ## 7. Sprache, Bibliotheken, Container
 

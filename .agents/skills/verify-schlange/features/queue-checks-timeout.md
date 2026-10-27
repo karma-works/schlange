@@ -28,9 +28,10 @@ retried by default.
 
 - `fixed`: built. A duration (at least 60 s, smaller values are clamped) counted from the car's start; the car fails with `CHECKS_TIMEOUT`; the reason lists the checks still running and the referenced checks that never reported (MQ-37). A batch that times out is split like a red batch.
 - `null`: built (no timeout).
-- `auto`: built. No timeout until enough qualifying runs are in the history, then a timeout calibrated from the history of successful first-attempt runtimes. Mergify's safety margin is undocumented, so the exact value can differ.
+- `auto`: built. Per queue and base branch: successful first runs of normal cars in the last seven days (retries, bisection tests and in-place checks do not count); with at least 20 of them the timeout is their weighted 95th percentile (weight halves per day of age) times 1.5, at least 60 s; before that no timeout (documented). The margin and the weighting are ours: Mergify documents neither. Tests: `cargo test -p schlange-core auto_timeout`, `cargo test -p schlange-forge --test regressions checks_timeout_auto`.
+- `never-reported`: built. A check named in the merge conditions that has not reported does not fail the car (MQ-42); the timeout lists it under "never reported" (`cargo test -p schlange-forge --test regressions a_merge_check_that_never_reports_on_the_draft_times_out_naming_it`).
 - `confirm`: built. A red or timed-out verdict is acted on only after a fresh read of the draft pull request; a lost webhook must not dequeue anything (MQ-33). Found by the property test.
-- `retries`: built. With `max_checks_retries > 0` a red car is retried by recreating its draft pull request, up to the limit, before the failure is handled; in-place checks are then off.
+- `retries`: built. With `max_checks_retries > 0` a red front car (failed, timed out or interrupted) is retried on a fresh draft (new branch, new draft pull request), up to the limit, before the failure is handled; its pull requests get `CHECKS_RETRIED` (code assumed) and the cars behind keep running; in-place checks are then off. Bisection tests are not retried (our choice). Test: `cargo test -p schlange-forge --test regressions max_checks_retries_recreates_the_draft`.
 - `cancelled`: built. Cancelled runs without a hard failure give `CHECKS_INTERRUPTED`; a failure together with a cancellation gives `CHECKS_FAILED`.
 
 ## How to get to it (user POV)

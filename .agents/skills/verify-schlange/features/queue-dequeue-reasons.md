@@ -51,6 +51,9 @@ human dequeued it. The code can also be read as a condition attribute.
   | car ahead failed | `BATCH_AHEAD_FAILED` | no |
   | pull request ahead left | `PR_AHEAD_DEQUEUED` | no |
   | another pull request of the same batch left | `BATCH_REBUILT` | no |
+  | the batch ahead was rebuilt without a pull request | `BATCH_AHEAD_REBUILT` *assumed* | no |
+  | its own attributes fail the merge conditions | `PR_DEQUEUED` *assumed* | until the attributes change |
+  | checks failed, retried on a fresh draft | `CHECKS_RETRIED` *assumed* | no |
   | car ahead edited by someone else | `BATCH_AHEAD_BRANCH_EDITED` | no |
   | base moved outside the queue | `MERGE_QUEUE_RESET` *assumed* | no |
   | sent back after a split | `BATCH_AHEAD_FAILED` *assumed* | no |

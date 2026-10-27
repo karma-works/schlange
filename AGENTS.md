@@ -36,7 +36,14 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 2. **Test first.** Before implementing a feature, write its scenario (`scenarios/`) and tests
    from the feature file and the MQ cases it names. Then implement.
 3. **Invariants.** I0–I5 (KONZEPT.md, section 6) must hold after every simulated step once the
-   queue exists. Never weaken an invariant check to make a scenario pass.
+   queue exists. Never weaken an invariant check to make a scenario pass. I0 follows Mergify's
+   batch semantics (each commit of a `squash` batch is a tested prefix tree; checks ran on the
+   batch tip), is strict per commit for batch size 1, never accepts a vacuous "green" (without a
+   named check the conditions must have held on the queue branch's draft), and with
+   `reset_on_external_merge: never` checks the tested change on the actual parent. The
+   engine's `Refresh` reads must be consistent reads in every forge adapter (I1 depends on it).
+   Fault mode (`crates/schlange-forge/src/faults.rs`): forge faults and engine crashes; the state
+   is journaled before every side effect (`schlange_core::journal`).
 4. **Evidence.** A feature counts as working only with evidence from the `verify-schlange`
    skill (`.agents/skills/verify-schlange/SKILL.md`): build, doctor, drive, evidence.
 5. **Critic acceptance.** `status: conformant` in a feature file needs a green verification and

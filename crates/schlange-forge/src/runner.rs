@@ -171,11 +171,10 @@ pub struct Simulation<G: GitStore = Repo> {
     intent_seq: u64,
 }
 
-pub const LIMITATIONS: [&str; 7] = [
+pub const LIMITATIONS: [&str; 6] = [
     "merge methods other than squash, queue modes parallel/isolated, priorities, scopes: not built",
-    "checks_timeout `auto` applies no timeout (no CI history is kept); fixed durations work",
-    "max_checks_retries, skip_intermediate_results, direct merge: not built",
-    "reset_on_external_merge `never` behaves like `always`",
+    "skip_intermediate_results, direct merge, batch_pull_request: not built",
+    "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
     "in place: only for an up-to-date pull request; Mergify would update it first",
     "labels and status comments on pull requests: not built",
     "commands (queue, dequeue, requeue): not built",
