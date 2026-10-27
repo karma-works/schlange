@@ -13,6 +13,11 @@ lock="$root/tools/mergify-sources.lock"
 dest="${MERGIFY_SOURCES_DIR:-$root/.research/mergify}"
 base="https://docs.mergify.com"
 mode="${1:-check}"
+case "$mode" in
+  check|--update|--offline) ;;
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "unknown option: $mode (see --help)" >&2; exit 64 ;;
+esac
 
 # Local file name and path on docs.mergify.com.
 sources=(
