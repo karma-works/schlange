@@ -1,0 +1,6 @@
+bad-semantics.yml:5:11: error[semantics] /queue_rules/1/name: duplicate name `default` in queue_rules (first at /queue_rules/0/name)
+bad-semantics.yml:13:11: error[semantics] /pull_request_rules/1/name: duplicate name `auto` in pull_request_rules (first at /pull_request_rules/0/name)
+bad-semantics.yml:12:15: error[semantics] /pull_request_rules/0/actions/queue/name: queue `fast` does not exist (known: default)
+bad-semantics.yml:3:26: error[semantics] /queue_rules/0/batch_max_wait_time: `soon` is not a duration (for example `30 seconds`, `5 minutes`, `1 hour`)
+bad-semantics.yml:4:21: error[semantics] /queue_rules/0/checks_timeout: checks_timeout must be at least 60 seconds, found 30 seconds
+bad-semantics.yml: invalid (5 errors)

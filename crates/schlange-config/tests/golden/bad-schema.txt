@@ -2,4 +2,4 @@ bad-schema.yml:3:19: error[schema] /queue_rules/0/merge_method: "sqush" is not o
 bad-schema.yml:5:17: error[schema] /queue_rules/0/batch_size: 500 is greater than the maximum of 128; 500 is not of type "object"
 bad-schema.yml:4:5: error[schema] /queue_rules/0/bach_size: unknown key `bach_size`
 bad-schema.yml:9:24: error[schema] /merge_queue/max_parallel_checks: "five" is not of type "integer"
-bad-schema.yml: invalid (4 errors); stages not built yet: semantics
+bad-schema.yml: invalid (4 errors)

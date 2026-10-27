@@ -16,4 +16,4 @@ arztagent.yml: unsupported[support] feature queue-merge-method-squash (P1, missi
 arztagent.yml: unsupported[support] feature queue-rules (P1, missing): config:queue_rules (9:1), config:queue_rules.name (10:5)
 arztagent.yml: unsupported[support] feature queue-speculation (P1, missing): default:merge_queue.max_parallel_checks, default:merge_queue.mode, default:merge_queue.skip_intermediate_results
 arztagent.yml: unsupported[support] feature queue-two-step (P1, missing): config:queue_rules.merge_conditions (27:5), config:queue_rules.queue_conditions (15:5)
-arztagent.yml: valid for Mergify; 48 entries not supported by Schlange yet (--strict makes this exit 2); stages not built yet: semantics
+arztagent.yml: valid for Mergify; 48 entries not supported by Schlange yet (--strict makes this exit 2)

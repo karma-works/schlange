@@ -1,2 +1,2 @@
 bad-syntax.yml:4:19: error[yaml] /: YAML syntax error: illegal placement of ':' indicator
-bad-syntax.yml: invalid (1 errors); stages not built yet: semantics
+bad-syntax.yml: invalid (1 errors)

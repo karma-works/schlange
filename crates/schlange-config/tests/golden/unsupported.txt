@@ -17,4 +17,4 @@ unsupported.yml: unsupported[support] feature queue-priority (P2, missing): conf
 unsupported.yml: unsupported[support] feature queue-rules (P1, missing): config:queue_rules (5:1), config:queue_rules.name (6:5)
 unsupported.yml: unsupported[support] feature queue-speculation (P1, missing): default:merge_queue.max_parallel_checks, default:merge_queue.mode, default:merge_queue.skip_intermediate_results
 unsupported.yml: unsupported[support] feature queue-two-step (P1, missing): config:queue_rules.merge_conditions (8:5)
-unsupported.yml: valid for Mergify; 48 entries not supported by Schlange yet (--strict makes this exit 2); stages not built yet: semantics
+unsupported.yml: valid for Mergify; 48 entries not supported by Schlange yet (--strict makes this exit 2)

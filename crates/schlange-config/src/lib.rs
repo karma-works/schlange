@@ -5,7 +5,7 @@
 //! 1. YAML with positions ([`yaml`]),
 //! 2. Mergify schema ([`schema`]),
 //! 3. conditions ([`conditions`], checked in [`validate`]),
-//! 4. semantics (not built yet),
+//! 4. semantics ([`semantics`]),
 //! 5. support by Schlange ([`support`], from [`features`]).
 //!
 //! [`rules`] gives the engine a typed view of queue rules and pull request rules.
@@ -14,6 +14,7 @@ pub mod conditions;
 pub mod features;
 pub mod rules;
 pub mod schema;
+pub mod semantics;
 pub mod support;
 pub mod validate;
 pub mod yaml;

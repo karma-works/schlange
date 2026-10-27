@@ -757,7 +757,5 @@
       "pointer": "/queue_rules/0/merge_method"
     }
   ],
-  "stages_missing": [
-    "semantics"
-  ]
+  "stages_missing": []
 }

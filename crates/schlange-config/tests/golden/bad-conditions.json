@@ -78,7 +78,5 @@
     }
   ],
   "support": [],
-  "stages_missing": [
-    "semantics"
-  ]
+  "stages_missing": []
 }

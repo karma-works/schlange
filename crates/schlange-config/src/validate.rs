@@ -26,6 +26,7 @@ pub enum Stage {
     Yaml,
     Schema,
     Conditions,
+    Semantics,
     Support,
 }
 
@@ -35,6 +36,7 @@ impl Stage {
             Stage::Yaml => "yaml",
             Stage::Schema => "schema",
             Stage::Conditions => "conditions",
+            Stage::Semantics => "semantics",
             Stage::Support => "support",
         }
     }
@@ -123,6 +125,9 @@ pub fn validate(
                 });
             }
             check_conditions(&value, "", schema, &spans, &mut findings);
+            if !findings.iter().any(|f| f.stage == Stage::Schema) {
+                crate::semantics::check(&value, &spans, &mut findings);
+            }
             if !findings.iter().any(|f| f.severity == Severity::Error) {
                 let uses = support::collect_uses(&value, &schema.condition_keys, features);
                 support_rows = support::report(&uses, features);
@@ -171,7 +176,7 @@ pub fn validate(
         exit_code,
         findings,
         support: support_rows,
-        stages_missing: vec!["semantics"],
+        stages_missing: vec![],
     }
 }
 
@@ -380,11 +385,15 @@ impl Report {
             }
             _ => format!("invalid ({errors} errors)"),
         };
-        out.push_str(&format!(
-            "{}: {verdict}; stages not built yet: {}\n",
-            self.file,
-            self.stages_missing.join(", ")
-        ));
+        if self.stages_missing.is_empty() {
+            out.push_str(&format!("{}: {verdict}\n", self.file));
+        } else {
+            out.push_str(&format!(
+                "{}: {verdict}; stages not built yet: {}\n",
+                self.file,
+                self.stages_missing.join(", ")
+            ));
+        }
         out
     }
 }

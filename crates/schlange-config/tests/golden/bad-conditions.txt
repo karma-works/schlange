@@ -7,4 +7,4 @@ bad-conditions.yml:7:9: error[conditions] /queue_rules/0/queue_conditions/3: len
 bad-conditions.yml:8:9: error[conditions] /queue_rules/0/queue_conditions/4: regex does not compile: Parsing error at position 10: Opening parenthesis without closing parenthesis
 bad-conditions.yml:9:9: error[conditions] /queue_rules/0/queue_conditions/5: `commits-behind` can only be used with `#`
 bad-conditions.yml:18:9: error[conditions] /pull_request_rules/0/conditions/0: operator `~=` is not allowed for `sender-permission` (allowed: = != >= <= < >)
-bad-conditions.yml: invalid (9 errors); stages not built yet: semantics
+bad-conditions.yml: invalid (9 errors)
