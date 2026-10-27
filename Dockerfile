@@ -7,6 +7,7 @@ RUN apk add --no-cache musl-dev ca-certificates
 WORKDIR /src
 # Dependencies first, for layer caching.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo .cargo
 COPY crates crates
 COPY tools/inventory tools/inventory
 # build.rs of schlange-config embeds the feature map.

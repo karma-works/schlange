@@ -22,6 +22,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | `.agents/skills/verify-schlange/` | verification skill; `features/` is the feature map |
 | `scenarios/` | scenarios for `schlange sim run`; `scenarios/configs/` holds their configurations |
 | `docs/mq-coverage.md` | which MQ case has which test |
+| `.cargo/config.toml` | `LIBSQLITE3_FLAGS`: the bundled SQLite without FTS, R-tree, JSON, extension loading (binary and image size) |
 | `scripts/critic.sh` | independent critic (Codex CLI) |
 | `.critic/` | critic verdicts, checked in |
 
