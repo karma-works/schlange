@@ -26,6 +26,7 @@ COPY --from=build /schlange /usr/local/bin/schlange
 USER 65532:65532
 WORKDIR /data
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/schlange", "doctor"]
+# --offline: the health check must not spend GitHub rate limit every 30 seconds.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/schlange", "doctor", "--offline"]
 ENTRYPOINT ["/usr/local/bin/schlange"]
 CMD ["doctor"]

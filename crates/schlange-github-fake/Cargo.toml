@@ -1,0 +1,22 @@
+[package]
+name = "schlange-github-fake"
+description = "Test support: a fake GitHub over HTTP (in-memory git, signed webhooks, faults) and a tester DSL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+schlange-config.workspace = true
+schlange-core.workspace = true
+schlange-forge.workspace = true
+schlange-github.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+ureq.workspace = true

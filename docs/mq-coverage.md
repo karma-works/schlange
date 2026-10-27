@@ -1,14 +1,16 @@
 # Coverage of the problem catalogue (MQ-01 … MQ-53)
 
 Which case from [research/merge-queue-probleme.md](research/merge-queue-probleme.md) has which
-test, as of phase 1b (simulated forge with git in memory, and `localgit` with real git
-repositories on disk). "Covered" means a scenario or test asserts the expected behaviour;
+test, as of phase 1c (simulated forge with git in memory, `localgit` with real git
+repositories on disk, and the GitHub adapter against the fake GitHub over HTTP). "Covered" means a scenario or test asserts the expected behaviour;
 "partial" means only part of the expectation is tested; "open" means no test yet. "Real git"
 means the test runs on `localgit`: real three-way merges, `git update-ref` compare-and-swap,
 every check a process in a checkout, I0–I4 judged on the repository on disk.
 Scenario commands: `target/release/schlange sim run [--forge localgit] scenarios/<file>`
 (`--forge localgit` needs a build with the `localgit` feature). Tests:
-`cargo test -p <crate> --test <file> <name>`.
+`cargo test -p <crate> --test <file> <name>`. "Fake GitHub" means `schlange serve` against
+`crates/schlange-github-fake` over HTTP: REST calls, signed webhooks, the fake's git state
+checked for I0, double landings and I3.
 
 | ID | Status | Where |
 |---|---|---|
@@ -28,7 +30,7 @@ Scenario commands: `target/release/schlange sim run [--forge localgit] scenarios
 | MQ-15 check from another app | open | app not compared |
 | MQ-16 neutral/skipped as success | covered | phase-0 table test `check_semantics_table` |
 | MQ-17 check rerun | partial | `a_stale_green_is_rechecked_before_landing` |
-| MQ-18 events that trigger queue CI | partial (sim) | queue draft per car, `runs_on: queue` in `p1-arztagent-two-step.yaml`; real events: open |
+| MQ-18 events that trigger queue CI | partial (sim, fake GitHub) | queue draft per car, `runs_on: queue` in `p1-arztagent-two-step.yaml`; fake GitHub: the queue creates the branch, pushes merge commits and opens a draft pull request, which emit `push` and `pull_request.opened` (`e2e arztagent_one_pull_request_through_the_draft_to_a_squash_landing`); which workflows GitHub really starts: open (needs a sandbox) |
 | MQ-19 config change in the PR | open | |
 | MQ-20 commit message | open | |
 | MQ-21 bisection | covered | `p1-bisection.yaml`; `bisection_*` DSL tests; properties with and without limits |
@@ -39,14 +41,14 @@ Scenario commands: `target/release/schlange sim run [--forge localgit] scenarios
 | MQ-26 batch timer, minimum | covered | `p1-batch-five.yaml`; `dynamic_batch_size_spreads_over_slots`; I2 at quiescence |
 | MQ-27 conflict with a PR ahead | covered | `p1-conflict-ahead.yaml` |
 | MQ-28 CI cost | open | not measured |
-| MQ-29 webhooks duplicated, reordered, lost | covered | I5 in every scenario with faults; `delivery_does_not_change_the_end_state` |
-| MQ-30 without webhooks | covered | `every_scenario_also_holds_without_webhooks_but_with_reconciliation`; `lost_webhooks_are_repaired_by_reconciliation` |
-| MQ-31 crash mid-merge | open | no journal yet |
+| MQ-29 webhooks duplicated, reordered, lost | covered (sim, fake GitHub) | I5 in every scenario with faults; `delivery_does_not_change_the_end_state`; fake GitHub: `e2e duplicated_and_reordered_webhooks_change_nothing`, delivery ids deduplicated (`client the_webhook_endpoint_checks_signatures_and_drops_repeated_deliveries`) |
+| MQ-30 without webhooks | covered (sim, fake GitHub) | `every_scenario_also_holds_without_webhooks_but_with_reconciliation`; `lost_webhooks_are_repaired_by_reconciliation`; fake GitHub: `e2e lost_webhooks_are_recovered_by_reconciliation` (every webhook lost) |
+| MQ-31 crash mid-merge | partial (fake GitHub) | no journal yet; `e2e a_restart_recovers_from_github_and_sweeps_orphans`: a restart while a car runs recovers by reconciliation, sweeps the orphaned branch and draft, lands |
 | MQ-32 two instances | open | |
-| MQ-33 eventual consistency | partial | red/timeout verdicts confirmed by a fresh read; delayed reads not injected |
-| MQ-34 rate limits | open | |
-| MQ-35 5xx after a successful write | open | |
-| MQ-36 leftover branches | covered | I3 (strict pattern, after every step and at quiescence) |
+| MQ-33 eventual consistency | partial | red/timeout verdicts confirmed by a fresh read; fake GitHub: 404/5xx storms on reads never dequeue (`e2e storms_of_404_and_5xx_never_dequeue`); a 404 for a branch counts only after a canary read; delayed (stale) reads not injected |
+| MQ-34 rate limits | covered (fake GitHub) | `e2e rate_limits_are_waited_out_and_landing_still_happens` (429 with `Retry-After`, secondary limit on the merge); `client rate_limits_block_everyone_and_cosmetics_are_deferred`; unit tests of the budget (landing before cosmetics) |
+| MQ-35 5xx after a successful write | covered (fake GitHub) | `e2e a_5xx_after_the_merge_happened_does_not_land_twice` (each pull request squashed once, no halt); `e2e a_lying_5xx_on_draft_creation_and_queue_branch_merges_is_absorbed`; `client reads_retry_5xx_and_404_but_writes_report_an_unknown_outcome` |
+| MQ-36 leftover branches | covered | I3 (strict pattern, after every step and at quiescence); fake GitHub: I3 at the end of every e2e test, orphan sweep after a restart |
 | MQ-37 a check never reports | covered | `p1-checks-timeout.yaml` (with a fixed timeout) |
 | MQ-38 `checks_timeout: auto` | open | not built |
 | MQ-39 cancelled runs | partial | code `CHECKS_INTERRUPTED` in the verdict; no scenario |

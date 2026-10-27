@@ -14,7 +14,9 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map |
 | `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
-| `crates/schlange` | the binary and its CLI |
+| `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, `GithubForge`, the `serve` loop with reconciliation, doctor checks, permission list |
+| `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
+| `crates/schlange` | the binary and its CLI (`config`, `sim`, `support-matrix`, `doctor`, `serve`) |
 | `tools/inventory` | builds the feature inventory from the pinned Mergify sources |
 | `tools/fetch-mergify-sources`, `tools/mergify-sources.lock` | downloads and pins the sources |
 | `.agents/skills/verify-schlange/` | verification skill; `features/` is the feature map |
@@ -43,7 +45,9 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 6. **Feature map.** Every inventory entry belongs to exactly one feature file. When Mergify's
    schema changes: `tools/fetch-mergify-sources --update`, `cargo run -p inventory`, assign the
    new entries, keep the coverage test green.
-7. **Core without side effects.** `schlange-core` does no I/O. Side effects go through a forge
+7. **No real GitHub in tests.** GitHub behaviour is tested against `schlange-github-fake`;
+   tests and agents never call api.github.com, register apps or use real tokens.
+8. **Core without side effects.** `schlange-core` does no I/O. Side effects go through a forge
    adapter (`sim` → `localgit` → `forgejo` → `github`).
 
 ## Commands
@@ -60,6 +64,7 @@ SCHLANGE_PBT_CASES=2000 cargo test -p schlange-forge --test properties   # long 
 cargo test -p schlange-forge --test localgit                             # scenarios + matrix on real git (needs git ≥ 2.38)
 SCHLANGE_LOCALGIT_PBT_CASES=50 cargo test --release -p schlange-forge --test localgit_properties
 cargo run -q -p schlange --features localgit -- sim run --forge localgit scenarios/p1-bisection.yaml
+cargo test -p schlange-github-fake                                      # schlange serve against the fake GitHub over HTTP
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 
