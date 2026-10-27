@@ -450,6 +450,13 @@ impl GithubForge {
                     out.extend(events);
                 }
                 Err(e) => {
+                    if op.attempts < 5 || op.attempts.is_power_of_two() {
+                        self.note(format!(
+                            "{} failed again (attempt {}): {e}",
+                            decision_name(&op.decision),
+                            op.attempts + 1
+                        ));
+                    }
                     op.attempts += 1;
                     let delay = self
                         .retry_base

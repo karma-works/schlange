@@ -56,8 +56,9 @@ pub struct ServeConfig {
     pub poll: Duration,
     /// Name of the queue's own check run.
     pub check_name: String,
-    /// First delay for deferred decisions.
+    /// First and longest delay for retrying deferred decisions.
     pub retry_base: Duration,
+    pub retry_max: Duration,
 }
 
 pub enum Msg {
@@ -188,6 +189,7 @@ impl Service {
             };
             let mut forge = GithubForge::new(api, clock.clone(), opts.clone());
             forge.retry_base = cfg.retry_base;
+            forge.retry_max = cfg.retry_max;
             let (tx, rx) = channel();
             sinks.insert(repo.full(), tx.clone());
             senders.push(tx);
