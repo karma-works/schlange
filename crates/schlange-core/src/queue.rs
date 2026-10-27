@@ -114,8 +114,9 @@ pub struct Car {
     #[serde(default)]
     pub measured: bool,
     /// The base moved outside the queue under it and the queue did not reset
-    /// (`reset_on_external_merge: never`) or its branch was edited: what lands is not exactly
-    /// the tested tree.
+    /// (`reset_on_external_merge: never`): what lands is the tested change on a newer base, not
+    /// exactly the tested tree. (An accepted branch edit is not drift: with `squash` the
+    /// edit would be dropped, and the tree check halts the queue.)
     #[serde(default)]
     pub drifted: bool,
 }
@@ -1440,7 +1441,6 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
             c.started = now;
             c.status = CarStatus::Running;
             c.measured = true;
-            c.drifted = true;
             let reason = DequeueReason::assumed(
                 code::BATCH_AHEAD_BRANCH_EDITED,
                 format!("`{branch}` ahead was edited; the batch is rebuilt"),

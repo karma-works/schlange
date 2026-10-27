@@ -91,3 +91,29 @@ fn sim_run_on_real_git() {
     assert_eq!(v["passed"], true);
     assert_eq!(v["forge"], "localgit");
 }
+
+/// The critic's `merge-method.yml` (phase 1a): `reset_on_external_merge: never`,
+/// `allow_queue_branch_edit: true` and `max_checks_retries: 2` were silently ignored. Now the
+/// edit option is rejected with `rebase` (as Mergify does), and without it `--strict` flags
+/// only what is not built (`rebase`), not the options that now are.
+#[test]
+fn critic_merge_method_config_is_rejected_or_flagged_precisely() {
+    let (code, out) = run(&[
+        "config",
+        "validate",
+        "scenarios/regressions/configs/merge-method.yml",
+    ]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("allow_queue_branch_edit"), "{out}");
+    let (code, out) = run(&[
+        "config",
+        "validate",
+        "--strict",
+        "scenarios/regressions/configs/merge-method-no-edit.yml",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("rebase"), "{out}");
+    for built in ["reset_on_external_merge", "max_checks_retries"] {
+        assert!(!out.contains(built), "{built} is built now:\n{out}");
+    }
+}
