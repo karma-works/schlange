@@ -1,0 +1,24 @@
+[package]
+name = "schlange"
+description = "Schlange: a merge queue as one static binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "schlange"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+schlange-config.workspace = true
+schlange-core.workspace = true
+schlange-forge.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

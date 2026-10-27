@@ -1,0 +1,37 @@
+---
+id: action-edit
+title: "Action `edit`"
+priority: P2
+arztagent: false
+status: missing
+inventory:
+  - "action:edit"
+  - "config:pull_request_rules.actions.edit"
+  - "config:pull_request_rules.actions.edit.*"
+  - "config:defaults.actions.edit"
+  - "config:defaults.actions.edit.*"
+problems:
+  - "MQ-12"
+source: "https://docs.mergify.com/workflow/actions/edit"
+---
+
+# Action `edit`
+
+Change pull request properties such as the draft state. Arztagent does not use the action.
+
+## Sub-features
+
+- `run`
+- `options`
+
+## How to get to it (user POV)
+
+- Rule with action `edit`.
+
+## Driving it
+
+- No scenario yet. Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+
+## Gotchas
+
+- Check whether the action is edge- or level-triggered.

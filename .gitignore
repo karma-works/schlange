@@ -1,2 +1,6 @@
 # Lokale Kopien der Mergify-Doku (Urheberrecht Mergify). Nur Referenz, nicht einchecken.
 .research/
+
+# Build output and evidence
+/target/
+/evidence/

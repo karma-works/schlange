@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Downloads the public Mergify sources the inventory is built from into .research/mergify/ and
+# checks them against tools/mergify-sources.lock. The files are copyrighted by Mergify and are
+# never checked in (.gitignore).
+#
+#   tools/fetch-mergify-sources            download and check against the lock file (exit 1 on drift)
+#   tools/fetch-mergify-sources --update   download and rewrite the lock file
+#   tools/fetch-mergify-sources --offline  only check the files already present
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+lock="$root/tools/mergify-sources.lock"
+dest="${MERGIFY_SOURCES_DIR:-$root/.research/mergify}"
+base="https://docs.mergify.com"
+mode="${1:-check}"
+
+# Local file name and path on docs.mergify.com.
+sources=(
+  "schema.json mergify-configuration-schema.json"
+  "openapi.json openapi.json"
+  "commands.md commands.md"
+  "commands_queue.md commands/queue.md"
+  "commands_dequeue.md commands/dequeue.md"
+  "commands_restrictions.md commands/restrictions.md"
+  "cli.html cli"
+  "cli_auth.html cli/auth"
+  "cli_ci.html cli/ci"
+  "cli_config.html cli/config"
+  "cli_events.html cli/events"
+  "cli_freeze.html cli/freeze"
+  "cli_queue.html cli/queue"
+  "cli_stack.html cli/stack"
+  "cli_tests.html cli/tests"
+)
+
+mkdir -p "$dest"
+if [ "$mode" != "--offline" ]; then
+  for entry in "${sources[@]}"; do
+    read -r file path <<<"$entry"
+    curl -fsSL --retry 3 -A "schlange-fetch-mergify-sources" -o "$dest/$file.tmp" "$base/$path"
+    mv "$dest/$file.tmp" "$dest/$file"
+  done
+fi
+
+if [ "$mode" = "--update" ]; then
+  {
+    echo "# SHA-256 of the pinned Mergify sources (tools/fetch-mergify-sources --update)."
+    echo "# Format: <sha256>  <file>  <url>"
+    for entry in "${sources[@]}"; do
+      read -r file path <<<"$entry"
+      printf '%s  %s  %s\n' "$(sha256sum "$dest/$file" | cut -d' ' -f1)" "$file" "$base/$path"
+    done
+  } >"$lock"
+  echo "Lock file written: $lock"
+  exit 0
+fi
+
+status=0
+while read -r sum file _url; do
+  case "$sum" in ''|'#'*) continue ;; esac
+  if [ ! -f "$dest/$file" ]; then
+    echo "MISSING  $file"; status=1; continue
+  fi
+  actual="$(sha256sum "$dest/$file" | cut -d' ' -f1)"
+  if [ "$actual" = "$sum" ]; then
+    echo "OK       $file"
+  else
+    echo "CHANGED  $file (pinned ${sum:0:12}, now ${actual:0:12})"; status=1
+  fi
+done <"$lock"
+
+if [ "$status" -ne 0 ]; then
+  echo "Mergify sources differ from tools/mergify-sources.lock: review the schema diff," >&2
+  echo "then run 'tools/fetch-mergify-sources --update' and 'cargo run -p inventory'." >&2
+fi
+exit "$status"

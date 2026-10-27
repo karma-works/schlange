@@ -1,0 +1,4348 @@
+{
+  "generated_by": "cargo run -p inventory",
+  "sources": {
+    "cli.html": "fdf334912ee28accde1da2111365f4eef0990b47aeba1fe5b5ac6dde4eed6249",
+    "cli_auth.html": "38196ae028469a4aa6b93eccaae527ec065d56ca217d51834b2d670fb837a05c",
+    "cli_ci.html": "f10296585db7a4fc0d60e7bad3adcec1f2c594c971f8d97f0e872a5bdb4105fb",
+    "cli_config.html": "09bffe67a220b90aaa510cfc0de6a91dc5ca404a4ecd0be9ffe5c48148b2b905",
+    "cli_events.html": "60b4585e79c9eb28784a10deb23e16858876017fbdb53d1a88023412ac1e9f6c",
+    "cli_freeze.html": "48e6d9fd8b097e8aa806d3d7a8512f2faceb366bebb1e778e33fa98708125a13",
+    "cli_queue.html": "38dd1435a26a05c4d5df2b864c5bae278e4c6115e50cfaffcc8c6cc8573f7c7a",
+    "cli_stack.html": "5033549b1718066881ecdc91164b93ba1cb0d4333951e9224d62f9f9806cd6f9",
+    "cli_tests.html": "ef67e8f126db32fe24e157a02422ea538664a83734ed34f18ae3b04c3df00756",
+    "commands.md": "1e555453413ee2e5a500d3fd6ca280270e6bb22fdc9e7ecb2c1a4d636c3bcc61",
+    "openapi.json": "e8016a3a530f8a66fb9b1b6f1d28b5c30bfe37865deeca9abc13a706c2f713a3",
+    "schema.json": "26b27ad877d127325a66b6bbbf181518c2c51ed20a8457484bb6db09646c1206"
+  },
+  "counts": {
+    "action": 18,
+    "api": 79,
+    "attr": 76,
+    "cli": 42,
+    "cmd": 8,
+    "config": 293,
+    "default": 91,
+    "enum": 153
+  },
+  "total": 760,
+  "entries": [
+    {
+      "id": "action:assign",
+      "kind": "action"
+    },
+    {
+      "id": "action:backport",
+      "kind": "action"
+    },
+    {
+      "id": "action:close",
+      "kind": "action"
+    },
+    {
+      "id": "action:comment",
+      "kind": "action"
+    },
+    {
+      "id": "action:copy",
+      "kind": "action"
+    },
+    {
+      "id": "action:delete_head_branch",
+      "kind": "action",
+      "deprecated": true
+    },
+    {
+      "id": "action:dismiss_reviews",
+      "kind": "action"
+    },
+    {
+      "id": "action:edit",
+      "kind": "action"
+    },
+    {
+      "id": "action:github_actions",
+      "kind": "action",
+      "deprecated": true
+    },
+    {
+      "id": "action:label",
+      "kind": "action"
+    },
+    {
+      "id": "action:merge",
+      "kind": "action"
+    },
+    {
+      "id": "action:post_check",
+      "kind": "action",
+      "deprecated": true
+    },
+    {
+      "id": "action:queue",
+      "kind": "action"
+    },
+    {
+      "id": "action:rebase",
+      "kind": "action"
+    },
+    {
+      "id": "action:request_reviews",
+      "kind": "action"
+    },
+    {
+      "id": "action:review",
+      "kind": "action"
+    },
+    {
+      "id": "action:squash",
+      "kind": "action"
+    },
+    {
+      "id": "action:update",
+      "kind": "action"
+    },
+    {
+      "id": "api:DELETE /ci/{owner}/repositories/{repository}/quarantines/{quarantine_id}",
+      "kind": "api",
+      "tag": "test_insights",
+      "deprecated": true
+    },
+    {
+      "id": "api:DELETE /ci/{owner}/repositories/{repository}/test-states/{test_state_id}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:DELETE /integrations/{owner}/configuration/slack/{channel_configuration_id}",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:DELETE /integrations/{owner}/configuration/slack/{channel_configuration_id}/{product}/{notification_configuration_id}",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/pause",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:DELETE /repos/{owner}/{repository}/queue/pause",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:DELETE /repos/{owner}/{repository}/scheduled_freeze/{freeze_id}",
+      "kind": "api",
+      "tag": "scheduled_freeze",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /application",
+      "kind": "api",
+      "tag": "applications"
+    },
+    {
+      "id": "api:GET /ci/{owner}/queue/stats/{stat}",
+      "kind": "api",
+      "tag": "ci_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/quarantines",
+      "kind": "api",
+      "tag": "test_insights",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/quarantines/{quarantine_id}",
+      "kind": "api",
+      "tag": "test_insights",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/search/tests",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/test-states",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/test-states/{test_state_id}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/runs",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/stats/{stat}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}/executions",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}/failures",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}/failures/{failure_id}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}/health-transitions",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/tests/{test_id}/stats/{stat}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/runners/stats/{stat}",
+      "kind": "api",
+      "tag": "ci_insights"
+    },
+    {
+      "id": "api:GET /default_products/{owner}",
+      "kind": "api",
+      "tag": "products"
+    },
+    {
+      "id": "api:GET /integrations/{owner}/configuration/slack",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/logs",
+      "kind": "api",
+      "tag": "activity_log"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/logs/aggregate",
+      "kind": "api",
+      "tag": "activity_log"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/branches",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/pause",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue-impact",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/status",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/queue/pause",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/queues",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/queues/branches",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/queues/configuration",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/scheduled_freeze",
+      "kind": "api",
+      "tag": "scheduled_freeze"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/average_ci_runtime",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/batch_bisection",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/batch_size",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/branches",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/checks_retries",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/ci_runs",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/failure_rate",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/idle_queue_time",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/merge_queue_checks_outcome",
+      "kind": "api",
+      "tag": "statistics",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queue_size",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queues",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queues_checks_outcome_count",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queues_entered_count",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queues_merged_count",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/queues_pr_exit_reasons",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/running_speculative_checks",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/skip_intermediate_results",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/skip_intermediate_results_eligibility",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/time_to_merge",
+      "kind": "api",
+      "tag": "statistics",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/total_queue_time",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:PATCH /ci/{owner}/repositories/{repository}/quarantines/{quarantine_id}",
+      "kind": "api",
+      "tag": "test_insights",
+      "deprecated": true
+    },
+    {
+      "id": "api:PATCH /ci/{owner}/repositories/{repository}/test-states/{test_state_id}",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:PATCH /repos/{owner}/{repository}/scheduled_freeze/{freeze_id}",
+      "kind": "api",
+      "tag": "scheduled_freeze"
+    },
+    {
+      "id": "api:POST /ci/{owner}/repositories/{repository}/quarantines",
+      "kind": "api",
+      "tag": "test_insights",
+      "deprecated": true
+    },
+    {
+      "id": "api:POST /ci/{owner}/repositories/{repository}/test-states",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:POST /integrations/{owner}/configuration/slack/{channel_configuration_id}/{product}",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:POST /integrations/{owner}/configuration/slack/{channel_configuration_id}/{product}/{notification_configuration_id}/test",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/configuration-simulator",
+      "kind": "api",
+      "tag": "simulator"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/pulls/{number}/scopes",
+      "kind": "api",
+      "tag": "pull_requests",
+      "deprecated": true
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/pulls/{number}/simulator",
+      "kind": "api",
+      "tag": "simulator"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/queue/pause/delete",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/scheduled_freeze",
+      "kind": "api",
+      "tag": "scheduled_freeze"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/scheduled_freeze/{freeze_id}/delete",
+      "kind": "api",
+      "tag": "scheduled_freeze"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/simulator",
+      "kind": "api",
+      "tag": "simulator"
+    },
+    {
+      "id": "api:PUT /default_products/{owner}",
+      "kind": "api",
+      "tag": "products"
+    },
+    {
+      "id": "api:PUT /integrations/{owner}/configuration/slack/{channel_configuration_id}/{product}/{notification_configuration_id}",
+      "kind": "api",
+      "tag": "integrations"
+    },
+    {
+      "id": "api:PUT /products/{owner}/{repository}",
+      "kind": "api",
+      "tag": "products"
+    },
+    {
+      "id": "api:PUT /repos/{owner}/{repository}/commits/{sha}/scopes",
+      "kind": "api",
+      "tag": "pull_requests"
+    },
+    {
+      "id": "api:PUT /repos/{owner}/{repository}/merge-queue/pause",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:PUT /repos/{owner}/{repository}/pulls/{number}/scopes",
+      "kind": "api",
+      "tag": "pull_requests"
+    },
+    {
+      "id": "api:PUT /repos/{owner}/{repository}/queue/pause",
+      "kind": "api",
+      "tag": "queues",
+      "deprecated": true
+    },
+    {
+      "id": "attr:added-files",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:added-lines",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:approved-reviews-by",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:assignee",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:author",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:base",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:body",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:body-raw",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:changes-requested-reviews-by",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check",
+      "kind": "attr",
+      "type": "array<string>"
+    },
+    {
+      "id": "attr:check-cancelled",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-failure",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-neutral",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-pending",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-skipped",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-stale",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-success",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:check-timed-out",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:closed",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:closed-at",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:co-authors",
+      "kind": "attr",
+      "type": "array<object>"
+    },
+    {
+      "id": "attr:commented-reviews-by",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:commits",
+      "kind": "attr",
+      "type": "array<object>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:commits-behind",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:commits-unverified",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:conflict",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:created-at",
+      "kind": "attr",
+      "type": "string(date-time)",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:current-datetime",
+      "kind": "attr",
+      "type": "string(date-time)",
+      "operators": [
+        "=",
+        "!=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:deleted-lines",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:dependabot-dependency-name",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:dependabot-dependency-type",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:dependabot-update-type",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:depends-on",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:deployment-failure",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:deployment-success",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:dismissed-reviews-by",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:draft",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:files",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:from-fork",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:github-code-owner-review-satisfied",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:github-require-last-push-approval",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:github-require-review-from-specific-teams",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:github-review-approved",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:github-review-decision",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~="
+      ]
+    },
+    {
+      "id": "attr:head",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:head-repo-full-name",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:label",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:linear-history",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:locked",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:merge-commit-sha",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:merged",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:merged-at",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:merged-by",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:mergify-configuration-changed",
+      "kind": "attr",
+      "type": "boolean",
+      "operators": []
+    },
+    {
+      "id": "attr:milestone",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:modified-files",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:modified-lines",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:number",
+      "kind": "attr",
+      "type": "integer",
+      "operators": [
+        "=",
+        "!=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:queue-dequeue-reason",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~="
+      ]
+    },
+    {
+      "id": "attr:queue-merge-started-at",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:queue-name",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:queue-position",
+      "kind": "attr",
+      "type": "integer",
+      "operators": [
+        "=",
+        "!=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:queued-at",
+      "kind": "attr",
+      "type": "string?",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:removed-files",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:repository-full-name",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:repository-name",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:review-requested",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:review-threads-resolved",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:review-threads-unresolved",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:schedule",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!="
+      ]
+    },
+    {
+      "id": "attr:scope",
+      "kind": "attr",
+      "type": "array<string>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:sender",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:sender-permission",
+      "kind": "attr",
+      "type": "enum<GitHubRepositoryPermission>",
+      "operators": [
+        "=",
+        "!=",
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:title",
+      "kind": "attr",
+      "type": "string",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "attr:updated-at",
+      "kind": "attr",
+      "type": "string(date-time)",
+      "operators": [
+        ">=",
+        "<=",
+        "<",
+        ">"
+      ]
+    },
+    {
+      "id": "attr:updates",
+      "kind": "attr",
+      "type": "array<object>",
+      "operators": [
+        "=",
+        "!=",
+        "~=",
+        ">=",
+        "<=",
+        "<",
+        ">",
+        "*="
+      ]
+    },
+    {
+      "id": "cli:mergify auth login",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify auth logout",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify auth status",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci git-refs",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci junit-process",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci junit-upload",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci queue-info",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci scopes",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify ci scopes-send",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify config simulate",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify config validate",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify events",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify freeze create",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify freeze delete",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify freeze list",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify freeze update",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify queue pause",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify queue show",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify queue status",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify queue unpause",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack checkout",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack drop",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack edit",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack fixup",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack hooks",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack list",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack move",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack new",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack note",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack open",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack push",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack reorder",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack reword",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack setup",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack squash",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify stack sync",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests quarantines add",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests quarantines get",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests quarantines list",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests quarantines remove",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests runs",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests show",
+      "kind": "cli"
+    },
+    {
+      "id": "cmd:backport",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:copy",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:dequeue",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:queue",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:rebase",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:refresh",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:squash",
+      "kind": "cmd"
+    },
+    {
+      "id": "cmd:update",
+      "kind": "cmd"
+    },
+    {
+      "id": "config:commands_restrictions",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.backport",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.backport.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.copy",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.copy.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.dequeue",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.dequeue.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.queue",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.queue.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.rebase",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.rebase.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.refresh",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.refresh.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.requeue",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.requeue.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.squash",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.squash.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:commands_restrictions.update",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:commands_restrictions.update.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:conflict_resolvers",
+      "kind": "config",
+      "type": "array<object>",
+      "experimental": true
+    },
+    {
+      "id": "config:conflict_resolvers.directories",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:conflict_resolvers.language",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:conflict_resolvers.package-manager",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:conflict_resolvers.paths",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:conflict_resolvers.strategy",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:defaults.actions",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:defaults.actions.assign",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.assign.add_users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.assign.remove_users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.assign.users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.backport.assignees",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.backport.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.backport.branches",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport.ignore_conflicts",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:defaults.actions.backport.label_conflicts",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.backport.labels",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport.merge_conflict_style",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.backport.regexes",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport.report_mode",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.backport.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.close",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.close.message",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.comment",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.comment.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.comment.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.copy",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.copy.assignees",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.copy.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.copy.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.copy.branches",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.copy.ignore_conflicts",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:defaults.actions.copy.label_conflicts",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.copy.labels",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.copy.merge_conflict_style",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.copy.regexes",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.copy.report_mode",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.copy.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.delete_head_branch",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.actions.delete_head_branch.force",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:defaults.actions.dismiss_reviews",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.dismiss_reviews.approved",
+      "kind": "config",
+      "type": "array<string>|boolean|string"
+    },
+    {
+      "id": "config:defaults.actions.dismiss_reviews.changes_requested",
+      "kind": "config",
+      "type": "array<string>|boolean|string"
+    },
+    {
+      "id": "config:defaults.actions.dismiss_reviews.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.dismiss_reviews.when",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.edit",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.edit.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.edit.draft",
+      "kind": "config",
+      "type": "boolean?"
+    },
+    {
+      "id": "config:defaults.actions.github_actions",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.actions.github_actions.workflow",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:defaults.actions.github_actions.workflow.dispatch",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:defaults.actions.github_actions.workflow.dispatch.inputs",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:defaults.actions.github_actions.workflow.dispatch.ref",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.github_actions.workflow.dispatch.workflow",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.label",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.label.add",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.label.remove",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.label.remove_all",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:defaults.actions.label.toggle",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.merge",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.merge.commit_message_format",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.merge.commit_message_format.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.merge.commit_message_format.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.merge.commit_message_format.trailers",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.actions.merge.commit_message_template",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.actions.merge.merge_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.merge.method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.post_check",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.actions.post_check.neutral_conditions",
+      "kind": "config",
+      "type": "conditions?"
+    },
+    {
+      "id": "config:defaults.actions.post_check.success_conditions",
+      "kind": "config",
+      "type": "conditions?"
+    },
+    {
+      "id": "config:defaults.actions.post_check.summary",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.post_check.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.queue",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.queue.name",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.rebase",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.rebase.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews.random_count",
+      "kind": "config",
+      "type": "integer?"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews.teams",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews.users",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:defaults.actions.request_reviews.users_from_teams",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:defaults.actions.review",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.review.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.review.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.review.type",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.squash",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.squash.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.actions.squash.commit_message",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.actions.update",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.actions.update.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.queue_rule.allow_inplace_checks",
+      "kind": "config",
+      "type": "boolean",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.queue_rule.allow_queue_branch_edit",
+      "kind": "config",
+      "type": "boolean",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.queue_rule.batch_max_failure_resolution_attempts",
+      "kind": "config",
+      "type": "integer?"
+    },
+    {
+      "id": "config:defaults.queue_rule.batch_max_wait_time",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.queue_rule.batch_size",
+      "kind": "config",
+      "type": "integer|object"
+    },
+    {
+      "id": "config:defaults.queue_rule.batch_size.max",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:defaults.queue_rule.batch_size.min",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:defaults.queue_rule.branch_protection_injection_mode",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.queue_rule.checks_timeout",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule.commit_message_format",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:defaults.queue_rule.commit_message_format.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.queue_rule.commit_message_format.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.queue_rule.commit_message_format.trailers",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:defaults.queue_rule.commit_message_template",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.queue_rule.draft_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule.max_checks_retries",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:defaults.queue_rule.merge_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule.merge_conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:defaults.queue_rule.merge_method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule.queue_branch_merge_method",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:defaults.queue_rule.queue_branch_prefix",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:defaults.queue_rule.queue_conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:defaults.queue_rule.update_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:defaults.queue_rule.update_method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:extends",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:merge_protections",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:merge_protections.description",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:merge_protections.if",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:merge_protections.name",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:merge_protections.success_conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:merge_protections_settings",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:merge_protections_settings.auto_merge_conditions",
+      "kind": "config",
+      "type": "conditions?"
+    },
+    {
+      "id": "config:merge_protections_settings.post_comment",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:merge_protections_settings.reporting_method",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:merge_queue",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:merge_queue.checking_label",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:merge_queue.dequeued_label",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:merge_queue.max_parallel_checks",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:merge_queue.mode",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:merge_queue.queue_controls_comment",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:merge_queue.queued_label",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:merge_queue.reset_on_external_merge",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:merge_queue.skip_intermediate_results",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:merge_queue.status_comments",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:priority_rules",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:priority_rules.allow_checks_interruption",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:priority_rules.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:priority_rules.name",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:priority_rules.priority",
+      "kind": "config",
+      "type": "integer|string"
+    },
+    {
+      "id": "config:pull_request_rules",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:pull_request_rules.actions",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.assign",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.assign.add_users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.assign.remove_users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.assign.users",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.assignees",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.branches",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.ignore_conflicts",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.label_conflicts",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.labels",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.merge_conflict_style",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.regexes",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.report_mode",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.backport.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.close",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.close.message",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.comment",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.comment.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.comment.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.assignees",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.branches",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.ignore_conflicts",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.label_conflicts",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.labels",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.merge_conflict_style",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.regexes",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.report_mode",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.copy.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.delete_head_branch",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:pull_request_rules.actions.delete_head_branch.force",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:pull_request_rules.actions.dismiss_reviews",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.dismiss_reviews.approved",
+      "kind": "config",
+      "type": "array<string>|boolean|string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.dismiss_reviews.changes_requested",
+      "kind": "config",
+      "type": "array<string>|boolean|string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.dismiss_reviews.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.dismiss_reviews.when",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.edit",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.edit.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.edit.draft",
+      "kind": "config",
+      "type": "boolean?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions.workflow",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions.workflow.dispatch",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions.workflow.dispatch.inputs",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions.workflow.dispatch.ref",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.github_actions.workflow.dispatch.workflow",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label.add",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label.remove",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label.remove_all",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label.toggle",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.commit_message_format",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.commit_message_format.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.commit_message_format.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.commit_message_format.trailers",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.commit_message_template",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.merge_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.merge.method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.post_check",
+      "kind": "config",
+      "type": "object?",
+      "deprecated": true
+    },
+    {
+      "id": "config:pull_request_rules.actions.post_check.neutral_conditions",
+      "kind": "config",
+      "type": "conditions?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.post_check.success_conditions",
+      "kind": "config",
+      "type": "conditions?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.post_check.summary",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.post_check.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.queue",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.queue.name",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.rebase",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.rebase.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews.random_count",
+      "kind": "config",
+      "type": "integer?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews.teams",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews.users",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.request_reviews.users_from_teams",
+      "kind": "config",
+      "type": "array<string>|object"
+    },
+    {
+      "id": "config:pull_request_rules.actions.review",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.review.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.review.message",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.review.type",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.squash",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.squash.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.squash.commit_message",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.actions.update",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.actions.update.bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:pull_request_rules.description",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:pull_request_rules.disabled",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:pull_request_rules.disabled.reason",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:pull_request_rules.name",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules",
+      "kind": "config",
+      "type": "array<object>"
+    },
+    {
+      "id": "config:queue_rules.allow_inplace_checks",
+      "kind": "config",
+      "type": "boolean",
+      "deprecated": true
+    },
+    {
+      "id": "config:queue_rules.allow_queue_branch_edit",
+      "kind": "config",
+      "type": "boolean",
+      "deprecated": true
+    },
+    {
+      "id": "config:queue_rules.batch_max_failure_resolution_attempts",
+      "kind": "config",
+      "type": "integer?"
+    },
+    {
+      "id": "config:queue_rules.batch_max_wait_time",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.batch_size",
+      "kind": "config",
+      "type": "integer|object"
+    },
+    {
+      "id": "config:queue_rules.batch_size.max",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:queue_rules.batch_size.min",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:queue_rules.branch_protection_injection_mode",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.checks_timeout",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:queue_rules.commit_message_format",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:queue_rules.commit_message_format.body",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.commit_message_format.title",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.commit_message_format.trailers",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:queue_rules.commit_message_template",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:queue_rules.draft_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:queue_rules.max_checks_retries",
+      "kind": "config",
+      "type": "integer"
+    },
+    {
+      "id": "config:queue_rules.merge_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:queue_rules.merge_conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:queue_rules.merge_method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:queue_rules.name",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.queue_branch_merge_method",
+      "kind": "config",
+      "type": "string?",
+      "deprecated": true
+    },
+    {
+      "id": "config:queue_rules.queue_branch_prefix",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:queue_rules.queue_conditions",
+      "kind": "config",
+      "type": "conditions"
+    },
+    {
+      "id": "config:queue_rules.update_bot_account",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:queue_rules.update_method",
+      "kind": "config",
+      "type": "string?"
+    },
+    {
+      "id": "config:scopes",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:scopes.barrier_files",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:scopes.barrier_files.exclude",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:scopes.barrier_files.include",
+      "kind": "config",
+      "type": "array<string>"
+    },
+    {
+      "id": "config:scopes.capacities",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:scopes.default_capacity",
+      "kind": "config",
+      "type": "integer?"
+    },
+    {
+      "id": "config:scopes.merge_queue_scope",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:scopes.source",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "config:scopes.source.files",
+      "kind": "config",
+      "type": "object"
+    },
+    {
+      "id": "config:scopes.source.manual",
+      "kind": "config",
+      "type": "null"
+    },
+    {
+      "id": "config:shared",
+      "kind": "config",
+      "type": "object?"
+    },
+    {
+      "id": "default:commands_restrictions.backport",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          "sender-permission >= write"
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.copy",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          "sender-permission >= write"
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.dequeue",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          "sender-permission >= write"
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.queue",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          "sender-permission >= write"
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.rebase",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          {
+            "or": [
+              "sender-permission >= write",
+              {
+                "and": [
+                  "sender = {{author}}",
+                  "from-fork"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.refresh",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          {
+            "or": [
+              "sender-permission >= write",
+              {
+                "and": [
+                  "sender = {{author}}",
+                  "from-fork"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.requeue",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          "sender-permission >= write"
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.squash",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          {
+            "or": [
+              "sender-permission >= write",
+              {
+                "and": [
+                  "sender = {{author}}",
+                  "from-fork"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "default:commands_restrictions.update",
+      "kind": "default",
+      "value": {
+        "conditions": [
+          {
+            "or": [
+              "sender-permission >= write",
+              {
+                "and": [
+                  "sender = {{author}}",
+                  "from-fork"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "default:conflict_resolvers.directories",
+      "kind": "default",
+      "value": [
+        "/"
+      ]
+    },
+    {
+      "id": "default:defaults.actions.backport.body",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "9012b548ec81bdd34988ed2e879c2962aadceb4f92e1b7cbd0700da875464644"
+      }
+    },
+    {
+      "id": "default:defaults.actions.backport.ignore_conflicts",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:defaults.actions.backport.label_conflicts",
+      "kind": "default",
+      "value": "conflicts"
+    },
+    {
+      "id": "default:defaults.actions.backport.merge_conflict_style",
+      "kind": "default",
+      "value": "merge"
+    },
+    {
+      "id": "default:defaults.actions.backport.report_mode",
+      "kind": "default",
+      "value": [
+        "check"
+      ]
+    },
+    {
+      "id": "default:defaults.actions.backport.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "89716ff5aaf5bc3db44f4fd0991fb0d0ff2c54704d03740e82f7fe2881c408a1"
+      }
+    },
+    {
+      "id": "default:defaults.actions.close.message",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "1f8ba6b983408598a85023a4eb7a2e36ef283ea7d4da8ce3f20659eed3ea52dd"
+      }
+    },
+    {
+      "id": "default:defaults.actions.copy.body",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "59d4991c061d9314f84b0c34c68c5c14ae02718b5ed3ba5890e5ff871cfb39f9"
+      }
+    },
+    {
+      "id": "default:defaults.actions.copy.ignore_conflicts",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:defaults.actions.copy.label_conflicts",
+      "kind": "default",
+      "value": "conflicts"
+    },
+    {
+      "id": "default:defaults.actions.copy.merge_conflict_style",
+      "kind": "default",
+      "value": "merge"
+    },
+    {
+      "id": "default:defaults.actions.copy.report_mode",
+      "kind": "default",
+      "value": [
+        "check"
+      ]
+    },
+    {
+      "id": "default:defaults.actions.copy.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "6ec6bb440cbece9bc6c861bcdc896088347741162bb5dc328b8111be038d8044"
+      }
+    },
+    {
+      "id": "default:defaults.actions.delete_head_branch.force",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:defaults.actions.dismiss_reviews.approved",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:defaults.actions.dismiss_reviews.changes_requested",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:defaults.actions.dismiss_reviews.when",
+      "kind": "default",
+      "value": "synchronize"
+    },
+    {
+      "id": "default:defaults.actions.label.remove_all",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:defaults.actions.merge.commit_message_format.body",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:defaults.actions.merge.commit_message_format.title",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:defaults.actions.post_check.summary",
+      "kind": "default",
+      "value": "{{ check_conditions }}"
+    },
+    {
+      "id": "default:defaults.actions.post_check.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "5e2a4039830bd925595224a9e652202420bb2f6154715c46073e5b8b37bc2fa0"
+      }
+    },
+    {
+      "id": "default:defaults.actions.review.type",
+      "kind": "default",
+      "value": "APPROVE"
+    },
+    {
+      "id": "default:defaults.actions.squash.commit_message",
+      "kind": "default",
+      "value": "all-commits"
+    },
+    {
+      "id": "default:defaults.queue_rule.allow_inplace_checks",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:defaults.queue_rule.allow_queue_branch_edit",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:defaults.queue_rule.batch_max_wait_time",
+      "kind": "default",
+      "value": "30 seconds"
+    },
+    {
+      "id": "default:defaults.queue_rule.batch_size",
+      "kind": "default",
+      "value": 1
+    },
+    {
+      "id": "default:defaults.queue_rule.branch_protection_injection_mode",
+      "kind": "default",
+      "value": "queue"
+    },
+    {
+      "id": "default:defaults.queue_rule.checks_timeout",
+      "kind": "default",
+      "value": "auto"
+    },
+    {
+      "id": "default:defaults.queue_rule.commit_message_format.body",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:defaults.queue_rule.commit_message_format.title",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:defaults.queue_rule.max_checks_retries",
+      "kind": "default",
+      "value": 0
+    },
+    {
+      "id": "default:defaults.queue_rule.queue_branch_prefix",
+      "kind": "default",
+      "value": "mergify/merge-queue/"
+    },
+    {
+      "id": "default:merge_protections_settings.post_comment",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:merge_protections_settings.reporting_method",
+      "kind": "default",
+      "value": "check-runs"
+    },
+    {
+      "id": "default:merge_queue.dequeued_label",
+      "kind": "default",
+      "value": "dequeued"
+    },
+    {
+      "id": "default:merge_queue.max_parallel_checks",
+      "kind": "default",
+      "value": 5
+    },
+    {
+      "id": "default:merge_queue.mode",
+      "kind": "default",
+      "value": "serial"
+    },
+    {
+      "id": "default:merge_queue.queue_controls_comment",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:merge_queue.queued_label",
+      "kind": "default",
+      "value": "queued"
+    },
+    {
+      "id": "default:merge_queue.reset_on_external_merge",
+      "kind": "default",
+      "value": "always"
+    },
+    {
+      "id": "default:merge_queue.skip_intermediate_results",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:merge_queue.status_comments",
+      "kind": "default",
+      "value": "all"
+    },
+    {
+      "id": "default:priority_rules.allow_checks_interruption",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:priority_rules.priority",
+      "kind": "default",
+      "value": "medium"
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.body",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "9012b548ec81bdd34988ed2e879c2962aadceb4f92e1b7cbd0700da875464644"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.ignore_conflicts",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.label_conflicts",
+      "kind": "default",
+      "value": "conflicts"
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.merge_conflict_style",
+      "kind": "default",
+      "value": "merge"
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.report_mode",
+      "kind": "default",
+      "value": [
+        "check"
+      ]
+    },
+    {
+      "id": "default:pull_request_rules.actions.backport.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "89716ff5aaf5bc3db44f4fd0991fb0d0ff2c54704d03740e82f7fe2881c408a1"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.close.message",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "1f8ba6b983408598a85023a4eb7a2e36ef283ea7d4da8ce3f20659eed3ea52dd"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.body",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "59d4991c061d9314f84b0c34c68c5c14ae02718b5ed3ba5890e5ff871cfb39f9"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.ignore_conflicts",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.label_conflicts",
+      "kind": "default",
+      "value": "conflicts"
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.merge_conflict_style",
+      "kind": "default",
+      "value": "merge"
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.report_mode",
+      "kind": "default",
+      "value": [
+        "check"
+      ]
+    },
+    {
+      "id": "default:pull_request_rules.actions.copy.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "6ec6bb440cbece9bc6c861bcdc896088347741162bb5dc328b8111be038d8044"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.delete_head_branch.force",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:pull_request_rules.actions.dismiss_reviews.approved",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:pull_request_rules.actions.dismiss_reviews.changes_requested",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:pull_request_rules.actions.dismiss_reviews.when",
+      "kind": "default",
+      "value": "synchronize"
+    },
+    {
+      "id": "default:pull_request_rules.actions.label.remove_all",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:pull_request_rules.actions.merge.commit_message_format.body",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:pull_request_rules.actions.merge.commit_message_format.title",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:pull_request_rules.actions.post_check.summary",
+      "kind": "default",
+      "value": "{{ check_conditions }}"
+    },
+    {
+      "id": "default:pull_request_rules.actions.post_check.title",
+      "kind": "default",
+      "value": {
+        "prose_omitted": true,
+        "sha256": "5e2a4039830bd925595224a9e652202420bb2f6154715c46073e5b8b37bc2fa0"
+      }
+    },
+    {
+      "id": "default:pull_request_rules.actions.review.type",
+      "kind": "default",
+      "value": "APPROVE"
+    },
+    {
+      "id": "default:pull_request_rules.actions.squash.commit_message",
+      "kind": "default",
+      "value": "all-commits"
+    },
+    {
+      "id": "default:queue_rules.allow_inplace_checks",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:queue_rules.allow_queue_branch_edit",
+      "kind": "default",
+      "value": false
+    },
+    {
+      "id": "default:queue_rules.batch_max_wait_time",
+      "kind": "default",
+      "value": "30 seconds"
+    },
+    {
+      "id": "default:queue_rules.batch_size",
+      "kind": "default",
+      "value": 1
+    },
+    {
+      "id": "default:queue_rules.branch_protection_injection_mode",
+      "kind": "default",
+      "value": "queue"
+    },
+    {
+      "id": "default:queue_rules.checks_timeout",
+      "kind": "default",
+      "value": "auto"
+    },
+    {
+      "id": "default:queue_rules.commit_message_format.body",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:queue_rules.commit_message_format.title",
+      "kind": "default",
+      "value": "inherit"
+    },
+    {
+      "id": "default:queue_rules.max_checks_retries",
+      "kind": "default",
+      "value": 0
+    },
+    {
+      "id": "default:queue_rules.queue_branch_prefix",
+      "kind": "default",
+      "value": "mergify/merge-queue/"
+    },
+    {
+      "id": "default:scopes.merge_queue_scope",
+      "kind": "default",
+      "value": "merge-queue"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:admin",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:maintain",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:none",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:read",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:triage",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:GitHubRepositoryPermission:write",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:ReportMode:check",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:ReportMode:comment",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:body:empty",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:body:inherit",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:body:pr-body",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:branch_protection_injection_mode:merge",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:branch_protection_injection_mode:none",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:branch_protection_injection_mode:queue",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:commit_message:all-commits",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:commit_message:first-commit",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:commit_message:title+body",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:github-review-decision:APPROVED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:github-review-decision:CHANGES_REQUESTED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:github-review-decision:REVIEW_REQUIRED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:github-actions",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:go",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:haskell",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:java",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:javascript",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:mergify",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:python",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:ruby",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:rust",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:swift",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:terraform",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:toml",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:typescript",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:yaml",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_conflict_style:diff3",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_conflict_style:merge",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_method:fast-forward",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_method:merge",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_method:merge-batch",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_method:rebase",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:merge_method:squash",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:method:fast-forward",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:method:merge",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:method:rebase",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:method:squash",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:mode:isolated",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:mode:parallel",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:mode:serial",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:cargo",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:gomod",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:mix",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:nix",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:npm",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:opentofu",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:sbt",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:terraform",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:uv",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:priority:high",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:priority:low",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:priority:medium",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BASE_BRANCH_CHANGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BASE_BRANCH_MISSING",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BASE_REF_ALIGNMENT_TIMEOUT",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_AHEAD_BRANCH_EDITED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_AHEAD_FAILED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_AHEAD_REBUILT",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_PULL_REQUEST_CLOSED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_REBUILT",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BATCH_SCOPES_CHANGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:BRANCH_UPDATE_FAILED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CHECKS_FAILED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CHECKS_INTERRUPTED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CHECKS_RETRIED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CHECKS_TIMEOUT",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CONFIGURATION_CHANGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CONFLICT_WITH_BASE_BRANCH",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:CONFLICT_WITH_PULL_AHEAD",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:DRAFT_PULL_REQUEST_CHANGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:DRAFT_PULL_REQUEST_CREATION_BRANCH_NOT_INDEXED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:DRAFT_PULL_REQUEST_CREATION_FAILED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:DROPPED_BY_BISECTION_ELIMINATION",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:GITHUB_STACKED_PULL_REQUEST_MERGE_UNSUPPORTED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:GITHUB_WORKFLOWS_PERMISSION_MISSING",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:INCOMPATIBILITY_WITH_BRANCH_PROTECTIONS",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:INTERMEDIATE_RESULTS_SKIPPED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:MERGE_QUEUE_RESET",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:NONE",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_AHEAD_DEQUEUED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_DEQUEUED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_DEQUEUED_FROM_PARTITION",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_MANUALLY_DEQUEUED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_MANUALLY_MERGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_MERGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_MERGED_INTERMEDIATE_RESULTS_SKIPPED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_UNEXPECTEDLY_FAILED_TO_MERGE",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PR_WITH_HIGHER_PRIORITY_QUEUED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:PULL_REQUEST_UPDATED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:QUEUE_RULE_MISSING",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:SCHEDULED_FREEZE_STATUS_CHANGED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:SCHEDULE_BLOCKED_AHEAD_YIELDED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:SPECULATIVE_CHECK_NUMBER_REDUCED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:STACK_PREDECESSOR_DEQUEUED",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:UNPROCESSABLE_PULL_REQUEST",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:reporting_method:check-runs",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:reporting_method:deployments",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:reset_on_external_merge:always",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:reset_on_external_merge:never",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:status_comments:all",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:status_comments:none",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:status_comments:outcomes",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:cargo",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:go",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:gomod",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:haskell",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:hcl",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:java",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:json",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:mix",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:nix",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:npm",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:ours",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:pnpm",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:prefer-ours",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:prefer-theirs",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:python",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:rails-schema",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:rails-structure",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:ruby",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:rust",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:sbt",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:swift",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:terraform",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:theirs",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:toml",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:typescript",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:union",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:uv",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:yaml",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:yarn",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:title:inherit",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:title:pr-title",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:trailers:approved-by",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:trailers:co-authored-by",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:trailers:merged-by",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:type:APPROVE",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:type:COMMENT",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:type:REQUEST_CHANGES",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:update_method:merge",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:update_method:rebase",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:when:always",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:when:synchronize",
+      "kind": "enum"
+    }
+  ]
+}
