@@ -31,14 +31,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The tests need the pinned schema; a source that differs from the lock fails the
       # separate job `mergify-drift`, not this one.
-      - name: Mergify sources (pinned)
-        run: tools/fetch-mergify-sources || true
+      # Tests need the schema. Byte drift of the live docs is reported by `mergify-drift`.
+      - name: Mergify sources
+        run: tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see job mergify-drift)"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests (coverage test, golden files, scenarios)
         run: cargo test --workspace --locked
-      - name: Inventory matches the sources
-        run: cargo run -q --locked -p inventory -- --check
 
   image:
     name: image and size budget
@@ -54,8 +53,14 @@ jobs:
   mergify-drift:
     name: Mergify schema diff
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Download and compare with tools/mergify-sources.lock
-        run: tools/fetch-mergify-sources
+      - uses: Swatinem/rust-cache@v2
+      # Byte changes (docs redeploys) are a notice; a change of the generated inventory
+      # (new or removed paths, attributes, actions, enum values, defaults, operations,
+      # commands) fails this job: that is the schema diff to act on.
+      - name: Download and compare bytes with tools/mergify-sources.lock
+        run: tools/fetch-mergify-sources || echo "::notice::Mergify sources changed byte-wise; checking the inventory"
+      - name: Inventory unchanged against live Mergify sources
+        run: cargo run -q --locked -p inventory -- --check

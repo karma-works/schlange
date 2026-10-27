@@ -458,7 +458,9 @@ fn build(sources: &Path) -> Result<Value> {
     let entries: Vec<&Entry> = out.values().collect();
     Ok(json!({
         "generated_by": "cargo run -p inventory",
-        "sources": hashes,
+        // Raw file hashes live in tools/mergify-sources.lock; the inventory is semantic only,
+        // so a cosmetic redeploy of the docs does not change it.
+        "sources": hashes.keys().collect::<Vec<_>>(),
         "counts": counts,
         "total": total,
         "entries": entries,
