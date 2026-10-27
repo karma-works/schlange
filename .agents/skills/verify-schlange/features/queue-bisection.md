@@ -6,6 +6,7 @@ arztagent: true
 status: missing
 inventory:
   - "config:queue_rules.batch_max_failure_resolution_attempts"
+  - "default:queue_rules.batch_max_failure_resolution_attempts"
 problems:
   - "MQ-21"
   - "MQ-22"
@@ -21,7 +22,8 @@ the guilty one is dequeued. Without a setting there is no limit on attempts (Arz
 
 - `split`: a red batch is split and tested again.
 - `culprit`: only the deterministically guilty pull request is dequeued.
-- `limit`: optional limit on attempts; after it, dequeue all.
+- `limit`: optional limit on rounds of splitting per part. A part with several pull requests that fails in the last round leaves the queue (reason `BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS`), parts before it that passed merge, parts after it go back to the queue with a fresh count. `0` never splits: the whole batch leaves.
+- `one-at-a-time`: with one parallel check the last round works differently (documented separately); check before claiming conformance.
 - `interaction`: two pull requests red only together → at least one leaves.
 
 ## How to get to it (user POV)

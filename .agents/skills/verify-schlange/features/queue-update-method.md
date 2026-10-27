@@ -7,6 +7,7 @@ status: missing
 inventory:
   - "config:queue_rules.update_method"
   - "enum:update_method:*"
+  - "default:queue_rules.update_method"
 problems:
   - "W-08"
 source: "https://docs.mergify.com/merge-queue/rules"

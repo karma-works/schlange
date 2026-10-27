@@ -202,7 +202,16 @@ impl<'a> Schema<'a> {
                 e.experimental =
                     prop.get("x-mergify-experimental").and_then(Value::as_bool) == Some(true);
                 out.entry(e.id.clone()).or_insert(e);
-                if let Some(default) = prop.get("default").filter(|d| !d.is_null()) {
+                // A null default of an option is behaviour too (for example "no limit" or "the
+                // app acts itself"). A null that only means "this section or action is not
+                // configured" is not: action keys, top-level sections and object models.
+                let absent_marker = path.is_empty()
+                    || path.ends_with("actions")
+                    || e_type_is_object(&self.type_of(prop, 0));
+                if let Some(default) = prop
+                    .get("default")
+                    .filter(|d| !(d.is_null() && absent_marker))
+                {
                     let mut d = Entry::new("default", child.clone());
                     d.value = Some(clean_room_value(default));
                     out.entry(d.id.clone()).or_insert(d);
@@ -218,6 +227,10 @@ impl<'a> Schema<'a> {
             stack.pop();
         }
     }
+}
+
+fn e_type_is_object(t: &str) -> bool {
+    t.trim_end_matches('?').split('|').all(|p| p == "object")
 }
 
 /// Keeps a default value unless it is prose (a string of four or more words, such as a

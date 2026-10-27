@@ -289,6 +289,13 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
+      "message": "default `merge_queue.checking_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
+      "feature": "queue-labels-comments"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
       "message": "default `merge_queue.dequeued_label` is in effect but not supported by Schlange yet (feature queue-labels-comments, P1, missing)",
       "feature": "queue-labels-comments"
     },
@@ -345,6 +352,20 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
+      "message": "default `pull_request_rules.actions.queue.name` is in effect but not supported by Schlange yet (feature action-queue, P1, missing)",
+      "feature": "action-queue"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `pull_request_rules.description` is in effect but not supported by Schlange yet (feature pull-request-rules, P1, missing)",
+      "feature": "pull-request-rules"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
       "message": "default `queue_rules.allow_inplace_checks` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing)",
       "feature": "queue-draft-pr"
     },
@@ -354,6 +375,13 @@
       "pointer": "",
       "message": "default `queue_rules.allow_queue_branch_edit` is in effect but not supported by Schlange yet (feature queue-branch-edit, P1, missing)",
       "feature": "queue-branch-edit"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.batch_max_failure_resolution_attempts` is in effect but not supported by Schlange yet (feature queue-bisection, P1, missing)",
+      "feature": "queue-bisection"
     },
     {
       "stage": "support",
@@ -373,6 +401,20 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
+      "message": "default `queue_rules.commit_message_template` is in effect but not supported by Schlange yet (feature queue-commit-message, P1, missing)",
+      "feature": "queue-commit-message"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.draft_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing)",
+      "feature": "queue-bot-accounts"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
       "message": "default `queue_rules.max_checks_retries` is in effect but not supported by Schlange yet (feature queue-checks-timeout, P1, missing)",
       "feature": "queue-checks-timeout"
     },
@@ -380,8 +422,36 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
+      "message": "default `queue_rules.merge_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing)",
+      "feature": "queue-bot-accounts"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.queue_branch_merge_method` is in effect but not supported by Schlange yet (feature queue-merge-methods-other, P2, missing)",
+      "feature": "queue-merge-methods-other"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
       "message": "default `queue_rules.queue_branch_prefix` is in effect but not supported by Schlange yet (feature queue-draft-pr, P1, missing)",
       "feature": "queue-draft-pr"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.update_bot_account` is in effect but not supported by Schlange yet (feature queue-bot-accounts, P1, missing)",
+      "feature": "queue-bot-accounts"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.update_method` is in effect but not supported by Schlange yet (feature queue-update-method, P2, missing)",
+      "feature": "queue-update-method"
     },
     {
       "stage": "support",
@@ -651,6 +721,13 @@
       "supported": false
     },
     {
+      "id": "default:merge_queue.checking_label",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
       "id": "default:merge_queue.dequeued_label",
       "feature": "queue-labels-comments",
       "priority": "P1",
@@ -707,6 +784,20 @@
       "supported": false
     },
     {
+      "id": "default:pull_request_rules.actions.queue.name",
+      "feature": "action-queue",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:pull_request_rules.description",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
       "id": "default:queue_rules.allow_inplace_checks",
       "feature": "queue-draft-pr",
       "priority": "P1",
@@ -716,6 +807,13 @@
     {
       "id": "default:queue_rules.allow_queue_branch_edit",
       "feature": "queue-branch-edit",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.batch_max_failure_resolution_attempts",
+      "feature": "queue-bisection",
       "priority": "P1",
       "status": "missing",
       "supported": false
@@ -735,6 +833,20 @@
       "supported": false
     },
     {
+      "id": "default:queue_rules.commit_message_template",
+      "feature": "queue-commit-message",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.draft_bot_account",
+      "feature": "queue-bot-accounts",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
       "id": "default:queue_rules.max_checks_retries",
       "feature": "queue-checks-timeout",
       "priority": "P1",
@@ -742,9 +854,37 @@
       "supported": false
     },
     {
+      "id": "default:queue_rules.merge_bot_account",
+      "feature": "queue-bot-accounts",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.queue_branch_merge_method",
+      "feature": "queue-merge-methods-other",
+      "priority": "P2",
+      "status": "missing",
+      "supported": false
+    },
+    {
       "id": "default:queue_rules.queue_branch_prefix",
       "feature": "queue-draft-pr",
       "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.update_bot_account",
+      "feature": "queue-bot-accounts",
+      "priority": "P1",
+      "status": "missing",
+      "supported": false
+    },
+    {
+      "id": "default:queue_rules.update_method",
+      "feature": "queue-update-method",
+      "priority": "P2",
       "status": "missing",
       "supported": false
     },

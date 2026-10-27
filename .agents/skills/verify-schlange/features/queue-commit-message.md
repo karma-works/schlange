@@ -12,6 +12,7 @@ inventory:
   - "enum:title:*"
   - "enum:body:*"
   - "enum:trailers:*"
+  - "default:queue_rules.commit_message_template"
 problems:
   - "MQ-20"
 source: "https://docs.mergify.com/merge-queue/merge-strategies"

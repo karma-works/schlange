@@ -1,0 +1,101 @@
+{
+  "feature": "feature-map",
+  "verdict": "deviating",
+  "findings": [
+    {
+      "subfeature": "inventory generation",
+      "verdict": "deviating",
+      "evidence": "tools/inventory/src/main.rs:205 excludes null defaults. The pinned schema sets queue_rules.batch_max_failure_resolution_attempts and merge_queue.checking_label to null by default; neither has a default entry.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "inventory assignment",
+      "verdict": "conformant",
+      "evidence": "cargo run -q -p inventory -- --check: up to date. cargo test -p schlange-config --test coverage: 7 passed, including exact-one-feature assignment.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "queue-bot-accounts",
+      "verdict": "deviating",
+      "evidence": "queue-bot-accounts.md:4-5 marks P2 and arztagent false. The pinned merge-queue_rules.md says unset draft_bot_account and merge_bot_account make the app create drafts and merge; both defaults apply to Arztagent.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "commands",
+      "verdict": "deviating",
+      "evidence": "commands.md:22-28 omits a pending queue command, cancellation on a foreign push, replacement by a differently named queue command, and dequeue of a pending command. These behaviours are specified in .research/mergify/commands_queue.md and commands_dequeue.md.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "queue-labels-comments",
+      "verdict": "deviating",
+      "evidence": "queue-labels-comments.md:34 calls the default queue_controls_comment operating hints. .research/mergify/commands_queue.md, 'Queueing with a Checkbox', specifies actionable queue and requeue checkboxes subject to command restrictions.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "queue-bisection",
+      "verdict": "deviating",
+      "evidence": "queue-bisection.md:24 says reaching the attempt limit dequeues all. .research/mergify/merge-queue_batches.md, 'Limiting Resolution Attempts', says the failing part is dequeued, preceding passing parts merge, and later parts return to the queue.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "MQ test coverage",
+      "verdict": "missing",
+      "evidence": "cargo test --workspace passed, and sim run scenarios/p0-queue-conditions.yaml passed, but the scenario reports I0–I5 not_checked and queue, merge conditions, dequeue codes, and fault injection as placeholders. The listed MQ cases have no covering test or scenario.",
+      "severity": "major"
+    }
+  ],
+  "missing_tests": [
+    "MQ-01",
+    "MQ-02",
+    "MQ-03",
+    "MQ-04",
+    "MQ-05",
+    "MQ-06",
+    "MQ-07",
+    "MQ-08",
+    "MQ-09",
+    "MQ-10",
+    "MQ-13",
+    "MQ-15",
+    "MQ-18",
+    "MQ-19",
+    "MQ-20",
+    "MQ-21",
+    "MQ-22",
+    "MQ-23",
+    "MQ-24",
+    "MQ-25",
+    "MQ-26",
+    "MQ-27",
+    "MQ-28",
+    "MQ-29",
+    "MQ-30",
+    "MQ-31",
+    "MQ-32",
+    "MQ-33",
+    "MQ-34",
+    "MQ-35",
+    "MQ-36",
+    "MQ-37",
+    "MQ-38",
+    "MQ-39",
+    "MQ-40",
+    "MQ-41",
+    "MQ-42",
+    "MQ-43",
+    "MQ-44",
+    "MQ-45",
+    "MQ-46",
+    "MQ-47",
+    "MQ-48",
+    "MQ-49",
+    "MQ-50",
+    "MQ-51",
+    "MQ-52",
+    "MQ-53"
+  ],
+  "clean_room_ok": true,
+  "summary": "The generated entries are current and assigned exactly once, but omitted null defaults, a P1 misclassification, and inaccurate command, checkbox, and bisection descriptions prevent a conformant feature map. Workspace tests and the available scenario passed. No repository files were changed.",
+  "commit": "d047f8c8ca5ed2398151535e097816c5d7116a18"
+}

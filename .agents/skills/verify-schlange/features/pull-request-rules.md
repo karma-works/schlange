@@ -12,6 +12,7 @@ inventory:
   - "config:pull_request_rules.description"
   - "config:pull_request_rules.disabled"
   - "config:pull_request_rules.disabled.reason"
+  - "default:pull_request_rules.description"
 problems:
   - "MQ-12"
   - "MQ-19"

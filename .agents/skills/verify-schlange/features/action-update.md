@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.update.*"
   - "config:defaults.actions.update"
   - "config:defaults.actions.update.*"
+  - "default:pull_request_rules.actions.update.*"
+  - "default:defaults.actions.update.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/update"

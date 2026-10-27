@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.request_reviews.*"
   - "config:defaults.actions.request_reviews"
   - "config:defaults.actions.request_reviews.*"
+  - "default:pull_request_rules.actions.request_reviews.*"
+  - "default:defaults.actions.request_reviews.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/request-reviews"

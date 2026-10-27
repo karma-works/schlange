@@ -10,6 +10,7 @@ inventory:
   - "enum:merge_method:fast-forward"
   - "enum:merge_method:merge-batch"
   - "config:queue_rules.queue_branch_merge_method"
+  - "default:queue_rules.queue_branch_merge_method"
 problems:
   - "MQ-03"
   - "MQ-04"

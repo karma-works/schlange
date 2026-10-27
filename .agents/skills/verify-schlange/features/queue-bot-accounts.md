@@ -1,28 +1,34 @@
 ---
 id: queue-bot-accounts
 title: "Bot accounts for merge, draft and update"
-priority: P2
-arztagent: false
+priority: P1
+arztagent: true
 status: missing
 inventory:
   - "config:queue_rules.merge_bot_account"
   - "config:queue_rules.draft_bot_account"
   - "config:queue_rules.update_bot_account"
+  - "default:queue_rules.draft_bot_account"
+  - "default:queue_rules.merge_bot_account"
+  - "default:queue_rules.update_bot_account"
 problems:
+  - "MQ-51"
   - "W-23"
 source: "https://docs.mergify.com/merge-queue/rules"
 ---
 
 # Bot accounts for merge, draft and update
 
-Instead of acting as the app, the queue can merge, open drafts or push updates in the name of a
-user account.
+Without bot accounts (the default, in effect for Arztagent) the app itself creates the draft
+pull requests, merges and updates. Optionally the queue acts in the name of a user account for
+each of these.
 
 ## Sub-features
 
-- `merge`
-- `draft`
-- `update`
+- `default-app`: no account set → the app creates drafts, merges and updates (P1).
+- `merge`: merge as a user account (P2).
+- `draft`: open drafts as a user account (P2).
+- `update`: update pull requests as a user account (P2).
 
 ## How to get to it (user POV)
 

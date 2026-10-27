@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.rebase.*"
   - "config:defaults.actions.rebase"
   - "config:defaults.actions.rebase.*"
+  - "default:pull_request_rules.actions.rebase.*"
+  - "default:defaults.actions.rebase.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/rebase"

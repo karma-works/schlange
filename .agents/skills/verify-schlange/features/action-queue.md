@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.queue.*"
   - "config:defaults.actions.queue"
   - "config:defaults.actions.queue.*"
+  - "default:pull_request_rules.actions.queue.*"
+  - "default:defaults.actions.queue.*"
 problems:
   - "MQ-09"
   - "MQ-12"

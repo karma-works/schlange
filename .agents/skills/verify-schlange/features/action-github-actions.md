@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.github_actions.*"
   - "config:defaults.actions.github_actions"
   - "config:defaults.actions.github_actions.*"
+  - "default:pull_request_rules.actions.github_actions.*"
+  - "default:defaults.actions.github_actions.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/github-actions"

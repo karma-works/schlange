@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.comment.*"
   - "config:defaults.actions.comment"
   - "config:defaults.actions.comment.*"
+  - "default:pull_request_rules.actions.comment.*"
+  - "default:defaults.actions.comment.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/comment"

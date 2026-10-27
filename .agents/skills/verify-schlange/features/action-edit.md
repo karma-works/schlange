@@ -10,6 +10,8 @@ inventory:
   - "config:pull_request_rules.actions.edit.*"
   - "config:defaults.actions.edit"
   - "config:defaults.actions.edit.*"
+  - "default:pull_request_rules.actions.edit.*"
+  - "default:defaults.actions.edit.*"
 problems:
   - "MQ-12"
 source: "https://docs.mergify.com/workflow/actions/edit"

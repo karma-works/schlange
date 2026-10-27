@@ -11,6 +11,7 @@ inventory:
   - "config:merge_protections_settings.*"
   - "default:merge_protections_settings.*"
   - "enum:reporting_method:*"
+  - "default:merge_protections.*"
 problems:
   - "MQ-13"
 source: "https://docs.mergify.com/merge-protections"

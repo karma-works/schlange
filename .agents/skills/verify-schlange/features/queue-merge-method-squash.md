@@ -7,6 +7,7 @@ status: missing
 inventory:
   - "config:queue_rules.merge_method"
   - "enum:merge_method:squash"
+  - "default:queue_rules.merge_method"
 problems:
   - "MQ-02"
   - "MQ-03"

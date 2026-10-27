@@ -15,6 +15,7 @@ inventory:
   - "default:merge_queue.status_comments"
   - "default:merge_queue.queue_controls_comment"
   - "enum:status_comments:*"
+  - "default:merge_queue.checking_label"
 problems:
   - "MQ-45"
   - "MQ-43"
@@ -29,9 +30,9 @@ comments.
 
 ## Sub-features
 
-- `labels`: default `queued` and `dequeued`; optionally a label while checks run.
+- `labels`: default `queued` and `dequeued`; a label while checks run only when `checking_label` is set (default none).
 - `status-comments`: all, outcomes only, or none.
-- `controls-comment`: comment with operating hints, on by default.
+- `checkboxes`: on by default (`queue_controls_comment`): a comment with a "queue this pull request" checkbox when it is ready but not queued, and a "requeue" checkbox in the status comment after it left unmerged. Ticking equals `@mergifyio queue` by the person who ticked, under the same command restrictions.
 
 ## How to get to it (user POV)
 
