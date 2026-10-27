@@ -408,7 +408,7 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         Event::Tick => {}
         Event::Failed { decision, .. } => queue::side_effect_failed(state, decision, out),
         Event::CarClosed { car } => queue::car_closed(state, *car),
-        Event::Restarted => queue::expire_all(state),
+        Event::Restarted => queue::expire_all(state, out),
     }
     None
 }

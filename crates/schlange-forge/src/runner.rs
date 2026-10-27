@@ -386,8 +386,10 @@ impl<G: GitStore> Simulation<G> {
         self
     }
 
-    fn should_crash(&mut self, after: bool) -> bool {
-        if self.crash.points.contains(&(self.effects, after)) {
+    /// Whether to crash before (`after: false`) or right after side effect `index`.
+    fn should_crash(&mut self, index: u64, after: bool) -> bool {
+        // A point fires once: a crash before a side effect does not advance the count.
+        if self.crash.points.remove(&(index, after)) {
             return true;
         }
         self.crash.rate > 0.0
@@ -496,7 +498,8 @@ impl<G: GitStore> Simulation<G> {
                     self.forge.execute(d);
                     continue;
                 }
-                if self.should_crash(false) {
+                let index = self.effects;
+                if self.should_crash(index, false) {
                     self.crash_now();
                     return any;
                 }
@@ -514,7 +517,7 @@ impl<G: GitStore> Simulation<G> {
                 }
                 self.journal.done(self.intent_seq).expect("journal");
                 self.effects += 1;
-                if self.should_crash(true) {
+                if self.should_crash(index, true) {
                     self.crash_now();
                     return any;
                 }
@@ -578,7 +581,7 @@ impl<G: GitStore> Simulation<G> {
             }
             // Quiescent: a final reconciliation reads everything once more.
             let known = self.known_branches();
-            let ev = self.wire.snapshot_all(&self.forge, &known);
+            let ev = self.wire.snapshot_all_fresh(&self.forge, &known);
             let acted = self.deliver(rules, ev, Some("final reconciliation".into()));
             self.checker.after_step(&self.forge, &self.state, rules);
             rounds += 1;

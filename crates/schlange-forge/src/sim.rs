@@ -998,7 +998,10 @@ impl<G: GitStore> SimForge<G> {
                 number,
                 head_sha,
             } => {
-                if let Some(pr) = self.prs.get(number).cloned() {
+                // Idempotent: a repeated announcement (after a restart) keeps the first record.
+                if let Some(pr) = self.prs.get(number).cloned()
+                    && !self.cars.contains_key(car)
+                {
                     let base_sha = self.read_branch(&pr.base).unwrap_or_default();
                     let tree = self.repo.tree_id_of(head_sha);
                     self.cars.insert(

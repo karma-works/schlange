@@ -1142,21 +1142,23 @@ fn collect_garbage(state: &mut State, rules: &Rules, out: &mut Vec<Decision>) {
             .pull_requests
             .values()
             .find(|p| p.head_ref == branch && !p.closed)
-            .map(|p| (p.number, p.base.clone()));
+            .map(|p| p.number);
         let id = state.next_id();
+        // No slot: a leftover is either a phantom of a lagging read (already gone) or was
+        // forgotten; its CI is counted on the forge, not as one of the engine's cars.
         state.closing.insert(
             id,
             Closing {
-                base: draft.as_ref().map(|d| d.1.clone()),
+                base: None,
                 branch: Some(branch.clone()),
-                draft: draft.as_ref().map(|d| d.0),
+                draft,
                 since: state.now,
             },
         );
         out.push(Decision::CloseCar {
             car: id,
             branch: Some(branch),
-            draft: draft.map(|d| d.0),
+            draft,
         });
     }
 }
@@ -1488,8 +1490,21 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
 
 /// After a restart from the journal: every outstanding request is due at once, timers are
 /// gone. The fresh read that follows resolves the rest.
-pub(crate) fn expire_all(state: &mut State) {
+pub(crate) fn expire_all(state: &mut State, out: &mut Vec<Decision>) {
     state.wakeups.clear();
+    for t in state.trains.values() {
+        // An in-place check has no effect on the forge besides being announced; announcing it
+        // again is harmless, and the crash may have come before the first announcement.
+        for c in t.cars.iter().filter(|c| c.in_place) {
+            if let (Some(number), Some(head_sha)) = (c.draft, c.head_sha.clone()) {
+                out.push(Decision::CheckInPlace {
+                    car: c.id,
+                    number,
+                    head_sha,
+                });
+            }
+        }
+    }
     for t in state.trains.values_mut() {
         if let Some((_, since)) = &mut t.base_request {
             *since = EXPIRED;

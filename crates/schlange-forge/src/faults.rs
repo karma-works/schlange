@@ -239,6 +239,21 @@ impl Wire {
         self.snapshot(forge, &forge.numbers(), &branches, None)
     }
 
+    /// A full read past the lag window: reads lag by at most `max_lag`, so a reconciliation that
+    /// late sees the truth. The runner's final pass at quiescence stands for it.
+    pub fn snapshot_all_fresh<G: GitStore>(
+        &mut self,
+        forge: &SimForge<G>,
+        known: &[String],
+    ) -> Event {
+        let stale = std::mem::replace(&mut self.faults.stale_read, 0.0);
+        let ev = self.snapshot_all(forge, known);
+        self.faults.stale_read = stale;
+        self.prs.clear();
+        self.branches.clear();
+        ev
+    }
+
     /// Hands a reply to the engine now, later, twice or never. Returns the replies due now.
     fn deliver<G: GitStore>(&mut self, forge: &mut SimForge<G>, ev: Event) -> Vec<Event> {
         let f = &self.faults;
