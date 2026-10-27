@@ -286,22 +286,20 @@ fn check_list(
                 Some(_) => {}
             }
         }
-        if atom.length {
-            if let Some(v) = &atom.value {
-                if v.parse::<i64>().is_err() {
-                    push(
-                        &ptr,
-                        format!("length of `{}` needs a number, found `{v}`", atom.attribute),
-                    );
-                }
-            }
+        if atom.length
+            && let Some(v) = &atom.value
+            && v.parse::<i64>().is_err()
+        {
+            push(
+                &ptr,
+                format!("length of `{}` needs a number, found `{v}`", atom.attribute),
+            );
         }
-        if atom.operator == Some(Operator::Regex) {
-            if let Some(v) = &atom.value {
-                if let Err(e) = fancy_regex::Regex::new(v) {
-                    push(&ptr, format!("regex does not compile: {e}"));
-                }
-            }
+        if atom.operator == Some(Operator::Regex)
+            && let Some(v) = &atom.value
+            && let Err(e) = fancy_regex::Regex::new(v)
+        {
+            push(&ptr, format!("regex does not compile: {e}"));
         }
     }
 }

@@ -60,7 +60,11 @@ fn every_inventory_entry_has_exactly_one_feature() {
     assert!(map.inventory.total > 700, "inventory looks truncated");
     assert_eq!(map.inventory.total, map.inventory.entries.len());
     let problems = map.coverage_problems();
-    assert!(problems.is_empty(), "coverage problems:\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "coverage problems:\n{}",
+        problems.join("\n")
+    );
 }
 
 #[test]
@@ -94,8 +98,16 @@ fn p1_features_name_an_mq_case() {
 fn feature_files_have_the_four_sections() {
     for f in &map().features {
         let h2: Vec<&str> = f.body.lines().filter(|l| l.starts_with("## ")).collect();
-        assert_eq!(h2, SECTIONS, "{}: sections must be exactly {SECTIONS:?}", f.file);
-        assert!(f.body.trim_start().starts_with("# "), "{}: needs an H1", f.file);
+        assert_eq!(
+            h2, SECTIONS,
+            "{}: sections must be exactly {SECTIONS:?}",
+            f.file
+        );
+        assert!(
+            f.body.trim_start().starts_with("# "),
+            "{}: needs an H1",
+            f.file
+        );
     }
 }
 
@@ -111,6 +123,15 @@ fn schlange_features_exist() {
 fn embedded_map_matches_the_files() {
     let files = map();
     let embedded = FeatureMap::embedded().unwrap();
-    let ids = |m: &FeatureMap| m.features.iter().map(|f| (f.id.clone(), f.status)).collect::<Vec<_>>();
-    assert_eq!(ids(&files), ids(&embedded), "rebuild: the embedded map is stale");
+    let ids = |m: &FeatureMap| {
+        m.features
+            .iter()
+            .map(|f| (f.id.clone(), f.status))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&files),
+        ids(&embedded),
+        "rebuild: the embedded map is stale"
+    );
 }

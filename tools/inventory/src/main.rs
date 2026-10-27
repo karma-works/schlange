@@ -94,10 +94,10 @@ impl<'a> Schema<'a> {
     /// `conditions`, `object`, or a union `boolean|object`.
     fn type_of(&self, node: &'a Value, depth: usize) -> String {
         let (name, n) = self.resolve(node);
-        if let Some(name) = name {
-            if name.ends_with("ConditionsModel") || CONDITION_DEFS.contains(&name) {
-                return "conditions".into();
-            }
+        if let Some(name) = name
+            && (name.ends_with("ConditionsModel") || CONDITION_DEFS.contains(&name))
+        {
+            return "conditions".into();
         }
         if depth > 6 {
             return "object".into();
@@ -358,16 +358,16 @@ fn commands(md: &str, out: &mut BTreeMap<String, Entry>) -> Result<()> {
             continue;
         }
         let t = line.trim_start();
-        if let Some(rest) = t.strip_prefix("- [") {
-            if let Some(open) = rest.find("](") {
-                let after = &rest[open + 2..];
-                if let Some(close) = after.find(')') {
-                    let slug = after[..close].trim_start_matches("./").trim_matches('/');
-                    let slug = slug.rsplit('/').next().unwrap_or(slug);
-                    let e = Entry::new("cmd", slug.to_string());
-                    out.insert(e.id.clone(), e);
-                    found += 1;
-                }
+        if let Some(rest) = t.strip_prefix("- [")
+            && let Some(open) = rest.find("](")
+        {
+            let after = &rest[open + 2..];
+            if let Some(close) = after.find(')') {
+                let slug = after[..close].trim_start_matches("./").trim_matches('/');
+                let slug = slug.rsplit('/').next().unwrap_or(slug);
+                let e = Entry::new("cmd", slug.to_string());
+                out.insert(e.id.clone(), e);
+                found += 1;
             }
         }
     }
