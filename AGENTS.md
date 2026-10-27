@@ -13,7 +13,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 |---|---|
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map |
 | `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation |
-| `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
+| `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange` | the binary and its CLI |
 | `tools/inventory` | builds the feature inventory from the pinned Mergify sources |
 | `tools/fetch-mergify-sources`, `tools/mergify-sources.lock` | downloads and pins the sources |
@@ -57,6 +57,9 @@ cargo run -q -p inventory -- --check        # inventory matches the pinned sourc
 cargo run -q -p schlange -- config validate <file>
 cargo run -q -p schlange -- sim run scenarios/p0-queue-conditions.yaml
 SCHLANGE_PBT_CASES=2000 cargo test -p schlange-forge --test properties   # long property run
+cargo test -p schlange-forge --test localgit                             # scenarios + matrix on real git (needs git ≥ 2.38)
+SCHLANGE_LOCALGIT_PBT_CASES=50 cargo test --release -p schlange-forge --test localgit_properties
+cargo run -q -p schlange --features localgit -- sim run --forge localgit scenarios/p1-bisection.yaml
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 

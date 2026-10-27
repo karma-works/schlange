@@ -20,7 +20,7 @@ publish = false
 [workspace.dependencies]
 schlange-config = { path = "crates/schlange-config" }
 schlange-core = { path = "crates/schlange-core" }
-schlange-forge = { path = "crates/schlange-forge" }
+schlange-forge = { path = "crates/schlange-forge", default-features = false }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 fancy-regex = "0.20"

@@ -36,8 +36,15 @@ jobs:
         run: tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see job mergify-drift)"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Tests (coverage test, golden files, scenarios)
+      # The release binary without the `localgit` forge must still build and lint.
+      - run: cargo clippy -p schlange --locked -- -D warnings
+      # The `localgit` tests need git ≥ 2.38 (`merge-tree --write-tree`); ubuntu-latest has it.
+      - name: git for the localgit forge
+        run: git --version
+      - name: Tests (coverage test, golden files, scenarios, localgit)
         run: cargo test --workspace --locked
+      - name: Property test on real git (localgit), more cases
+        run: SCHLANGE_LOCALGIT_PBT_CASES=16 cargo test -p schlange-forge --locked --test localgit_properties
 
   image:
     name: image and size budget

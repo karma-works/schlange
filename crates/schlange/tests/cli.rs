@@ -75,3 +75,19 @@ fn sim_and_doctor() {
     assert_eq!(run(&["doctor", "--json"]).0, 0);
     assert_eq!(run(&["support-matrix"]).0, 0);
 }
+
+#[test]
+fn sim_run_on_real_git() {
+    let (code, out) = run(&[
+        "sim",
+        "run",
+        "--json",
+        "--forge",
+        "localgit",
+        "scenarios/p1-semantic-conflict-compile.yaml",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["passed"], true);
+    assert_eq!(v["forge"], "localgit");
+}

@@ -1,0 +1,64 @@
+# Semantic conflict with a real compile check (MQ-01, queue-conflicts `semantic-conflict`).
+# The repository is a tiny project with a "compiler": ci/compile.sh fails when a function is
+# called as `name()` but nowhere defined as `fn name(`. #1 renames foo() to bar() (definition
+# and its one caller). #2 adds a new file that calls foo(). Each is green alone (the check runs
+# on each pull request) and git merges them without a textual conflict, but the merged tree no
+# longer compiles. The check is a real process in a checkout (`run`); markers play no part.
+# Speculation tests car 1 = main + #1 and car 2 = main + #1 + #2; car 2 fails, #2 leaves with
+# CHECKS_FAILED and main never holds both. #3 is unrelated and lands.
+name: p1-semantic-conflict-compile
+description: Rename plus a call of the old name; each compiles alone, the merge does not.
+config: configs/two-step.yml
+
+repo:
+  files:
+    ci/compile.sh: |
+      # Every function called as name() must be defined as `fn name(` in src/.
+      for f in $(grep -ohE '[a-z_]+\(\)' src/*.rs | sed 's/()$//' | sort -u); do
+        grep -qE "fn $f\(" src/*.rs || { echo "error: cannot find function $f"; exit 1; }
+      done
+    src/lib.rs: |
+      fn foo() {}
+    src/main.rs: |
+      fn main() { foo() }
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+    run: sh ci/compile.sh
+  - check: full
+    duration: 10m
+    runs_on: queue
+    run: sh ci/compile.sh
+
+pull_requests:
+  - number: 1
+    author: bot
+    title: Rename foo to bar
+    files:
+      src/lib.rs: "fn bar() {}\n"
+      src/main.rs: "fn main() { bar() }\n"
+  - number: 2
+    author: bot
+    title: Add a feature that calls foo
+    files:
+      src/feature.rs: "fn feature() { foo() }\n"
+  - { number: 3, author: bot, title: Docs, files: { docs.md: "docs\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 10s, open: 2 }
+  - { at: 20s, open: 3 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 3, state: merged }
+expect_merged_order: [1, 3]
+expect_base:
+  src/lib.rs: "fn bar() {}\n"
+  src/main.rs: "fn main() { bar() }\n"
+expect_log:
+  - "#2 check `quick` completed"
+  - "(checks #2)"
