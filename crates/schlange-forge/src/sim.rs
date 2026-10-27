@@ -842,6 +842,7 @@ impl<G: GitStore> SimForge<G> {
                 head_sha: head.clone(),
                 conclusion: None,
                 seq,
+                ..Default::default()
             };
             let key = format!("{tree_id}/{}", script.check);
             let attempt = self.attempts.entry(key.clone()).or_default();

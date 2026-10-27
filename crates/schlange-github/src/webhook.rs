@@ -382,6 +382,7 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
                         head_sha: c.head_sha.clone(),
                         conclusion: conclusion(&c.status, c.conclusion.as_deref()),
                         seq: c.id,
+                        ..Default::default()
                     },
                 });
             }

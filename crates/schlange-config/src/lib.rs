@@ -13,6 +13,7 @@
 pub mod conditions;
 pub mod config_file;
 pub mod features;
+pub mod glob;
 pub mod rules;
 pub mod schema;
 pub mod semantics;

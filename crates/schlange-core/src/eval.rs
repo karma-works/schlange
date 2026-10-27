@@ -95,21 +95,56 @@ pub enum EvalError {
     NotANumber(String),
     #[error("`{attribute}` cannot be compared with `{value}`")]
     BadValue { attribute: String, value: String },
+    #[error("regex `{pattern}` failed while matching: {message}")]
+    RegexRuntime { pattern: String, message: String },
+    #[error("glob `{0}` is invalid: {1}")]
+    BadGlob(String, String),
 }
 
-fn checks_where(pr: &PullRequest, pred: impl Fn(Option<Conclusion>) -> bool) -> AttrValue {
+/// The conclusions a `check-*` attribute selects; `None` for other attributes.
+fn check_predicate(attribute: &str) -> Option<fn(Option<Conclusion>) -> bool> {
+    use Conclusion::*;
+    Some(match attribute {
+        "check" => |_| true,
+        "check-success" => |c| c == Some(Success),
+        "check-failure" => |c| matches!(c, Some(Failure | Cancelled | TimedOut | ActionRequired)),
+        "check-neutral" => |c| c == Some(Neutral),
+        "check-skipped" => |c| c == Some(Skipped),
+        "check-cancelled" => |c| c == Some(Cancelled),
+        "check-timed-out" => |c| c == Some(TimedOut),
+        "check-stale" => |c| c == Some(Stale),
+        "check-pending" => |c| c.is_none(),
+        _ => return None,
+    })
+}
+
+/// Names of the current runs whose conclusion `pred` selects; with `app`, only runs that app
+/// published (`@<app>/<name>`).
+fn checks_where(
+    pr: &PullRequest,
+    app: Option<&str>,
+    pred: impl Fn(Option<Conclusion>) -> bool,
+) -> AttrValue {
     AttrValue::List(
         pr.current_checks()
             .into_iter()
+            .filter(|c| app.is_none_or(|a| c.app.as_deref() == Some(a)))
             .filter(|c| pred(c.conclusion))
             .map(|c| c.name.clone())
             .collect(),
     )
 }
 
+/// Whether a check reference from a condition (`name` or `@<app>/<name>`) names this run.
+pub fn check_matches(reference: &str, run: &crate::model::CheckRun) -> bool {
+    match schlange_config::conditions::qualified(reference) {
+        Some((app, name)) => run.name == name && run.app.as_deref() == Some(app),
+        None => run.name == reference,
+    }
+}
+
 /// Value of an attribute for a pull request.
 pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValue, EvalError> {
-    use Conclusion::*;
     Ok(match name {
         "number" => AttrValue::Str(pr.number.to_string()),
         "author" => AttrValue::Str(pr.author.clone()),
@@ -157,39 +192,11 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
         "queue-dequeue-reason" => {
             AttrValue::Str(ctx.dequeue_reason.clone().unwrap_or_else(|| "NONE".into()))
         }
-        "check" => checks_where(pr, |_| true),
-        "check-success" => checks_where(pr, |c| c == Some(Success)),
-        "check-failure" => checks_where(pr, |c| {
-            matches!(c, Some(Failure | Cancelled | TimedOut | ActionRequired))
-        }),
-        "check-neutral" => checks_where(pr, |c| c == Some(Neutral)),
-        "check-skipped" => checks_where(pr, |c| c == Some(Skipped)),
-        "check-cancelled" => checks_where(pr, |c| c == Some(Cancelled)),
-        "check-timed-out" => checks_where(pr, |c| c == Some(TimedOut)),
-        "check-stale" => checks_where(pr, |c| c == Some(Stale)),
-        "check-pending" => checks_where(pr, |c| c.is_none()),
-        other => return Err(EvalError::UnsupportedAttribute(other.to_string())),
+        other => match check_predicate(other) {
+            Some(pred) => checks_where(pr, None, pred),
+            None => return Err(EvalError::UnsupportedAttribute(other.to_string())),
+        },
     })
-}
-
-/// Unix-style glob as used by `*=`: `*` within a segment, `**` across segments, `?` one char.
-/// Open: Mergify's exact glob semantics (anchoring, `*` across `/`) still need a difference test.
-fn glob_to_regex(glob: &str) -> String {
-    let mut re = String::from("^");
-    let mut chars = glob.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                re.push_str(".*");
-            }
-            '*' => re.push_str("[^/]*"),
-            '?' => re.push_str("[^/]"),
-            c => re.push_str(&fancy_regex::escape(&c.to_string())),
-        }
-    }
-    re.push('$');
-    re
 }
 
 thread_local! {
@@ -207,7 +214,12 @@ fn regex_match(pattern: &str, shown: &str, actual: &str) -> Result<bool, EvalErr
             .entry(pattern.to_string())
             .or_insert_with(|| fancy_regex::Regex::new(pattern).ok());
         match re {
-            Some(re) => Ok(re.is_match(actual).unwrap_or(false)),
+            // A pattern that fails while matching (backtracking limit) is an error, not "no
+            // match": the condition then fails closed.
+            Some(re) => re.is_match(actual).map_err(|e| EvalError::RegexRuntime {
+                pattern: shown.to_string(),
+                message: e.to_string(),
+            }),
             None => Err(EvalError::BadRegex(shown.to_string())),
         }
     })
@@ -223,7 +235,11 @@ fn compare_scalar(
         Operator::Eq => actual == expected,
         Operator::Ne => actual != expected,
         Operator::Regex => regex_match(expected, expected, actual)?,
-        Operator::Glob => regex_match(&glob_to_regex(expected), expected, actual)?,
+        Operator::Glob => {
+            let re = schlange_config::glob::glob_to_regex(expected)
+                .map_err(|e| EvalError::BadGlob(expected.to_string(), e))?;
+            regex_match(&re, expected, actual)?
+        }
         Operator::Ge | Operator::Gt | Operator::Le | Operator::Lt => {
             let ordering = match (actual.parse::<f64>(), expected.parse::<f64>()) {
                 (Ok(a), Ok(e)) => a.partial_cmp(&e),
@@ -255,9 +271,45 @@ fn ordered(op: Operator, o: std::cmp::Ordering) -> Option<bool> {
     })
 }
 
+/// Whether a condition value is the template `{{ author }}` (spaces inside the braces allowed).
+fn is_author_template(v: &str) -> bool {
+    let compact: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+    compact == "{{author}}"
+}
+
 /// Evaluates one atom.
 pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, EvalError> {
-    let value = attribute(pr, ctx, &atom.attribute)?;
+    // `{{ author }}` as a value stands for the pull request's author (docs: conditions,
+    // "Matching the Pull Request Author"); numbers, times and permissions reject it below as
+    // an invalid value.
+    let rendered;
+    let atom = match &atom.value {
+        Some(v) if is_author_template(v) => {
+            rendered = Atom {
+                value: Some(pr.author.clone()),
+                ..atom.clone()
+            };
+            &rendered
+        }
+        _ => atom,
+    };
+    // `@<app>/<name>` on a `check-*` attribute: only that app's runs, matched by name.
+    let qualified = match (&atom.value, check_predicate(&atom.attribute)) {
+        (Some(v), Some(pred)) => schlange_config::conditions::qualified(v)
+            .map(|(app, name)| (checks_where(pr, Some(app), pred), name.to_string())),
+        _ => None,
+    };
+    let unqualified;
+    let (value, atom) = match qualified {
+        Some((value, name)) => {
+            unqualified = Atom {
+                value: Some(name),
+                ..atom.clone()
+            };
+            (value, &unqualified)
+        }
+        None => (attribute(pr, ctx, &atom.attribute)?, atom),
+    };
     let bad_op = |op: Operator| EvalError::BadOperator {
         attribute: atom.attribute.clone(),
         op: op.as_str(),
@@ -355,22 +407,56 @@ pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, E
     Ok(result != atom.negate)
 }
 
-/// Evaluates a condition tree. Errors make the condition false and are returned alongside.
+/// Evaluates a condition tree. An atom that cannot be evaluated is unknown; `and`, `or` and
+/// `not` follow three-valued logic (a result is known only when it does not depend on the
+/// unknown part), and an unknown result counts as false. So an error fails closed, also under
+/// `not`. The errors are returned alongside.
 pub fn eval(
     cond: &Condition,
     pr: &PullRequest,
     ctx: &Context,
     errors: &mut Vec<EvalError>,
 ) -> bool {
+    eval3(cond, pr, ctx, errors).unwrap_or(false)
+}
+
+/// `Some(result)`, or `None` when the result depends on an atom that could not be evaluated.
+fn eval3(
+    cond: &Condition,
+    pr: &PullRequest,
+    ctx: &Context,
+    errors: &mut Vec<EvalError>,
+) -> Option<bool> {
     match cond {
-        Condition::Atom(a) => eval_atom(a, pr, ctx).unwrap_or_else(|e| {
-            errors.push(e);
-            false
-        }),
-        Condition::And(cs) => cs.iter().all(|c| eval(c, pr, ctx, errors)),
-        Condition::Or(cs) => cs.iter().any(|c| eval(c, pr, ctx, errors)),
-        Condition::Not(c) => !eval(c, pr, ctx, errors),
-        Condition::Always => true,
+        Condition::Atom(a) => match eval_atom(a, pr, ctx) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                errors.push(e);
+                None
+            }
+        },
+        Condition::And(cs) => {
+            let rs: Vec<Option<bool>> = cs.iter().map(|c| eval3(c, pr, ctx, errors)).collect();
+            if rs.contains(&Some(false)) {
+                Some(false)
+            } else if rs.contains(&None) {
+                None
+            } else {
+                Some(true)
+            }
+        }
+        Condition::Or(cs) => {
+            let rs: Vec<Option<bool>> = cs.iter().map(|c| eval3(c, pr, ctx, errors)).collect();
+            if rs.contains(&Some(true)) {
+                Some(true)
+            } else if rs.contains(&None) {
+                None
+            } else {
+                Some(false)
+            }
+        }
+        Condition::Not(c) => eval3(c, pr, ctx, errors).map(|r| !r),
+        Condition::Always => Some(true),
     }
 }
 
@@ -428,6 +514,7 @@ mod tests {
             head_sha: sha.into(),
             conclusion: c,
             seq,
+            ..Default::default()
         }
     }
 
@@ -449,8 +536,10 @@ mod tests {
         assert!(holds("#files >= 1", &p));
         assert!(holds("files ~= ^\\.github/", &p));
         assert!(holds("files *= src/*.rs", &p));
-        // Whether `*` crosses `/` like Python's `PurePath.match` is not settled (open).
-        assert!(holds("files *= **.rs", &p));
+        // Docs (data types, globs): `**` is special only as a whole segment; inside one it is
+        // two `*`, which stay in their segment.
+        assert!(!holds("files *= **.rs", &p));
+        assert!(holds("files *= **/*.rs", &p));
         assert!(holds("author ~= ^arztagent", &p));
     }
 
@@ -635,6 +724,159 @@ mod tests {
         assert!(!holds("mergify-configuration-changed", &p));
         p.files.push(".github/mergify.yml".into());
         assert!(holds("mergify-configuration-changed", &p));
+    }
+
+    fn eval_str(cond: &str, pr: &PullRequest) -> (bool, Vec<EvalError>) {
+        let mut errors = Vec::new();
+        let value: serde_json::Value = serde_json::from_str(cond).unwrap();
+        let mut perr = Vec::new();
+        let list = schlange_config::conditions::parse_list(&value, "", &mut perr);
+        assert!(perr.is_empty(), "{perr:?}");
+        (
+            eval_list(&list, pr, &Context::default(), &mut errors).0,
+            errors,
+        )
+    }
+
+    /// Critic 1abc, globs: `**/*.py` matches files at the root; braces and brackets work.
+    #[test]
+    fn globs_follow_the_documented_semantics() {
+        let mut p = pr();
+        p.files = vec!["setup.py".into()];
+        assert!(holds("files *= **/*.py", &p), "root file");
+        p.files = vec!["web/a/b.tsx".into()];
+        assert!(holds("files *= web/**/*.{js,jsx,ts,tsx}", &p));
+        assert!(!holds("files *= web/**/*.{js,ts}", &p));
+        p.files = vec!["v2.md".into()];
+        assert!(holds("files *= v[0-9].md", &p));
+        assert!(!holds("files *= v[!0-9].md", &p));
+        assert!(
+            eval_atom(
+                &parse_atom("files *= {a,b").unwrap(),
+                &p,
+                &Context::default()
+            )
+            .is_err(),
+            "an unbalanced brace is an error, not a literal"
+        );
+    }
+
+    /// Critic 1abc, conditions-checks: the newest run per app, per workflow and event, and
+    /// statuses apart from check runs.
+    #[test]
+    fn check_runs_are_read_per_app_workflow_and_kind() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut a = run("pep8", "h2", Some(Success), 1);
+        a.app = Some("github-actions".into());
+        let mut b = run("pep8", "h2", Some(Failure), 2);
+        b.app = Some("other-ci".into());
+        p.checks = vec![a.clone(), b.clone()];
+        // Two apps: the bare name matches whichever passed; the qualified form pins the app.
+        assert!(holds("check-success = pep8", &p));
+        assert!(holds("check-success = @github-actions/pep8", &p));
+        assert!(!holds("check-success = @other-ci/pep8", &p));
+        assert!(holds("check-failure = @other-ci/pep8", &p));
+        assert!(!holds("check-success = @nobody/pep8", &p));
+        assert_eq!(
+            attribute(&p, &Context::default(), "check-success").unwrap(),
+            AttrValue::List(vec!["pep8".into()])
+        );
+        // One check over two workflow files: a newer pass in one does not hide a failure in
+        // the other.
+        let mut w1 = run("test", "h2", Some(Failure), 3);
+        w1.workflow = Some("ci.yml".into());
+        w1.event = Some("pull_request".into());
+        let mut w2 = run("test", "h2", Some(Success), 4);
+        w2.workflow = Some("nightly.yml".into());
+        w2.event = Some("pull_request".into());
+        p.checks = vec![w1.clone(), w2.clone()];
+        assert!(!holds("check-success = test", &p));
+        // A re-run of the same workflow and event replaces the earlier run.
+        let mut w3 = w1.clone();
+        w3.conclusion = Some(Success);
+        w3.seq = 5;
+        p.checks.push(w3);
+        assert!(holds("check-success = test", &p));
+        // A commit status and a check run of the same name are numbered apart: a status with
+        // a higher id does not replace the check run, nor the other way round.
+        let cr = run("lint", "h2", Some(Failure), 7);
+        let mut st = run("lint", "h2", Some(Success), 900);
+        st.status = true;
+        p.checks = vec![cr, st];
+        assert!(holds("check-failure = lint", &p));
+        assert!(holds("check-success = lint", &p));
+        assert_eq!(p.current_checks().len(), 2);
+    }
+
+    /// Critic 1abc, conditions-syntax.
+    #[test]
+    fn unicode_operators_parse_and_evaluate() {
+        let p = pr();
+        assert!(holds("#files ≥ 2", &p));
+        assert!(holds("#files ≤ 2", &p));
+        assert!(!holds("#files ≥ 3", &p));
+    }
+
+    #[test]
+    fn not_over_an_evaluation_error_fails_closed() {
+        let p = pr();
+        // `approved-reviews-by` is not evaluated: unknown, so `not` of it is unknown too.
+        let (ok, errors) = eval_str(r#"[{"not": "approved-reviews-by = x"}]"#, &p);
+        assert!(!ok, "fails closed");
+        assert_eq!(errors.len(), 1);
+        let (ok, _) = eval_str(
+            r#"[{"not": {"and": ["base = main", "approved-reviews-by = x"]}}]"#,
+            &p,
+        );
+        assert!(!ok);
+        // Known regardless of the unknown part: `false and ?` is false, so its negation holds.
+        let (ok, _) = eval_str(
+            r#"[{"not": {"and": ["base = other", "approved-reviews-by = x"]}}]"#,
+            &p,
+        );
+        assert!(ok);
+        let (ok, _) = eval_str(
+            r#"[{"or": ["base = main", "approved-reviews-by = x"]}]"#,
+            &p,
+        );
+        assert!(ok, "true or ? is true");
+    }
+
+    #[test]
+    fn a_regex_that_fails_while_matching_is_an_error() {
+        let mut p = pr();
+        p.title = "a".repeat(40);
+        // Catastrophic backtracking hits fancy_regex's backtrack limit.
+        let a = parse_atom(r"title ~= ^(?:(a)|(a))*?\1?(?:(a)|(a))*\1?(?=b)").unwrap();
+        let r = eval_atom(&a, &p, &Context::default());
+        assert!(matches!(r, Err(EvalError::RegexRuntime { .. })), "{r:?}");
+        let n = parse_atom(r"-title ~= ^(?:(a)|(a))*?\1?(?:(a)|(a))*\1?(?=b)").unwrap();
+        assert!(
+            eval_atom(&n, &p, &Context::default()).is_err(),
+            "never a silent pass"
+        );
+    }
+
+    #[test]
+    fn author_template_in_values() {
+        let mut p = pr();
+        p.head_ref = "arztagent-bot".into();
+        assert!(holds("head = {{ author }}", &p));
+        assert!(holds("head = {{author}}", &p));
+        p.labels.insert("arztagent-bot".into());
+        assert!(holds("label = {{ author }}", &p));
+        p.head_ref = "other".into();
+        assert!(!holds("head = {{ author }}", &p));
+        assert!(
+            eval_atom(
+                &parse_atom("#files = {{ author }}").unwrap(),
+                &p,
+                &Context::default()
+            )
+            .is_err(),
+            "a number rejects it"
+        );
     }
 
     #[test]

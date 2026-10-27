@@ -122,6 +122,7 @@ mod tests {
             head_sha: "h1".into(),
             conclusion: Some(Conclusion::Success),
             seq: 1,
+            ..Default::default()
         }];
         let (s, d) = step(
             &State::default(),

@@ -50,11 +50,25 @@ const OPERATORS: &[(&str, Operator)] = &[
     (">=", Operator::Ge),
     ("<=", Operator::Le),
     ("≠", Operator::Ne),
+    ("≥", Operator::Ge),
+    ("≤", Operator::Le),
     ("=", Operator::Eq),
     (":", Operator::Eq),
     (">", Operator::Gt),
     ("<", Operator::Lt),
 ];
+
+/// Splits a qualified check or deployment name `@<github-app-slug>/<name>` into slug and name;
+/// `None` for any other shape.
+pub fn qualified(value: &str) -> Option<(&str, &str)> {
+    let rest = value.strip_prefix('@')?;
+    let (slug, name) = rest.split_once('/')?;
+    let slug_ok = !slug.is_empty()
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    (slug_ok && !name.is_empty()).then_some((slug, name))
+}
 
 /// One condition string.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -251,10 +265,26 @@ mod tests {
         );
         assert_eq!(atom("base: main").operator, Some(Operator::Eq));
         assert_eq!(atom("label ≠ x").operator, Some(Operator::Ne));
+        assert_eq!(atom("#files ≥ 3").operator, Some(Operator::Ge));
+        assert_eq!(atom("#files ≤ 3").operator, Some(Operator::Le));
+        assert_eq!(atom("#files≤3").value.as_deref(), Some("3"));
         assert_eq!(atom("#files >= 3").operator, Some(Operator::Ge));
         assert_eq!(atom("#files > 3").operator, Some(Operator::Gt));
         assert_eq!(atom("files *= src/**").operator, Some(Operator::Glob));
         assert_eq!(atom("title = \"a b\"").value.as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn qualified_check_names() {
+        assert_eq!(
+            qualified("@github-actions/pep8"),
+            Some(("github-actions", "pep8"))
+        );
+        assert_eq!(qualified("@a/b/c"), Some(("a", "b/c")));
+        assert_eq!(qualified("@/pep8"), None);
+        assert_eq!(qualified("@github-actions"), None);
+        assert_eq!(qualified("@x/"), None);
+        assert_eq!(qualified("pep8"), None);
     }
 
     #[test]

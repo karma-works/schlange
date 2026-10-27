@@ -285,6 +285,7 @@ impl GithubForge {
                 head_sha: c.head_sha.clone(),
                 conclusion: conclusion(&c.status, c.conclusion.as_deref()),
                 seq: c.id,
+                ..Default::default()
             });
         }
         for s in self.api.combined_status(&head, prio)?.statuses {
@@ -294,6 +295,8 @@ impl GithubForge {
                 head_sha: head.clone(),
                 conclusion: status_conclusion(&s.state),
                 seq: s.id,
+                status: true,
+                ..Default::default()
             });
         }
         pr.head_tree = Some(self.api.git_commit(&head, prio)?.tree.sha);

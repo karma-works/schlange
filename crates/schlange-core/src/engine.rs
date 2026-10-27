@@ -467,7 +467,11 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         }
         Event::CheckRun { number, run } => {
             if let Some(p) = pr(state, *number) {
-                match p.checks.iter_mut().find(|c| c.seq == run.seq) {
+                match p
+                    .checks
+                    .iter_mut()
+                    .find(|c| c.seq == run.seq && c.status == run.status)
+                {
                     Some(existing) => *existing = run.clone(),
                     None => p.checks.push(run.clone()),
                 }
@@ -957,6 +961,7 @@ mod tests {
                 head_sha: format!("s{n}"),
                 conclusion: Some(Conclusion::Success),
                 seq,
+                ..Default::default()
             },
         }
     }

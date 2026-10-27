@@ -309,6 +309,24 @@ fn check_list(
         {
             push(&ptr, format!("regex does not compile: {e}"));
         }
+        if atom.operator == Some(Operator::Glob)
+            && let Some(v) = &atom.value
+            && let Err(e) = crate::glob::glob_to_regex(v)
+        {
+            push(&ptr, format!("glob `{v}` is invalid: {e}"));
+        }
+        // `@<app-slug>/<name>` qualifies a check or deployment by GitHub App; a value that starts
+        // with `@` and has another shape is rejected (docs: conditions).
+        if (atom.attribute.starts_with("check") || atom.attribute.starts_with("deployment"))
+            && let Some(v) = &atom.value
+            && v.starts_with('@')
+            && crate::conditions::qualified(v).is_none()
+        {
+            push(
+                &ptr,
+                format!("`{v}` starts with `@` but is not `@<github-app-slug>/<name>`"),
+            );
+        }
     }
 }
 

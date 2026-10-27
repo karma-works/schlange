@@ -29,8 +29,18 @@ pub struct CheckRun {
     pub head_sha: String,
     /// `None` while queued or in progress.
     pub conclusion: Option<Conclusion>,
-    /// Creation order on the forge; the newest run per name wins.
+    /// Creation order on the forge among runs of the same kind (check runs and commit
+    /// statuses are numbered apart, so their orders are never compared).
     pub seq: u64,
+    /// A commit status (one per context), not a check run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub status: bool,
+    /// The GitHub Actions workflow file that ran it, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// The event that triggered that workflow run, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,16 +193,41 @@ impl PullRequest {
         }
     }
 
-    /// The newest run per check name on the current head commit.
+    /// The run that counts per check on the current head commit (docs: conditions, "Which Check
+    /// Run a Condition Reads"), one per kind (check run or commit status), name and app:
+    ///
+    /// - commit statuses: the latest one posted per context;
+    /// - check runs: the newest run of each workflow file and triggering event; when one check
+    ///   spans several of those, a run that has not passed is kept even if another one passed
+    ///   later. The docs read it that way for checks the base branch requires; the engine does
+    ///   not know which checks are required, so it reads every check that way (fail closed).
     pub fn current_checks(&self) -> Vec<&CheckRun> {
-        let mut newest: Vec<&CheckRun> = Vec::new();
+        type Key<'a> = (bool, &'a str, Option<&'a str>);
+        let mut groups: Vec<(Key, Vec<&CheckRun>)> = Vec::new();
         for run in self.checks.iter().filter(|c| c.head_sha == self.head_sha) {
-            match newest.iter_mut().find(|r| r.name == run.name) {
+            let key = (run.status, run.name.as_str(), run.app.as_deref());
+            let suite = (run.workflow.as_deref(), run.event.as_deref());
+            let Some((_, runs)) = groups.iter_mut().find(|(k, _)| *k == key) else {
+                groups.push((key, vec![run]));
+                continue;
+            };
+            let same =
+                |r: &&CheckRun| run.status || (r.workflow.as_deref(), r.event.as_deref()) == suite;
+            match runs.iter_mut().find(|r| same(r)) {
                 Some(slot) if slot.seq < run.seq => *slot = run,
                 Some(_) => {}
-                None => newest.push(run),
+                None => runs.push(run),
             }
         }
-        newest
+        groups
+            .into_iter()
+            .map(|(_, runs)| {
+                runs.iter()
+                    .copied()
+                    .filter(|r| r.conclusion != Some(Conclusion::Success))
+                    .max_by_key(|r| r.seq)
+                    .unwrap_or_else(|| runs.iter().copied().max_by_key(|r| r.seq).expect("a run"))
+            })
+            .collect()
     }
 }

@@ -27,6 +27,7 @@ fn green(n: u64, sha: &str) -> CheckRun {
         head_sha: sha.into(),
         conclusion: Some(Conclusion::Success),
         seq: n * 100,
+        ..Default::default()
     }
 }
 

@@ -15,16 +15,16 @@
     {
       "stage": "conditions",
       "severity": "error",
-      "pointer": "/queue_rules/0/queue_conditions/6/or/1",
-      "line": 12,
+      "pointer": "/queue_rules/0/queue_conditions/10/or/1",
+      "line": 16,
       "column": 13,
       "message": "condition `base ? main`: unknown operator after `base`"
     },
     {
       "stage": "conditions",
       "severity": "error",
-      "pointer": "/queue_rules/0/queue_conditions/7/xor",
-      "line": 14,
+      "pointer": "/queue_rules/0/queue_conditions/11/xor",
+      "line": 18,
       "column": 11,
       "message": "unknown combinator `xor` (expected and, or, not)"
     },
@@ -71,8 +71,24 @@
     {
       "stage": "conditions",
       "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/6",
+      "line": 10,
+      "column": 9,
+      "message": "glob `web/{a,b` is invalid: unbalanced `{` (escape it as `\\{` or `[{]`)"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
+      "pointer": "/queue_rules/0/queue_conditions/7",
+      "line": 11,
+      "column": 9,
+      "message": "`@github-actions` starts with `@` but is not `@<github-app-slug>/<name>`"
+    },
+    {
+      "stage": "conditions",
+      "severity": "error",
       "pointer": "/pull_request_rules/0/conditions/0",
-      "line": 18,
+      "line": 22,
       "column": 9,
       "message": "operator `~=` is not allowed for `sender-permission` (allowed: = != >= <= < >)"
     }

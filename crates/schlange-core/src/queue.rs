@@ -855,12 +855,12 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
     } else {
         runs.iter()
             .copied()
-            .filter(|r| referenced.contains(&r.name))
+            .filter(|r| referenced.iter().any(|n| eval::check_matches(n, r)))
             .collect()
     };
     let missing: Vec<&str> = referenced
         .iter()
-        .filter(|n| !runs.iter().any(|r| &r.name == *n))
+        .filter(|n| !runs.iter().any(|r| eval::check_matches(n, r)))
         .map(String::as_str)
         .collect();
     let failing = |c: Option<Conclusion>| {

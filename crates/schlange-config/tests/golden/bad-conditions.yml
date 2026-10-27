@@ -7,6 +7,10 @@ queue_rules:
       - "#files >= many"
       - files ~= ^(unclosed
       - -commits-behind > 3
+      - files *= web/{a,b
+      - check-success = @github-actions
+      - "#files ≥ 2"
+      - check-success = @github-actions/pep8
       - or:
           - check-success = ci
           - base ? main

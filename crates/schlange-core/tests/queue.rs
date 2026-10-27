@@ -20,6 +20,7 @@ fn run(name: &str, sha: &str, ok: Option<Conclusion>, seq: u64) -> CheckRun {
         head_sha: sha.into(),
         conclusion: ok,
         seq,
+        ..Default::default()
     }
 }
 
