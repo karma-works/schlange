@@ -46,6 +46,9 @@ pub const AUTO_MARGIN: f64 = 1.5;
 pub const AUTO_HALF_LIFE: Time = 86400;
 /// No checks timeout is shorter than this (docs: at least 60 seconds).
 pub const MIN_TIMEOUT: Time = 60;
+/// A verification read that answers later than this after it was sent is too old to land on
+/// (the answer reflects the forge when the request was served): the engine reads again.
+pub const MAX_READ_AGE: Time = 10;
 /// A wait that is due at once (after a restart).
 pub const EXPIRED: Time = Time::MAX;
 const BASE_HISTORY: usize = 64;
@@ -1252,6 +1255,19 @@ fn front(
             };
             false
         }
+        CarStatus::Verifying { token: t, since }
+            if token == Some(*t) && now > since + MAX_READ_AGE =>
+        {
+            // A late answer: land only on a recent read (I1).
+            let mut branches = vec![base.to_string()];
+            branches.extend(car.branch.clone());
+            let t = refresh(state, &car, branches, out);
+            state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Verifying {
+                token: t,
+                since: now,
+            };
+            false
+        }
         CarStatus::Verifying { token: t, .. } if token == Some(*t) => {
             let v = verdict(state, rules, &car, base, now);
             let expected = state.trains[base].base_sha.clone();
@@ -1377,7 +1393,17 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
     let now = state.now;
     let never = rules.merge_queue.reset_on_external_merge == "never";
     let train = &state.trains[base];
+    // While a car lands, a new tip is most likely the landing itself, seen before its reply:
+    // the landing's outcome (its reply, or the read that resolves it) decides; a push from
+    // outside shows up there as a refused compare-and-swap.
+    let landing = train.cars.iter().any(|c| {
+        matches!(
+            c.status,
+            CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+        )
+    });
     match (train.base_sha.clone(), known) {
+        (Some(old), Some(sha)) if old != sha && landing => {}
         (_, None) => {
             let ask = train
                 .base_request

@@ -7,6 +7,13 @@
 //!
 //! `Wire` sits between the runner and the simulated forge and works on any [`GitStore`], so the
 //! same faults run against git in memory and against `localgit`.
+//!
+//! Lagging reads apply to webhook-driven reads and reconciliation passes. The engine's own
+//! `Refresh` reads (verify before landing, confirm a red verdict, resolve an unknown landing)
+//! are consistent reads: no engine can keep I1 if the read it lands on may miss a label added
+//! a minute earlier. An adapter must serve them without a cache (the GitHub adapter reads them
+//! directly at landing priority). This is a requirement on adapters, not an assumption about
+//! GitHub's caches.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,8 +43,9 @@ pub struct ForgeFaults {
     pub lie: f64,
     /// Someone pushes to the base right before a landing (a real compare-and-swap race, MQ-06).
     pub base_race: f64,
-    /// A read returns the previous state of an object that changed within `max_lag` (read
-    /// after write, eventual consistency, MQ-33).
+    /// A webhook-driven or reconciliation read returns the state the engine read before, for
+    /// an object that changed at most `max_lag` ago (read after write, eventual consistency,
+    /// MQ-33).
     pub stale_read: f64,
     pub max_lag: Time,
     /// CI timing: jitter, late check-run creation, delayed cancellation.
@@ -141,9 +149,10 @@ pub struct WireStats {
 pub struct Wire {
     pub faults: ForgeFaults,
     rng: Rng,
-    /// Per object: what the engine last read, and since when the truth differs from it.
-    prs: BTreeMap<u64, (PullRequest, Option<Time>)>,
-    branches: BTreeMap<String, (Option<Sha>, Option<Time>)>,
+    /// Per object: what the engine last read, and when that was last the truth. The object
+    /// changed after that time, so a stale answer is at most `max_lag` behind the change.
+    prs: BTreeMap<u64, (PullRequest, Time)>,
+    branches: BTreeMap<String, (Option<Sha>, Time)>,
     races: u64,
     pub stats: WireStats,
 }
@@ -160,50 +169,58 @@ impl Wire {
         }
     }
 
-    fn lagging(&mut self, now: Time, since: &mut Option<Time>) -> bool {
-        let first = *since.get_or_insert(now);
-        now < first + self.faults.max_lag && self.rng.unit() < self.faults.stale_read
+    fn lagging(&mut self, now: Time, fresh_at: Time, consistent: bool) -> bool {
+        !consistent
+            && now < fresh_at + self.faults.max_lag
+            && self.rng.unit() < self.faults.stale_read
     }
 
-    fn read_pr<G: GitStore>(&mut self, forge: &SimForge<G>, n: u64) -> Option<PullRequest> {
+    fn read_pr<G: GitStore>(
+        &mut self,
+        forge: &SimForge<G>,
+        n: u64,
+        consistent: bool,
+    ) -> Option<PullRequest> {
         let truth = forge.read_pull_request(n)?;
         if self.faults.stale_read == 0.0 {
             return Some(truth);
         }
         let now = forge.now();
-        if let Some((seen, mut since)) = self.prs.get(&n).cloned()
+        if let Some((seen, fresh_at)) = self.prs.get(&n).cloned()
             && seen != truth
-            && self.lagging(now, &mut since)
+            && self.lagging(now, fresh_at, consistent)
         {
             self.stats.stale_reads += 1;
-            self.prs.insert(n, (seen.clone(), since));
             return Some(seen);
         }
-        self.prs.insert(n, (truth.clone(), None));
+        self.prs.insert(n, (truth.clone(), now));
         Some(truth)
     }
 
-    fn read_branch<G: GitStore>(&mut self, forge: &SimForge<G>, name: &str) -> Option<Sha> {
+    fn read_branch<G: GitStore>(
+        &mut self,
+        forge: &SimForge<G>,
+        name: &str,
+        consistent: bool,
+    ) -> Option<Sha> {
         let truth = forge.read_branch(name);
         if self.faults.stale_read == 0.0 {
             return truth;
         }
         let now = forge.now();
-        if let Some((seen, mut since)) = self.branches.get(name).cloned()
+        if let Some((seen, fresh_at)) = self.branches.get(name).cloned()
             && seen != truth
-            && self.lagging(now, &mut since)
+            && self.lagging(now, fresh_at, consistent)
         {
             self.stats.stale_reads += 1;
-            self.branches
-                .insert(name.to_string(), (seen.clone(), since));
             return seen;
         }
-        self.branches
-            .insert(name.to_string(), (truth.clone(), None));
+        self.branches.insert(name.to_string(), (truth.clone(), now));
         truth
     }
 
-    /// A read of these pull requests and branches, as the engine gets it.
+    /// A read of these pull requests and branches, as the engine gets it. Reads with a token
+    /// (the engine's `Refresh`) are consistent; others may lag.
     pub fn snapshot<G: GitStore>(
         &mut self,
         forge: &SimForge<G>,
@@ -211,14 +228,15 @@ impl Wire {
         branches: &[String],
         token: Option<u64>,
     ) -> Event {
+        let consistent = token.is_some();
         Event::Snapshot {
             pull_requests: numbers
                 .iter()
-                .filter_map(|n| self.read_pr(forge, *n))
+                .filter_map(|n| self.read_pr(forge, *n, consistent))
                 .collect(),
             branches: branches
                 .iter()
-                .map(|b| (b.clone(), self.read_branch(forge, b)))
+                .map(|b| (b.clone(), self.read_branch(forge, b, consistent)))
                 .collect(),
             token,
         }
