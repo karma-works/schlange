@@ -1,0 +1,38 @@
+{
+  "batches": [],
+  "known_deviations": [
+    {
+      "field": "end",
+      "observed": "merged",
+      "pr": "a",
+      "why": "a queue command from a sender allowed by commands_restrictions lifts the sticky dequeue in Schlange; on Mergify it fails because Mergify's own cancelled check counts against #check-failure = 0 (queue-dequeue-reasons.md, sticky-dequeue)"
+    },
+    {
+      "field": "enter_count",
+      "observed": 2,
+      "pr": "a",
+      "why": "same deviation: the allowed queue command queues the pull request a second time"
+    },
+    {
+      "field": "landed",
+      "observed": [
+        "a"
+      ],
+      "pr": "*",
+      "why": "same deviation: the pull request queued again by the command lands"
+    }
+  ],
+  "landed": [],
+  "prs": {
+    "a": {
+      "dequeue_codes": [
+        "PR_MANUALLY_DEQUEUED"
+      ],
+      "end": "open",
+      "enter_count": 1,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S11"
+}

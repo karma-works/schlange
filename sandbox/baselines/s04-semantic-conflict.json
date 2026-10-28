@@ -1,20 +1,5 @@
 {
-  "batches": [
-    {
-      "ci_ok": "failure",
-      "prs": [
-        "a",
-        "b"
-      ]
-    },
-    {
-      "ci_ok": "success",
-      "prs": [
-        "a",
-        "b"
-      ]
-    }
-  ],
+  "batches": null,
   "landed": [
     "a"
   ],

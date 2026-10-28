@@ -23,6 +23,11 @@ RECONCILE="${RECONCILE:-10}"
 
 app_id="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$CONFIG/apps/queue.json")"
 mkdir -p "$TMP/schlange-data"
+# Admin API on 127.0.0.1 only, for the driver's event log (queued, enter_count, dequeue codes).
+token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+echo "::add-mask::$token"
+printf '%s' "$token" > "$TMP/admin-token"
+echo "SCHLANGE_ADMIN_TOKEN=$token" >> "${GITHUB_ENV:-/dev/null}"
 
 nohup "$BIN" serve \
   --app-id "$app_id" \
@@ -34,6 +39,7 @@ nohup "$BIN" serve \
   --listen "127.0.0.1:$PORT" \
   --reconcile-every "$RECONCILE" \
   --no-lease \
+  --admin-token-file "$TMP/admin-token" \
   >"$TMP/schlange-serve.log" 2>&1 &
 echo "$!" > "$TMP/schlange.pids"
 

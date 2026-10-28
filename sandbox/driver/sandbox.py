@@ -189,6 +189,26 @@ def mergify_client():
 MERGIFY_API = "https://api.mergify.com/v1"
 
 
+def schlange_client():
+    """Schlange's admin API (schlange-e2e in the runner): the same event log format as
+    Mergify's, so both sides yield queued, enter_count and dequeue_codes."""
+    url, token = os.environ.get("SCHLANGE_URL"), os.environ.get("SCHLANGE_ADMIN_TOKEN")
+    if not url or not token or not url.startswith("http://127.0.0.1:"):
+        return None, None
+    return Client(lambda: (token, 10 ** 9), "schlange"), url
+
+
+def fetch_events(client, url):
+    events, cursor = [], None
+    for _ in range(50):
+        page = client.call("GET", url + (f"&cursor={cursor}" if cursor else ""))
+        events += page.get("events", [])
+        cursor = page.get("next_cursor") or (page.get("links") or {}).get("next")
+        if not cursor or not page.get("events"):
+            break
+    return events
+
+
 # --- Scenario ---------------------------------------------------------------------------
 
 def pr_body(spec, run_id, key):
@@ -392,6 +412,7 @@ def record(out):
         if pr["head"]["ref"].startswith(QUEUE_PREFIX):
             trace["queue_prs"].append({
                 "number": pr["number"], "head": pr["head"]["ref"], "user": pr["user"]["login"],
+                "title": pr["title"],
                 "state": pr["state"], "draft": pr["draft"], "created_at": pr["created_at"],
                 "closed_at": pr["closed_at"], "body": pr["body"],
                 "commits": [x["commit"]["message"].split("\n")[0] for x in c.paged(f"{r}/pulls/{pr['number']}/commits")],
@@ -407,14 +428,13 @@ def record(out):
     if m:
         url = (f"{MERGIFY_API}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
                f"&received_from={state['started']}")
-        events, cursor = [], None
-        for _ in range(50):
-            page = m.call("GET", url + (f"&cursor={cursor}" if cursor else ""))
-            events += page.get("events", [])
-            cursor = page.get("next_cursor") or (page.get("links") or {}).get("next")
-            if not cursor or not page.get("events"):
-                break
-        trace["mergify_events"] = events
+        trace["mergify_events"] = fetch_events(m, url)
+    # Schlange's event log (schlange-e2e): the same format, from its admin API in the runner.
+    sc, base = schlange_client() if state["repo"] == "schlange-e2e" else (None, None)
+    if sc:
+        url = (f"{base}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
+               f"&received_from={state['started']}")
+        trace["queue_events"] = fetch_events(sc, url)
     (out / "trace.json").write_text(json.dumps(trace, indent=2, ensure_ascii=False))
     summary = {
         "prs": {k: {"number": v["number"], "end": "merged" if v["merged"] else v["state"], "labels": v["labels"],
@@ -438,7 +458,7 @@ def record(out):
 def write_outcome(out):
     trace = json.loads((out / "trace.json").read_text())
     key_of = {v["number"]: k for k, v in trace["prs"].items()}
-    events = trace.get("mergify_events")
+    events = trace.get("queue_events", trace.get("mergify_events"))
     prs = {}
     for k, v in trace["prs"].items():
         n = v["number"]
@@ -447,7 +467,7 @@ def write_outcome(out):
         left = [e for e in mine if "queue" in e["type"] and e["type"].endswith("leave")]
         prs[k] = {
             "end": "merged" if v["merged"] else v["state"],
-            # Without the Mergify log (schlange-e2e), Schlange's own event log will provide these fields later.
+            # From the queue's event log: Mergify's (queue-lab) or Schlange's (schlange-e2e).
             "queued": bool(entered) if events is not None else None,
             "enter_count": len(entered) if events is not None else None,
             "dequeue_codes": [(e.get("metadata") or {}).get("dequeue_code") for e in left
@@ -460,7 +480,10 @@ def write_outcome(out):
                 landed.append(key_of[int(num)])
     batches = []
     for q in reversed(trace["queue_prs"]):
-        keys = sorted({key_of[int(x)] for x in re.findall(r"#(\d+)", q.get("body") or "") if int(x) in key_of})
+        # The pull requests embarked in this queue pull request: the title names them; the
+        # body also lists the pull requests ahead, so it is only a fallback for old traces.
+        text = q.get("title") if q.get("title") is not None else (q.get("body") or "")
+        keys = sorted({key_of[int(x)] for x in re.findall(r"#(\d+)", text) if int(x) in key_of})
         ci = next((x["conclusion"] for x in q["checks"] if x["name"] == "ci-ok"), None)
         batches.append({"prs": keys, "ci_ok": ci})
     outcome = {"scenario": trace["run"]["run_id"].split("-")[0].upper(), "repo": trace["run"]["repo"],
@@ -473,18 +496,33 @@ def compare_outcomes(expected_path, actual_path, strict_batches=False):
     """0 = same behaviour, 1 = deviations (they are printed)."""
     exp = json.loads(Path(expected_path).read_text())
     act = json.loads(Path(actual_path).read_text())
-    diffs = []
+    diffs, known = [], []
+    # Documented deviations of Schlange from the baseline: {"pr", "field", "observed", "why"}.
+    allowed = {(d["pr"], d["field"]): d for d in exp.get("known_deviations", [])}
     for k in sorted(set(exp["prs"]) | set(act["prs"])):
         e, a = exp["prs"].get(k, {}), act["prs"].get(k, {})
-        for field in ("end", "queued", "dequeue_codes"):
-            # None means: this side cannot observe the field (yet).
+        for field in ("end", "queued", "enter_count", "dequeue_codes"):
+            # None means: this side cannot observe the field.
             if e.get(field) is not None and a.get(field) is not None and e.get(field) != a.get(field):
-                diffs.append(f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}")
+                line = f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}"
+                d = allowed.get((k, field))
+                if d and d.get("observed") == a.get(field):
+                    known.append(f"{line} ({d['why']})")
+                else:
+                    diffs.append(line)
     if exp["landed"] != act["landed"]:
-        diffs.append(f"Landing order: expected {exp['landed']}, observed {act['landed']}")
+        line = f"Landing order: expected {exp['landed']}, observed {act['landed']}"
+        d = allowed.get(("*", "landed"))
+        if d and d.get("observed") == act["landed"]:
+            known.append(f"{line} ({d['why']})")
+        else:
+            diffs.append(line)
     # Batches depend on timing (batch_max_wait_time); compare strictly only on request.
-    if strict_batches and [b["prs"] for b in exp["batches"]] != [b["prs"] for b in act["batches"]]:
+    if strict_batches and exp.get("batches") is not None and \
+            [b["prs"] for b in exp["batches"]] != [b["prs"] for b in act["batches"]]:
         diffs.append(f"Batches: expected {exp['batches']}, observed {act['batches']}")
+    if known:
+        print("KNOWN DEVIATION (documented)\n  " + "\n  ".join(known))
     if diffs:
         print("DEVIATION\n  " + "\n  ".join(diffs))
         return 1

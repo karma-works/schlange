@@ -1,49 +1,5 @@
 {
-  "batches": [
-    {
-      "ci_ok": "failure",
-      "prs": [
-        "a",
-        "b",
-        "c",
-        "d"
-      ]
-    },
-    {
-      "ci_ok": "success",
-      "prs": [
-        "a",
-        "b",
-        "c",
-        "d"
-      ]
-    },
-    {
-      "ci_ok": "failure",
-      "prs": [
-        "a",
-        "b",
-        "c",
-        "d"
-      ]
-    },
-    {
-      "ci_ok": "failure",
-      "prs": [
-        "a",
-        "b",
-        "c",
-        "d"
-      ]
-    },
-    {
-      "ci_ok": "success",
-      "prs": [
-        "c",
-        "d"
-      ]
-    }
-  ],
+  "batches": null,
   "landed": [
     "a",
     "c",
