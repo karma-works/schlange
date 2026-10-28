@@ -1,160 +1,160 @@
-# GitHub-Sandbox
+# GitHub sandbox
 
-- **Zweck:** E2E- und Differenztests gegen echtes GitHub (KONZEPT.md, Abschnitt 9). Schon vor
-  dem ersten Schlange-Code nützlich: Die Szenarien zeichnen auf, wie Mergify sich verhält.
-  Das ist das beobachtete Verhalten für den Clean-Room-Nachbau und der Sollwert für den
-  Differenztest.
+- **Purpose:** E2E and differential tests against real GitHub (KONZEPT.md, section 9). Useful
+  even before the first Schlange code: the scenarios record how Mergify behaves. That is the
+  observed behaviour for the clean-room rebuild and the reference value for the differential
+  test.
 - **Code:** [sandbox/](../../sandbox/)
 
-## Aufbau
+## Layout
 
-Organisation `schlange-sandbox` (Free-Plan), Owner `karma-works`. Die Repos sind öffentlich,
-weil der Free-Plan Rulesets nur für öffentliche Repos anbietet. Actions-Minuten sind dort
-kostenlos und Mergify ist es für Open Source auch. Der Inhalt ist synthetisch.
+Organisation `schlange-sandbox` (free plan), owner `karma-works`. The repos are public,
+because the free plan offers rulesets only for public repos. Actions minutes are free there,
+and so is Mergify for open source. The content is synthetic.
 
-| Repo | Queue | Schlange | Zweck |
+| Repo | Queue | Schlange | Purpose |
 |---|---|---|---|
-| `queue-lab` | Mergify | Schatten (nur lesen) | Differenztest: dieselben PRs, Entscheidungen vergleichen |
-| `schlange-e2e` | Schlange | aktiv | E2E: Queue-PRs, Rulesets, Merges |
+| `queue-lab` | Mergify | shadow (read only) | differential test: same PRs, compare decisions |
+| `schlange-e2e` | Schlange | active | E2E: queue PRs, rulesets, merges |
 
-Beide Repos bekommen dasselbe Fixture ([sandbox/fixture/](../../sandbox/fixture/)):
+Both repos get the same fixture ([sandbox/fixture/](../../sandbox/fixture/)):
 
-- `ci.yml` mit Pflichtergebnis `ci-ok`, `light` auf PRs und `full` auf `mergify/merge-queue/*`.
-- `pr-gate.yml` mit dem Check `Risk class and data protection` (prüft den Abschnitt Datenschutz).
-  Der Queue-Bot-Login steht in der Repo-Variablen `QUEUE_BOT_LOGIN` (die Zeile, die sich beim
-  Umstieg ändert).
-- `ai-review.yml` mit dem Check-Run `KI-Review` über `pull_request_target`, ohne Modell. Rot,
-  wenn die PR-Beschreibung „KI-Review: rot“ enthält.
-- Die `.mergify.yml` von Arztagent, nur die Logins sind ausgetauscht.
-- `package.json` und `dependabot.yml` mit absichtlich alten Abhängigkeiten. Dependabot öffnet
-  echte Patch-, Minor- und Major-PRs, dazu ein Update von `actions/checkout`, das einen
-  Verfassungspfad ändert.
-- Ruleset „main geschützt“: PR nötig, Checks `ci-ok` und `Risk class and data protection`,
-  Ausnahme für die Queue-App (Mergify bzw. Schlange) und für Admins.
+- `ci.yml` with the required result `ci-ok`, `light` on PRs and `full` on `mergify/merge-queue/*`.
+- `pr-gate.yml` with the check `Risk class and data protection` (it checks the Datenschutz
+  section). The queue bot login is in the repo variable `QUEUE_BOT_LOGIN` (the line that
+  changes at the switchover).
+- `ai-review.yml` with the check run `KI-Review` via `pull_request_target`, without a model.
+  Red if the PR description contains "KI-Review: rot".
+- Arztagent's `.mergify.yml`, only the logins are replaced.
+- `package.json` and `dependabot.yml` with deliberately old dependencies. Dependabot opens real
+  patch, minor and major PRs, plus an update of `actions/checkout` that changes a constitution
+  path.
+- Ruleset "main geschützt": PR required, checks `ci-ok` and `Risk class and data protection`,
+  bypass for the queue app (Mergify or Schlange) and for admins.
 
-Die Suite wird über Flag-Dateien gesteuert ([ci/run.sh](../../sandbox/fixture/ci/run.sh)):
-`fail`, `fail-light`, `fail-full`, `conflicts-with <pr>`, `flaky <prozent>`, `sleep`,
-`sleep-full`. Es zählen nur Flags, die der PR bzw. das Bündel selbst ändert. Flags, die schon
-auf `main` liegen, wirken nicht mehr.
+The suite is controlled by flag files ([ci/run.sh](../../sandbox/fixture/ci/run.sh)):
+`fail`, `fail-light`, `fail-full`, `conflicts-with <pr>`, `flaky <percent>`, `sleep`,
+`sleep-full`. Only flags that the PR or the batch itself changes count. Flags that are already
+on `main` no longer have any effect.
 
-## Identitäten
+## Identities
 
-Es gibt keinen Maschinen-User. Alle Bots sind GitHub Apps: Sie haben eigene Logins und eng
-gefasste Rechte, und Passwort und 2FA entfallen.
+There is no machine user. All bots are GitHub Apps: they have their own logins and narrowly
+scoped permissions, and password and 2FA are not needed.
 
-| Identität | Rolle |
+| Identity | Role |
 |---|---|
-| App „Schlange Sandbox Queue“ | Schlange als Queue in `schlange-e2e`, Schatten in `queue-lab` |
-| App „Schlange Sandbox Driver“ | Test-Akteur: öffnet PRs, pusht, kommentiert. Gleichzeitig der *nicht* erlaubte Sender für `commands_restrictions` |
-| Mergify | Referenz in `queue-lab` |
-| `karma-works` (gh-Login) | der erlaubte Sender für `@mergifyio queue`; bewegt `main` per Admin-Ausnahme |
+| App "Schlange Sandbox Queue" | Schlange as the queue in `schlange-e2e`, shadow in `queue-lab` |
+| App "Schlange Sandbox Driver" | test actor: opens PRs, pushes, comments. At the same time the sender that is *not* allowed for `commands_restrictions` |
+| Mergify | reference in `queue-lab` |
+| `karma-works` (gh login) | the allowed sender for `@mergifyio queue`; moves `main` through the admin bypass |
 
-App-Schlüssel und Webhook-Secrets liegen nur lokal unter `~/.config/schlange-sandbox/apps/`
-(Verzeichnis 0700, Dateien 0600).
+App keys and webhook secrets live only locally under `~/.config/schlange-sandbox/apps/`
+(directory 0700, files 0600).
 
-## Einrichtung
+## Setup
 
-### Was nur ein Mensch tun kann (ca. 15 Minuten)
+### What only a human can do (about 15 minutes)
 
-1. **Organisation anlegen:** <https://github.com/account/organizations/new?plan=free>,
-   Name `schlange-sandbox`. Per API ist das nicht möglich.
-2. **Zwei Apps registrieren:** `bash sandbox/setup.sh apps` öffnet für jede App den Browser.
-   Dort genügt ein Klick auf „Create GitHub App“. Ist der Name schon vergeben, kannst du ihn
-   dort ändern.
-3. **Beide Apps installieren:** Die Links gibt das Skript aus. Dort „Only select repositories“
-   wählen, dann `queue-lab` und `schlange-e2e`.
-4. **Mergify installieren**, nur für `queue-lab`:
-   <https://github.com/apps/mergify/installations/new>. Danach im Mergify-Dashboard für
-   `queue-lab` die Produkte **Merge Queue** und **Workflow Automation** einschalten. Ohne das
-   zweite wertet Mergify die `pull_request_rules` nicht aus, und es wird nichts automatisch
-   eingereiht. Vor dem Einschalten geöffnete PRs brauchen ein `@mergifyio refresh`.
-5. **Mergify-API-Key** im Mergify-Dashboard anlegen und speichern unter
-   `~/.config/schlange-sandbox/mergify-api-key` (chmod 600). Er wird für den Differenzvergleich
-   gebraucht.
-6. **Fine-grained Token** für den „Menschen“ im Driver:
-   <https://github.com/settings/personal-access-tokens/new>, Resource owner `schlange-sandbox`,
-   alle Repos, Contents/Pull requests/Issues: write, Administration: read. Speichern unter
-   `~/.config/schlange-sandbox/human-token` (chmod 600). Er sieht nur die Sandbox.
+1. **Create the organisation:** <https://github.com/account/organizations/new?plan=free>,
+   name `schlange-sandbox`. This is not possible through the API.
+2. **Register two apps:** `bash sandbox/setup.sh apps` opens the browser for each app.
+   One click on "Create GitHub App" is enough there. If the name is already taken, you can
+   change it there.
+3. **Install both apps:** the script prints the links. Choose "Only select repositories"
+   there, then `queue-lab` and `schlange-e2e`.
+4. **Install Mergify**, only for `queue-lab`:
+   <https://github.com/apps/mergify/installations/new>. Then, in the Mergify dashboard for
+   `queue-lab`, switch on the products **Merge Queue** and **Workflow Automation**. Without the
+   second one, Mergify does not evaluate the `pull_request_rules`, and nothing is enqueued
+   automatically. PRs opened before switching it on need a `@mergifyio refresh`.
+5. **Mergify API key:** create it in the Mergify dashboard and store it at
+   `~/.config/schlange-sandbox/mergify-api-key` (chmod 600). It is needed for the differential
+   comparison.
+6. **Fine-grained token** for the "human" in the driver:
+   <https://github.com/settings/personal-access-tokens/new>, resource owner `schlange-sandbox`,
+   all repos, Contents/Pull requests/Issues: write, Administration: read. Store it at
+   `~/.config/schlange-sandbox/human-token` (chmod 600). It sees only the sandbox.
 
-### Was das Skript macht
+### What the script does
 
 ```bash
-bash sandbox/setup.sh check      # Stand, ändert nichts
-bash sandbox/setup.sh all        # smee-Kanal, Apps, Repos (idempotent)
+bash sandbox/setup.sh check      # state, changes nothing
+bash sandbox/setup.sh all        # smee channel, apps, repos (idempotent)
 ```
 
-Mit `--dry-run` zeigt das Skript nur an, was es tun würde. Die Reihenfolge, wenn du alles einzeln
-machen willst: Organisation anlegen → `setup.sh smee` → `setup.sh apps` (Klicks, dann
-installieren) → `setup.sh repos` → Mergify installieren → `setup.sh check`.
+With `--dry-run` the script only shows what it would do. The order, if you want to do
+everything step by step: create the organisation → `setup.sh smee` → `setup.sh apps` (clicks,
+then install) → `setup.sh repos` → install Mergify → `setup.sh check`.
 
-`setup.sh repos` legt die Repos an und schreibt das Fixture. Außerdem stellt es die
-Merge-Methoden, das Label `halt`, `QUEUE_BOT_LOGIN` und das Ruleset ein. `setup.sh fixture`
-schreibt das Fixture neu auf `main`; das setzt den Inhalt zurück.
+`setup.sh repos` creates the repos and writes the fixture. It also sets the merge methods, the
+label `halt`, `QUEUE_BOT_LOGIN` and the ruleset. `setup.sh fixture` rewrites the fixture on
+`main`; this resets the content.
 
-Webhooks: `setup.sh smee` legt einen Kanal auf smee.io an. Die Queue-App schickt ihre
-Webhooks dorthin, lokal leitet `npx smee-client -u <kanal> -t http://127.0.0.1:8080/webhook`
-sie weiter. Für den Dauerbetrieb zeigt die Webhook-URL der App auf die Schlange-Instanz auf dem
+Webhooks: `setup.sh smee` creates a channel on smee.io. The queue app sends its webhooks
+there, and locally `npx smee-client -u <channel> -t http://127.0.0.1:8080/webhook` forwards
+them. For continuous operation the app's webhook URL points to the Schlange instance on the
 VPS.
 
-## Szenarien
+## Scenarios
 
 ```bash
-python3 -I sandbox/driver/sandbox.py run sandbox/scenarios/s03-rotes-buendel.json --repo queue-lab
-python3 -I sandbox/driver/sandbox.py reset --repo queue-lab   # offene Szenario-PRs schließen
+python3 -I sandbox/driver/sandbox.py run sandbox/scenarios/s03-red-batch.json --repo queue-lab
+python3 -I sandbox/driver/sandbox.py reset --repo queue-lab   # close open scenario PRs
 ```
 
-| ID | Inhalt | Katalog |
+| ID | Content | Catalogue |
 |---|---|---|
-| S01 | ein PR, alles grün | MQ-18, MQ-20, MQ-42 |
-| S02 | drei PRs als ein Bündel | MQ-26, MQ-20 |
-| S03 | rotes Bündel, Bisektion | MQ-21, MQ-23, MQ-45 |
-| S04 | einzeln grün, zusammen rot | MQ-01, MQ-21 |
-| S05 | Label `halt` während der Queue | MQ-11, MQ-12, MQ-45 |
-| S06 | Push während der Queue | MQ-07, MQ-14 |
-| S07 | Entwurf, ready, wieder Entwurf | MQ-09 |
-| S08 | Verfassungspfad, `@mergifyio queue` von erlaubtem und nicht erlaubtem Sender | MQ-50, MQ-52 |
-| S09 | rote Schnellprüfung, fehlender Datenschutz, rotes KI-Review | MQ-16, MQ-37 |
-| S10 | `main` bewegt sich, Textkonflikt mit `main` | MQ-06, MQ-27, MQ-47 |
-| S11 | `@mergifyio dequeue` und wieder `queue` | MQ-45, MQ-50 |
+| S01 | one PR, all green | MQ-18, MQ-20, MQ-42 |
+| S02 | three PRs as one batch | MQ-26, MQ-20 |
+| S03 | red batch, bisection | MQ-21, MQ-23, MQ-45 |
+| S04 | green on their own, red together | MQ-01, MQ-21 |
+| S05 | label `halt` while queued | MQ-11, MQ-12, MQ-45 |
+| S06 | push while queued | MQ-07, MQ-14 |
+| S07 | draft, ready, draft again | MQ-09 |
+| S08 | constitution path, `@mergifyio queue` from an allowed and a not allowed sender | MQ-50, MQ-52 |
+| S09 | red quick check, missing Datenschutz section, red KI-Review | MQ-16, MQ-37 |
+| S10 | `main` moves, text conflict with `main` | MQ-06, MQ-27, MQ-47 |
+| S11 | `@mergifyio dequeue` and `queue` again | MQ-45, MQ-50 |
 
-Jeder Lauf schreibt `.sandbox-runs/<lauf>/` (nicht eingecheckt):
+Every run writes `.sandbox-runs/<run>/` (not checked in):
 
 - `scenario.json`
-- `run.json` (PR-Nummern)
-- `trace.json`: Zeitachse je PR, Bot-Kommentare, Checks, Queue-PRs mit Commits, Commits auf `main` mit Tree-SHA
-- `summary.json`: Kurzfassung
+- `run.json` (PR numbers)
+- `trace.json`: timeline per PR, bot comments, checks, queue PRs with commits, commits on `main` with tree SHA
+- `summary.json`: short version
 
-Die Aufzeichnungen enthalten Texte von Mergify-Kommentaren und bleiben deshalb lokal (Clean-Room,
-KONZEPT.md Abschnitt 2). Ins Repo kommen nur Erkenntnisse in eigenen Worten, als Gotchas in den
-Feature-Dateien.
+The recordings contain texts of Mergify comments and therefore stay local (clean room,
+KONZEPT.md section 2). Only findings in our own words go into the repo, as gotchas in the
+feature files.
 
-Ein Szenario dauert je nach Wartezeiten 5–40 Minuten. Mergify wartet bis zu 5 Minuten auf ein
-volles Bündel (`batch_max_wait_time`).
+A scenario takes 5–40 minutes, depending on the waiting times. Mergify waits up to 5 minutes
+for a full batch (`batch_max_wait_time`).
 
-## Automatisch (GitHub Actions)
+## Automatic (GitHub Actions)
 
-Der Workflow [sandbox.yml](../../.github/workflows/sandbox.yml) im Schlange-Repo spielt die
-Szenarien ab. Ein Agent startet ihn so:
+The workflow [sandbox.yml](../../.github/workflows/sandbox.yml) in the Schlange repo replays
+the scenarios. An agent starts it like this:
 
 ```bash
-gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-einzelner-pr s03-rotes-buendel"
+gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
 gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-- **Secrets:** `bash sandbox/ci/upload-secrets.sh` lädt App-Schlüssel, Webhook-Secret,
-  Sandbox-Token und Mergify-Key als Actions-Secrets hoch (`--list` zeigt den Stand). Im Runner
-  baut `sandbox/ci/write-config.sh` daraus `~/.config/schlange-sandbox` nach. Alle Secrets wirken
-  nur in `schlange-sandbox`.
-- **Sperre:** ein Lauf pro Sandbox-Repo (`concurrency`). Zusätzlich wartet der Driver, bis keine
-  Szenario- oder Queue-PRs mehr offen sind, damit sich lokale Läufe und CI-Läufe nicht mischen.
-- **Sollwerte:** `sandbox/baselines/<szenario>.json` im eigenen Format `outcome.json`, ohne
-  Mergify-Texte. Ein geprüfter Mergify-Lauf wird zum Sollwert, indem man seine `outcome.json`
-  dorthin kopiert. Danach vergleicht jeder Lauf: auf `queue-lab`, ob Mergify sich geändert hat,
-  auf `schlange-e2e`, ob Schlange sich wie Mergify verhält (`sandbox.py compare`).
-- **Zeitplan:** sonntags alle Szenarien auf `queue-lab` (ca. 3–4 Stunden; im öffentlichen
-  Repo kostenlos).
-- **Ergebnis:** Tabelle in der Job-Zusammenfassung. Als Artefakt (14 Tage) nur `outcome.json`,
-  `run.json` und `scenario.json`; `trace.json` und `summary.json` enthalten Mergify-Texte und
-  bleiben im Runner. Für die volle Aufzeichnung das Szenario lokal laufen lassen.
-- **Sicherheit:** Der Workflow startet nur per `workflow_dispatch` (Schreibrecht nötig) und
-  `schedule`, nie durch PRs aus Forks. Die Secrets wirken nur in `schlange-sandbox`.
+- **Secrets:** `bash sandbox/ci/upload-secrets.sh` uploads app keys, webhook secret, sandbox
+  token and Mergify key as Actions secrets (`--list` shows the state). In the runner,
+  `sandbox/ci/write-config.sh` rebuilds `~/.config/schlange-sandbox` from them. All secrets
+  work only in `schlange-sandbox`.
+- **Lock:** one run per sandbox repo (`concurrency`). In addition, the driver waits until no
+  scenario or queue PRs are open any more, so that local runs and CI runs do not mix.
+- **Baselines:** `sandbox/baselines/<scenario>.json` in our own `outcome.json` format, without
+  Mergify texts. A reviewed Mergify run becomes a baseline by copying its `outcome.json`
+  there. After that, every run compares: on `queue-lab`, whether Mergify has changed; on
+  `schlange-e2e`, whether Schlange behaves like Mergify (`sandbox.py compare`).
+- **Schedule:** Sundays, all scenarios on `queue-lab` (about 3–4 hours; free in a public
+  repo).
+- **Result:** table in the job summary. As an artifact (14 days) only `outcome.json`,
+  `run.json` and `scenario.json`; `trace.json` and `summary.json` contain Mergify texts and
+  stay in the runner. For the full recording, run the scenario locally.
+- **Security:** the workflow starts only through `workflow_dispatch` (write access needed) and
+  `schedule`, never through PRs from forks. The secrets work only in `schlange-sandbox`.

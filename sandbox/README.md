@@ -1,12 +1,12 @@
 # Sandbox
 
-GitHub-Sandbox für E2E- und Differenztests. Anleitung: [docs/betrieb/sandbox.md](../docs/betrieb/sandbox.md),
-Schattenbetrieb auf Arztagent: [docs/betrieb/schattenbetrieb.md](../docs/betrieb/schattenbetrieb.md).
+GitHub sandbox for E2E and differential tests. Guide: [docs/betrieb/sandbox.md](../docs/betrieb/sandbox.md),
+shadow mode on Arztagent: [docs/betrieb/schattenbetrieb.md](../docs/betrieb/schattenbetrieb.md).
 
-| Pfad | Inhalt |
+| Path | Content |
 |---|---|
-| `setup.sh` | Organisation prüfen, smee-Kanal, Apps, Repos, Fixture, Rulesets |
-| `apps/` | App-Manifeste und Registrierung mit einem Klick (`create_app.py`) |
-| `fixture/` | Inhalt der Sandbox-Repos: Nachbau der Arztagent-Checks und `.mergify.yml` |
-| `driver/sandbox.py` | spielt Szenarien ab und zeichnet das Verhalten der Queue auf |
-| `scenarios/` | Szenarien S01–S11 mit Verweisen auf den Problemkatalog |
+| `setup.sh` | check the organisation, smee channel, apps, repos, fixture, rulesets |
+| `apps/` | app manifests and one-click registration (`create_app.py`) |
+| `fixture/` | content of the sandbox repos: imitation of the Arztagent checks and `.mergify.yml` |
+| `driver/sandbox.py` | replays scenarios and records the behaviour of the queue |
+| `scenarios/` | scenarios S01–S11 with references to the problem catalogue |

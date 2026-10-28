@@ -1,6 +1,6 @@
 {
   "id": "S06",
-  "title": "Neuer Push auf den PR, während er in der Queue ist",
+  "title": "New push to the PR while it is in the queue",
   "refs": [
     "MQ-07",
     "MQ-14"

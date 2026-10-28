@@ -1,5 +1,5 @@
-# Erzeugt echte Dependabot-PRs: ms (Patch), semver (Minor), is-number (Major),
-# actions/checkout in Workflows (Verfassungspfad .github/, wird nicht automatisch eingereiht).
+# Produces real Dependabot PRs: ms (patch), semver (minor), is-number (major),
+# actions/checkout in workflows (constitution path .github/, not queued automatically).
 version: 2
 updates:
   - package-ecosystem: npm

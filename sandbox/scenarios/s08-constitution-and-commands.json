@@ -1,6 +1,6 @@
 {
   "id": "S08",
-  "title": "Verfassungspfad wird nicht automatisch eingereiht; @mergifyio queue nur vom erlaubten Sender",
+  "title": "A constitution path is not enqueued automatically; @mergifyio queue only from the allowed sender",
   "refs": [
     "MQ-50",
     "MQ-52"
@@ -9,7 +9,7 @@
     {
       "open": "a",
       "files": {
-        "governance/regel.txt": "Verfassungsänderung im Szenario\n"
+        "governance/rule.txt": "Constitution change in the scenario\n"
       }
     },
     {

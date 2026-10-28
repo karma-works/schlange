@@ -36,7 +36,7 @@ repository root; `$D` is `python3 -I sandbox/driver/sandbox.py`.
 Actions:
 
 ```bash
-gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-einzelner-pr s03-rotes-buendel"
+gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
 run=$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].databaseId')
 gh run watch "$run" --exit-status
 gh run download "$run" -D evidence/sandbox-$run      # outcome.json, run.json, scenario.json
@@ -48,7 +48,7 @@ Local:
 
 ```bash
 bash sandbox/setup.sh check                     # org, apps, installations, rulesets, keys
-$D run sandbox/scenarios/s01-einzelner-pr.json --repo queue-lab
+$D run sandbox/scenarios/s01-single-pr.json --repo queue-lab
 ```
 
 ## 2. Pick the scenario

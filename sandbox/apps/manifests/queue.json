@@ -1,6 +1,6 @@
 {
   "name": "Schlange Sandbox Queue",
-  "description": "Schlange als Merge-Queue in der Sandbox-Organisation (E2E-Tests).",
+  "description": "Schlange as the merge queue in the sandbox organisation (E2E tests).",
   "public": false,
   "default_permissions": {
     "metadata": "read",

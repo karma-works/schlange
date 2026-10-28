@@ -1,6 +1,6 @@
 {
   "id": "S05",
-  "title": "Label halt während der Queue: austragen mit Grund, nach Entfernen wieder einreihen",
+  "title": "Label halt while queued: dequeue with a reason, enqueue again after removal",
   "refs": [
     "MQ-11",
     "MQ-12",

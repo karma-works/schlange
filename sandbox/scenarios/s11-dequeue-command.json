@@ -1,6 +1,6 @@
 {
   "id": "S11",
-  "title": "@mergifyio dequeue während des Laufs, danach wieder queue",
+  "title": "@mergifyio dequeue during the run, then queue again",
   "refs": [
     "MQ-45",
     "MQ-50"
