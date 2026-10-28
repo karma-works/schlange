@@ -46,7 +46,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNS = Path(os.environ.get("SANDBOX_RUNS", REPO_ROOT / ".sandbox-runs"))
 API = "https://api.github.com"
 QUEUE_PREFIX = "mergify/merge-queue/"
-DEFAULT_ORG = os.environ.get("SANDBOX_ORG", "schlange-sandbox")
+# The driver acts with the sandbox credentials and must never touch another organisation, so the
+# organisation is fixed; SANDBOX_ORG and --org can only repeat it.
+ALLOWED_ORG = "schlange-sandbox"
+DEFAULT_ORG = os.environ.get("SANDBOX_ORG", ALLOWED_ORG)
 
 
 def die(msg):
@@ -609,6 +612,10 @@ def main():
     for sp in sub.choices.values():
         sp.add_argument("--org", default=argparse.SUPPRESS)
     a = p.parse_args()
+    if getattr(a, "org", ALLOWED_ORG) != ALLOWED_ORG:
+        sys.exit(f"Refused: only the organisation {ALLOWED_ORG} may be used, not {a.org}")
+    if getattr(a, "repo", None) not in (None, "queue-lab", "schlange-e2e"):
+        sys.exit(f"Refused: unknown sandbox repository {a.repo}")
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches)),

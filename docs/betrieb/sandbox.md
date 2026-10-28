@@ -160,10 +160,9 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   `schedule`, never through PRs from forks. The secrets work only in `schlange-sandbox`.
 - **`schlange-e2e` in the runner:** the job builds the release binary and starts
   `sandbox/ci/start-schlange.sh`: `schlange serve` with the queue app against
-  `schlange-sandbox/schlange-e2e`, webhooks through `vars.SANDBOX_SMEE_URL` (smee-client), and
-  reconciliation every 20 s as a fallback. A wait that times out fails the run on this repo
-  (`SANDBOX_FAIL_ON_TIMEOUT`). During the run a probe prints `/status` and `explain` into the
-  job log (step "Stop schlange serve").
+  `schlange-sandbox/schlange-e2e`, no webhooks (no forwarder runs next to the app key): reconciliation polls every 10 s. A wait that times out fails the run on this repo
+  (`SANDBOX_FAIL_ON_TIMEOUT`). The job log gets only problem lines of the serve log (it mentions
+  pull request titles).
 - **Mergify must not be installed on `schlange-e2e`.** If the Mergify app is installed on all
   repositories of the organisation, it posts the check run `Rule: … (queue)` with the conclusion
   `action_required` ("Merge Queue needs to be activated"). `#check-failure = 0` counts it as a
