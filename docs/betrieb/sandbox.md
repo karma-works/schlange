@@ -169,3 +169,22 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   failure (as it does for Mergify itself), so nothing is queued and every `schlange-e2e`
   scenario times out. Fix by hand: Mergify installation, "Only select repositories",
   `queue-lab` only.
+
+## Results of the first full comparison (2026-10-28)
+
+All eleven scenarios ran on `queue-lab` (Mergify, run 40665292551) and on `schlange-e2e`
+(Schlange, run 40665289089; `s03` and `s10` again in run 40699830249 after the driver's
+`quiet` wait learned that an open queue pull request or a moving `main` is activity).
+
+- Baselines in `sandbox/baselines/` exist for `s01 s02 s03 s04 s06 s08 s09 s10`. Against them,
+  `sandbox.py compare` says SAME for all eight on Schlange (the first `s03`/`s10` run said
+  DEVIATION only because the old `quiet` wait ended while Schlange still tested batches).
+- `s05` (label `halt` removed), `s07` (draft, ready again) and `s11` (`dequeue`, then `queue`):
+  the Mergify run waited 40 minutes in each and the pull request stayed open after
+  `PR_DEQUEUED` / `PR_MANUALLY_DEQUEUED`; Mergify did not queue it again. Schlange queues
+  the pull request again at once and merges it. No baseline is committed for these three,
+  because the Mergify run timed out. A human has to decide whether Mergify's behaviour (no
+  automatic re-queue after a condition-based or manual dequeue, within 40 minutes) is the
+  one Arztagent relies on; Schlange then needs a matching hold. Schlange's side of the
+  outcome does not report `queued`, `enter_count` and `dequeue_codes` yet, so `compare` checks
+  only the end state and the landing order.
