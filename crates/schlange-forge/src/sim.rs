@@ -1719,8 +1719,14 @@ impl<G: GitStore> SimForge<G> {
         }
         let mut commits = Vec::new();
         let in_place = record.as_ref().is_some_and(|r| r.in_place);
-        for p in prs {
+        let edited = !in_place
+            && method == MergeMethod::FastForward
+            && record.as_ref().is_some_and(|r| r.head != new);
+        for (k, p) in prs.iter().enumerate() {
             let (sha, extra) = if method == MergeMethod::MergeBatch {
+                (new.clone(), vec![])
+            } else if edited && k + 1 == prs.len() {
+                // An accepted `allow_queue_branch_edit`: the base moves onto the pushed head.
                 (new.clone(), vec![])
             } else if in_place {
                 let mut own = self.own_commits(head, expected);
