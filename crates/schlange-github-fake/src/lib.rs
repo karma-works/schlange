@@ -373,6 +373,23 @@ pub(crate) struct St {
     pub rulesets: Vec<Value>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
+    /// How many files `GET /pulls/{n}/files` lists at most (GitHub: 3000).
+    pub files_cap: usize,
+    /// Pushes to branches, oldest first (`GET /activity`): GitHub records when and by whom
+    /// a branch moved, which no commit metadata can fake.
+    pub activity: Vec<Activity>,
+}
+
+/// One entry of the repository activity (`GET /repos/{o}/{r}/activity`).
+#[derive(Clone, Debug)]
+pub struct Activity {
+    pub branch: String,
+    pub before: Sha,
+    pub after: Sha,
+    pub actor: String,
+    /// On the comment clock, so pushes and comments are ordered.
+    pub at: u64,
+    pub kind: &'static str,
 }
 
 impl St {
@@ -598,6 +615,69 @@ impl St {
         Some(self.repo.squash(&tip, &pr.head_sha, "probe").is_ok())
     }
 
+    /// Records that `actor` moved `branch` from `before` to `after` (GitHub's activity log);
+    /// pushes and comments share one clock.
+    pub fn record_push(&mut self, branch: &str, before: &str, after: &str, actor: &str) {
+        self.comment_clock += 1;
+        self.activity.push(Activity {
+            branch: branch.into(),
+            before: before.into(),
+            after: after.into(),
+            actor: actor.into(),
+            at: self.comment_clock,
+            kind: if before.is_empty() {
+                "branch_creation"
+            } else {
+                "push"
+            },
+        });
+    }
+
+    /// The files of a pull request as `GET /pulls/{n}/files` lists them, uncapped: changes
+    /// between the merge base and the head, with GitHub's rename detection (a removed path
+    /// whose content an added path has is one `renamed` entry with `previous_filename`).
+    pub fn pr_files(&self, pr: &FakePr) -> Vec<Value> {
+        let tip = self.tip(&pr.base).unwrap_or_default();
+        let (files, before, after) = match self.repo.merge_base(&tip, &pr.head_sha) {
+            Some(mb) => (
+                self.repo.changed_paths(&mb, &pr.head_sha),
+                self.repo.tree(&mb).clone(),
+                self.repo.tree(&pr.head_sha).clone(),
+            ),
+            None => (vec![], Default::default(), Default::default()),
+        };
+        let removed: Vec<&String> = files.iter().filter(|f| !after.contains_key(*f)).collect();
+        let mut renamed_from: Vec<String> = Vec::new();
+        let mut items = Vec::new();
+        for f in &files {
+            if !after.contains_key(f) {
+                continue;
+            }
+            let added = !before.contains_key(f);
+            let source = removed
+                .iter()
+                .find(|r| added && before.get(**r) == after.get(f) && !renamed_from.contains(r))
+                .map(|r| r.to_string());
+            match source {
+                Some(from) => {
+                    items.push(
+                        json!({ "filename": f, "previous_filename": from, "status": "renamed" }),
+                    );
+                    renamed_from.push(from);
+                }
+                None => items.push(
+                    json!({ "filename": f, "status": if added { "added" } else { "modified" } }),
+                ),
+            }
+        }
+        for r in removed {
+            if !renamed_from.contains(r) {
+                items.push(json!({ "filename": r, "status": "removed" }));
+            }
+        }
+        items
+    }
+
     pub fn pr_json(&mut self, n: u64) -> Option<Value> {
         let pr = self.prs.get(&n)?.clone();
         let mergeable = if pr.open { self.mergeable(&pr) } else { None };
@@ -621,6 +701,7 @@ impl St {
             "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": { "full_name": head_repo } },
             "base": { "ref": pr.base, "sha": base_sha, "repo": { "full_name": own } },
             "labels": pr.labels.iter().map(|l| json!({ "name": l })).collect::<Vec<_>>(),
+            "changed_files": self.pr_files(&pr).len(),
         }))
     }
 
@@ -884,6 +965,8 @@ impl FakeGithub {
             comment_clock: 1_800_000_000,
             commit_authors: BTreeMap::new(),
             squash_message_setting: "COMMIT_MESSAGES".into(),
+            files_cap: 3000,
+            activity: Vec::new(),
         };
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
@@ -1042,6 +1125,10 @@ impl FakeGithub {
             s.commit_authors.insert(head.clone(), author.to_string());
             let head_ref = format!("pr-{n}");
             s.repo.create_ref(&head_ref, &head).expect("new branch");
+            if !fork {
+                // A fork's branch lives in another repository's activity log.
+                s.record_push(&head_ref, "", &head, author);
+            }
             s.prs.insert(
                 n,
                 FakePr {
@@ -1089,6 +1176,9 @@ impl FakeGithub {
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
             s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            if !pr.fork {
+                s.record_push(&pr.head_ref, &pr.head_sha, &head, by);
+            }
             s.touched(&pr.head_ref);
             s.emit_pr("synchronize", n, json!({}));
             s.run_ci(n);
@@ -1111,6 +1201,9 @@ impl FakeGithub {
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
             s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            if !pr.fork {
+                s.record_push(&pr.head_ref, &pr.head_sha, &head, &pr.user);
+            }
             s.emit_pr("synchronize", n, json!({}));
             s.run_ci(n);
             head
@@ -1136,6 +1229,37 @@ impl FakeGithub {
                 json!({}),
             );
         });
+    }
+
+    /// `editor` edits comment `id` to `body` and `issue_comment.edited` goes out, sent by
+    /// `editor`. As on GitHub, the comment's author may edit it, and so may anyone with write
+    /// access or more to the repository (an agent with write access can rewrite a human's
+    /// comment). `Err` when GitHub would refuse; the comment is then unchanged.
+    pub fn edit_comment(&self, id: u64, editor: &str, body: &str) -> Result<(), String> {
+        self.with(|s| {
+            let Some(c) = s.comments.iter().find(|c| c.id == id) else {
+                return Err(format!("comment {id} does not exist"));
+            };
+            let may = c.user == editor
+                || editor == s.bot()
+                || s.collaborators
+                    .get(editor)
+                    .is_some_and(|p| matches!(p.as_str(), "write" | "maintain" | "admin"));
+            if !may {
+                return Err(format!(
+                    "{editor} may not edit comment {id} of {}: it needs write access",
+                    c.user
+                ));
+            }
+            s.edit_comment(id, editor, body);
+            Ok(())
+        })
+    }
+
+    /// Sets how many files `GET /pulls/{n}/files` lists at most (GitHub: 3000), so a test can
+    /// reach the cap with a few files.
+    pub fn set_files_cap(&self, cap: usize) {
+        self.with(|s| s.files_cap = cap);
     }
 
     /// `user` comments `body` on pull request `n`; returns the comment id.

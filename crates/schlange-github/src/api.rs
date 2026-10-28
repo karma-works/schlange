@@ -96,11 +96,30 @@ pub struct IssueComment {
     pub user: User,
     #[serde(default)]
     pub body: String,
+    /// Equal to `updated_at` until someone edits the comment. The REST API does not say who
+    /// edited it: anyone with write access may edit anyone's comment.
+    #[serde(default)]
+    pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
     /// `…/issues/<n>`.
     #[serde(default)]
     pub issue_url: String,
+}
+
+/// One entry of the repository's activity log (`GET /repos/{o}/{r}/activity`): GitHub's own
+/// record of a branch moving, with its time and actor. Unlike commit metadata, the pusher
+/// cannot write it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Activity {
+    #[serde(default)]
+    pub before: String,
+    #[serde(default)]
+    pub after: String,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(default)]
+    pub activity_type: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -143,6 +162,9 @@ pub struct Pull {
     pub base: GitRefSide,
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// How many files the pull request changes; `GET /pulls/{n}/files` lists at most 3000.
+    #[serde(default)]
+    pub changed_files: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -432,14 +454,21 @@ impl RepoApi {
         )
     }
 
-    pub fn pull_files(&self, n: u64, prio: Priority) -> Result<Vec<String>, Error> {
+    /// The paths a pull request changes, and how many entries GitHub listed (a rename is one
+    /// entry with two paths). GitHub lists at most 3000 entries; the caller compares the count
+    /// with the pull request's `changed_files`.
+    pub fn pull_files(&self, n: u64, prio: Priority) -> Result<(Vec<String>, u64), Error> {
         let files: Vec<PullFile> = self.list(&format!("/pulls/{n}/files"), prio, None)?;
+        let listed = files.len() as u64;
         // A renamed file counts at both of its paths (docs: conditions, renamed files), so a
         // `git mv` out of a guarded path cannot pass a `files` gate.
-        Ok(files
-            .into_iter()
-            .flat_map(|f| f.previous_filename.into_iter().chain([f.filename]))
-            .collect())
+        Ok((
+            files
+                .into_iter()
+                .flat_map(|f| f.previous_filename.into_iter().chain([f.filename]))
+                .collect(),
+            listed,
+        ))
     }
 
     pub fn pull_commits(&self, n: u64, prio: Priority) -> Result<Vec<RepoCommit>, Error> {
@@ -459,6 +488,18 @@ impl RepoApi {
     pub fn recent_comments(&self, prio: Priority) -> Result<Vec<IssueComment>, Error> {
         self.get(
             "/issues/comments?sort=updated&direction=desc&per_page=100",
+            prio,
+        )
+    }
+
+    /// The 100 newest moves of a branch of this repository, newest first.
+    pub fn branch_activity(&self, branch: &str, prio: Priority) -> Result<Vec<Activity>, Error> {
+        let r = format!("refs/heads/{branch}");
+        self.get(
+            &format!(
+                "/activity?ref={}&direction=desc&per_page=100",
+                enc_query(&r)
+            ),
             prio,
         )
     }

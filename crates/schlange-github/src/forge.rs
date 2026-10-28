@@ -143,6 +143,9 @@ pub struct GithubForge {
     delayed: Vec<DelayedReply>,
     /// Failed landings in a row per car (backoff).
     land_failures: BTreeMap<u64, u32>,
+    /// Transient 405/409 answers to the merge call per car and pull request: each goes back
+    /// to the engine, which reads and checks the conditions again before it lands (N3).
+    transient_merges: BTreeMap<(u64, u64), u32>,
     /// Cars the engine closed: nothing is carried out for them any more.
     closed_cars: BTreeSet<u64>,
     closed_order: VecDeque<u64>,
@@ -159,7 +162,9 @@ pub struct GithubForge {
     pub log: VecDeque<String>,
     pub retry_base: Duration,
     pub retry_max: Duration,
-    /// Attempts for a transient 405/409 on the merge call, each after fresh reads.
+    /// How many transient 405/409 answers to the merge call of one pull request in one car go
+    /// back to the engine (which reads, checks the conditions and lands again) before the
+    /// answer counts as a refusal.
     pub transient_retries: u32,
     /// Reads of `mergeable` while GitHub still computes it.
     pub mergeable_polls: u32,
@@ -220,6 +225,7 @@ impl GithubForge {
             pending: Vec::new(),
             delayed: Vec::new(),
             land_failures: BTreeMap::new(),
+            transient_merges: BTreeMap::new(),
             closed_cars: BTreeSet::new(),
             closed_order: VecDeque::new(),
             cosmetics: VecDeque::new(),
@@ -434,7 +440,11 @@ impl GithubForge {
             // The queue's own draft: only its checks and tree matter.
             return Ok(pr);
         }
-        pr.files = self.api.pull_files(n, prio)?;
+        let (files, listed) = self.api.pull_files(n, prio)?;
+        pr.files = files;
+        // GitHub lists at most 3000 files (critic e8a0022 M1): a shorter list than the pull
+        // request's own count, or no count at all, makes every `files` condition fail closed.
+        pr.files_incomplete = p.changed_files.is_none_or(|c| listed < c);
         let tip = self.branch_tip(&p.base.ref_name, prio)?;
         let cmp = self.api.compare(&tip, &head, prio)?;
         pr.behind_base = cmp.behind_by > 0;
@@ -452,11 +462,10 @@ impl GithubForge {
             .filter_map(|c| c.commit.author.as_ref())
             .map(|a| format!("{} <{}>", a.name, a.email))
             .collect();
-        pr.head_pusher = commits
-            .last()
-            .and_then(|c| c.author.as_ref())
-            .map(|u| u.login.clone());
-        pr.head_by_queue = pr.head_pusher.as_deref() == Some(self.opts.bot_login.as_str());
+        // Who pushed the head is not known here: the commit's author (and the login GitHub
+        // links to its email) is whatever the pusher wrote, so it never vouches for anything
+        // (critic e8a0022 N2). A new head cancels a waiting command whoever pushed it.
+        pr.head_pusher = None;
         if p.user.login == "dependabot[bot]" {
             let msgs: Vec<String> = commits.iter().map(|c| c.commit.message.clone()).collect();
             pr.dependabot_update_types = dependabot_update_types(&msgs);
@@ -883,6 +892,7 @@ impl GithubForge {
                         .retain(|p| decision_car(&p.decision) != Some(car));
                     self.delayed.retain(|r| r.car != car);
                     self.land_failures.remove(&car);
+                    self.transient_merges.retain(|(c, _), _| *c != car);
                 }
                 match self.try_execute(d) {
                     Ok(events) => events,
@@ -1183,7 +1193,9 @@ impl GithubForge {
     /// Squash-lands the pull requests in order. Every merge call is preceded by fresh reads
     /// of the pull request (open, at the tested head) and of the base (exactly the expected
     /// commit); a pull request that is already merged onto the expected base counts as landed,
-    /// so nothing lands twice. Errors are returned, never retried here.
+    /// so nothing lands twice. Errors are returned, never retried here: not even a transient
+    /// 405/409, because only the engine checks the merge conditions (labels, checks) again
+    /// before a merge call (critic e8a0022 N3).
     fn land(
         &mut self,
         car: u64,
@@ -1204,7 +1216,6 @@ impl GithubForge {
                 .find(|(n, _)| *n == p.number)
                 .map(|(_, t)| t.clone())
                 .or_else(|| (idx + 1 == prs.len()).then(|| expected_tree.to_string()));
-            let mut transient = 0;
             let mut note = String::new();
             let landed_sha = loop {
                 let pull = self.pull(p.number, prio)?;
@@ -1264,21 +1275,16 @@ impl GithubForge {
                     prio,
                 ) {
                     Ok(PullMergeOutcome::Merged { sha }) => {
+                        self.transient_merges.remove(&(car, p.number));
                         self.known_merged.insert(p.number, sha.clone());
                         self.moved(base_branch, &expected);
                         break sha;
                     }
                     Ok(PullMergeOutcome::HeadMoved) => {
                         // 409: the head moved, or GitHub is still updating the pull request.
-                        // The next round reads it again.
-                        if transient < self.transient_retries {
-                            transient += 1;
-                            self.note(format!(
-                                "#{}: 409 from the merge call; reading again (attempt {transient})",
-                                p.number
-                            ));
-                            std::thread::sleep(self.pause());
-                            continue;
+                        // The engine reads, checks the conditions again and decides.
+                        if let Some(e) = self.transient_merge(car, p.number, "409", "") {
+                            return Err(e);
                         }
                         error = Some(LandError::HeadChanged { number: p.number });
                         break 'prs;
@@ -1287,15 +1293,8 @@ impl GithubForge {
                         // 405: "base branch was modified", mergeability still being computed,
                         // or a refusal that stays (protection). Also when it was merged a
                         // moment ago: the next round reads.
-                        if transient < self.transient_retries {
-                            transient += 1;
-                            note = format!("after a 405 ({msg})");
-                            self.note(format!(
-                                "#{}: 405 from the merge call ({msg}); reading again (attempt {transient})",
-                                p.number
-                            ));
-                            std::thread::sleep(self.pause());
-                            continue;
+                        if let Some(e) = self.transient_merge(car, p.number, "405", &msg) {
+                            return Err(e);
                         }
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
@@ -1394,6 +1393,31 @@ impl GithubForge {
             car,
             commits,
             error,
+        })
+    }
+
+    /// A transient 405/409 to the merge call of `number` in `car`: the error that hands it
+    /// back to the engine, or `None` once the attempts are used up (then it is a refusal).
+    fn transient_merge(&mut self, car: u64, number: u64, status: &str, msg: &str) -> Option<Error> {
+        let k = self.transient_merges.entry((car, number)).or_insert(0);
+        if *k >= self.transient_retries {
+            return None;
+        }
+        *k += 1;
+        let k = *k;
+        self.note(format!(
+            "#{number}: {status} from the merge call{}; back to the queue, which reads and checks \
+             the conditions again (attempt {k})",
+            if msg.is_empty() {
+                String::new()
+            } else {
+                format!(" ({msg})")
+            }
+        ));
+        Some(Error::Unavailable {
+            method: "PUT".into(),
+            path: format!("/pulls/{number}/merge"),
+            detail: format!("transient {status} from the merge call"),
         })
     }
 
@@ -1600,52 +1624,122 @@ impl GithubForge {
         Ok(())
     }
 
-    /// Commands among the repository's most recent comments that the engine has not handled
-    /// and that the queue has not acknowledged (a 👍 of the app): lost webhooks, or commands
-    /// from before a restart. Edits are left out: the list does not say who edited.
-    pub fn unhandled_commands(&mut self, state: &State) -> Result<Vec<Comment>, Error> {
+    /// Commands on the open pull requests the engine knows that it has not handled and that
+    /// the queue has not acknowledged (a 👍 of the app): lost webhooks, or commands from before
+    /// a restart. Every page of each pull request's comments is read (up to GitHub's page
+    /// limit of the client, 30 pages of 100), not only the repository's newest comments.
+    ///
+    /// An edited comment is never run from here (critic e8a0022 N1): the REST API does not say
+    /// who edited it, and anyone with write access may edit anyone's comment, so its author
+    /// cannot be taken as the sender. Its webhook (`issue_comment.edited`, which names the
+    /// editor) is the only way an edit counts, and only as a ticked checkbox of the queue's
+    /// own comment. A command whose comment was edited before its webhook arrived is lost;
+    /// its author comments again.
+    pub fn unhandled_commands(
+        &mut self,
+        state: &State,
+        heads_before: &BTreeMap<u64, String>,
+    ) -> Result<Vec<Comment>, Error> {
         let prio = Priority::Normal;
         let mut out = Vec::new();
-        for c in self.api.recent_comments(prio)? {
-            let Some(n) = c
-                .issue_url
-                .rsplit('/')
-                .next()
-                .and_then(|x| x.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            if c.user.login == self.opts.bot_login
-                || !state.pull_requests.contains_key(&n)
-                || state.seen_comments.contains(&(c.id, c.updated_at.clone()))
-                || schlange_core::commands::parse(&c.body)
-                    == schlange_core::commands::Parsed::NotACommand
-            {
-                continue;
+        let open: Vec<u64> = state
+            .pull_requests
+            .values()
+            .filter(|p| !p.closed && !p.merged)
+            .map(|p| p.number)
+            .collect();
+        for n in open {
+            for c in self.api.issue_comments(n, prio)? {
+                if c.user.login == self.opts.bot_login
+                    || c.created_at.is_empty()
+                    || c.updated_at != c.created_at
+                    || state.seen_comments.contains(&(c.id, c.updated_at.clone()))
+                    || schlange_core::commands::parse(&c.body)
+                        == schlange_core::commands::Parsed::NotACommand
+                {
+                    continue;
+                }
+                let acknowledged = self
+                    .api
+                    .comment_reactions(c.id, prio)?
+                    .iter()
+                    .any(|r| r.user.login == self.opts.bot_login);
+                if acknowledged {
+                    continue;
+                }
+                let permission = self.api.collaborator_permission(&c.user.login, prio)?;
+                // Recovered late: the head may have moved since the comment. It vouches for
+                // the head GitHub's activity log shows at its time, else for the one the
+                // engine knew before this round.
+                let head_sha = if matches!(
+                    schlange_core::commands::parse(&c.body),
+                    schlange_core::commands::Parsed::Command {
+                        name: schlange_core::commands::Name::Queue
+                            | schlange_core::commands::Name::Requeue,
+                        ..
+                    }
+                ) {
+                    self.vouched_head(state, n, &c.created_at, heads_before.get(&n).cloned())?
+                } else {
+                    self.head_of(n)
+                };
+                out.push(Comment {
+                    id: c.id,
+                    number: n,
+                    author: c.user.login.clone(),
+                    sender: c.user.login.clone(),
+                    body: c.body.clone(),
+                    edited: false,
+                    version: c.updated_at.clone(),
+                    sender_permission: Some(permission),
+                    by_queue: false,
+                    head_sha,
+                });
             }
-            let acknowledged = self
-                .api
-                .comment_reactions(c.id, prio)?
-                .iter()
-                .any(|r| r.user.login == self.opts.bot_login);
-            if acknowledged {
-                continue;
-            }
-            let permission = self.api.collaborator_permission(&c.user.login, prio)?;
-            out.push(Comment {
-                id: c.id,
-                number: n,
-                author: c.user.login.clone(),
-                sender: c.user.login.clone(),
-                body: c.body.clone(),
-                edited: false,
-                version: c.updated_at.clone(),
-                sender_permission: Some(permission),
-                by_queue: false,
-                head_sha: self.head_of(n),
-            });
         }
         Ok(out)
+    }
+
+    /// The head a `queue` command made at `at` (GitHub's time, RFC 3339) vouches for: the head
+    /// GitHub's activity log shows for the pull request's branch strictly before that moment.
+    /// A push in the same second counts as after it (fail closed). Without an answer from
+    /// the log (a fork's branch lives in another repository; an entry older than 100 moves),
+    /// `fallback`: the head the engine knew before the comment arrived. The engine cancels a
+    /// command whose head is not the current one, so a push between the comment and its
+    /// handling never runs under the commenter's name.
+    pub fn vouched_head(
+        &self,
+        state: &State,
+        n: u64,
+        at: &str,
+        fallback: Option<String>,
+    ) -> Result<Option<String>, Error> {
+        let Some(pr) = state.pull_requests.get(&n) else {
+            return Ok(fallback);
+        };
+        if pr.from_fork {
+            return Ok(fallback);
+        }
+        let Some(t) = crate::time::parse_rfc3339(at) else {
+            return Ok(fallback);
+        };
+        let log = match self.api.branch_activity(&pr.head_ref, Priority::Normal) {
+            Ok(l) => l,
+            Err(Error::NotFound { .. }) => return Ok(fallback),
+            Err(e) => return Err(e),
+        };
+        for a in &log {
+            match crate::time::parse_rfc3339(&a.timestamp) {
+                Some(when) if when < t => {
+                    let gone = a.after.is_empty() || a.after.bytes().all(|b| b == b'0');
+                    // A deleted branch: no head the command could have seen (never runs).
+                    return Ok(Some(if gone { String::new() } else { a.after.clone() }));
+                }
+                Some(_) => continue,
+                None => return Ok(fallback),
+            }
+        }
+        Ok(fallback)
     }
 }
 

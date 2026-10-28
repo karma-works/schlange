@@ -505,8 +505,10 @@ struct Worker {
     recovered: Option<Vec<String>>,
     crash: Option<CrashPoint>,
     dead: bool,
-    /// Comments whose sender's permission could not be read yet (retried each round).
-    comments_waiting: Vec<CommentHint>,
+    /// Comments whose sender's permission could not be read yet (retried each round), each
+    /// with the head the engine knew for its pull request when the delivery arrived (before
+    /// the read it triggers).
+    comments_waiting: Vec<(CommentHint, Option<String>)>,
 }
 
 impl Worker {
@@ -589,6 +591,22 @@ impl Worker {
             if hints.contains(&Hint::Full) || now >= self.next_reconcile {
                 reconcile = true;
             }
+            // The head each commented pull request had in the engine's view before anything
+            // is read: a command vouches at most for that one (a push that lands between the
+            // comment and the read must not be attributed to the commenter).
+            let arrived: Vec<(CommentHint, Option<String>)> = hints
+                .iter()
+                .filter_map(|h| match h {
+                    Hint::Comment(c) => Some((
+                        (**c).clone(),
+                        self.state
+                            .pull_requests
+                            .get(&c.number)
+                            .map(|p| p.head_sha.clone()),
+                    )),
+                    _ => None,
+                })
+                .collect();
             if reconcile {
                 self.reconcile();
             }
@@ -604,11 +622,7 @@ impl Worker {
                     }
                     self.read_hints(&hints);
                 }
-                for h in &hints {
-                    if let Hint::Comment(c) = h {
-                        self.comments_waiting.push((**c).clone());
-                    }
-                }
+                self.comments_waiting.extend(arrived);
             }
             self.deliver_comments();
             let due: Vec<Time> = self.timers.iter().copied().filter(|t| *t <= now).collect();
@@ -712,6 +726,14 @@ impl Worker {
     }
 
     fn reconcile(&mut self) {
+        // The heads before this round's reads: a command recovered below vouches at most for
+        // these.
+        let heads_before: BTreeMap<u64, String> = self
+            .state
+            .pull_requests
+            .iter()
+            .map(|(n, p)| (*n, p.head_sha.clone()))
+            .collect();
         let now = self.clock.now();
         self.next_reconcile = now + self.every;
         self.load_config();
@@ -732,7 +754,7 @@ impl Worker {
                 self.forge.hurry_pending();
                 self.last_reconcile = Some(now);
                 self.reconciliations += 1;
-                match self.forge.unhandled_commands(&self.state) {
+                match self.forge.unhandled_commands(&self.state, &heads_before) {
                     Ok(comments) if !comments.is_empty() => {
                         self.feed(Event::Comments { comments });
                     }
@@ -794,9 +816,9 @@ impl Worker {
         }
         let mut ready = Vec::new();
         let mut later = Vec::new();
-        for c in std::mem::take(&mut self.comments_waiting) {
+        for (c, head_before) in std::mem::take(&mut self.comments_waiting) {
             if !self.state.pull_requests.contains_key(&c.number) {
-                later.push(c);
+                later.push((c, head_before));
                 continue;
             }
             let by_queue = c.author == self.forge.opts.bot_login;
@@ -814,10 +836,32 @@ impl Worker {
                             "permission of {} not read (comment {} waits): {e}",
                             c.sender, c.id
                         ));
-                        later.push(c);
+                        later.push((c, head_before));
                         continue;
                     }
                 }
+            };
+            // The head the command vouches for: the one GitHub's activity log shows at the
+            // moment of the comment (or of the tick), else the one known before it arrived.
+            let vouches = by_queue && c.sender != c.author
+                || (!by_queue && !c.edited && is_queue_command(&c.body));
+            let head_sha = if vouches {
+                match self.forge.vouched_head(
+                    &self.state,
+                    c.number,
+                    &c.version,
+                    head_before.clone(),
+                ) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        self.forge
+                            .note(format!("head at comment {} not read (it waits): {e}", c.id));
+                        later.push((c, head_before));
+                        continue;
+                    }
+                }
+            } else {
+                self.forge.head_of(c.number)
             };
             ready.push(schlange_core::model::Comment {
                 id: c.id,
@@ -829,7 +873,7 @@ impl Worker {
                 version: c.version.clone(),
                 sender_permission: permission,
                 by_queue,
-                head_sha: self.forge.head_of(c.number),
+                head_sha,
             });
         }
         // A comment waits a bounded number of rounds for its pull request.
@@ -959,6 +1003,19 @@ impl Worker {
 
 fn describe(d: &Decision) -> String {
     serde_json::to_string(d).unwrap_or_else(|_| format!("{d:?}"))
+}
+
+/// Whether a comment is a `queue` command (or its alias `requeue`): the commands that vouch
+/// for the commits of a pull request.
+fn is_queue_command(body: &str) -> bool {
+    use schlange_core::commands::{Name, Parsed, parse};
+    matches!(
+        parse(body),
+        Parsed::Command {
+            name: Name::Queue | Name::Requeue,
+            ..
+        }
+    )
 }
 
 #[cfg(test)]

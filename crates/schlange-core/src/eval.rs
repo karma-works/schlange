@@ -99,6 +99,9 @@ pub enum EvalError {
     RegexRuntime { pattern: String, message: String },
     #[error("glob `{0}` is invalid: {1}")]
     BadGlob(String, String),
+    /// The forge listed only part of the changed files: a condition on them cannot be judged.
+    #[error("`{0}` cannot be judged: the forge listed only part of the changed files")]
+    IncompleteFiles(String),
 }
 
 /// The conclusions a `check-*` attribute selects; `None` for other attributes.
@@ -154,6 +157,9 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
         "draft" => AttrValue::Bool(pr.draft),
         "closed" => AttrValue::Bool(pr.closed),
         "label" => AttrValue::List(pr.labels.iter().cloned().collect()),
+        "files" | "mergify-configuration-changed" if pr.files_incomplete => {
+            return Err(EvalError::IncompleteFiles(name.to_string()));
+        }
         "files" => AttrValue::List(pr.files.clone()),
         "dependabot-update-type" => AttrValue::List(pr.dependabot_update_types.clone()),
         "sender" => match &ctx.sender {
@@ -555,6 +561,32 @@ mod tests {
         assert!(holds(re, &p), "exception path is allowed");
         p.files.push(".github/workflows/ci.yml".into());
         assert!(!holds(re, &p), "workflow change is constitution");
+    }
+
+    /// Critic e8a0022 M1: GitHub lists at most 3000 files. On a truncated list a `files`
+    /// condition fails closed, negated or not: a hidden constitution path cannot pass the gate.
+    #[test]
+    fn a_truncated_file_list_fails_closed() {
+        let re = "-files ~= ^\\.github/";
+        let mut p = pr();
+        p.files = vec!["src/main.rs".into()];
+        assert!(holds(re, &p));
+        p.files_incomplete = true;
+        for c in [
+            re,
+            "files ~= ^src/",
+            "#files >= 1",
+            "-mergify-configuration-changed",
+        ] {
+            let cond = Condition::Atom(parse_atom(c).unwrap());
+            let mut errors = vec![];
+            assert!(!eval(&cond, &p, &Context::default(), &mut errors), "{c}");
+            assert!(
+                matches!(errors.first(), Some(EvalError::IncompleteFiles(_))),
+                "{c}: {errors:?}"
+            );
+        }
+        assert!(holds("base = main", &p), "other attributes still evaluate");
     }
 
     /// Table test: every conclusion against every check attribute (MQ-16).

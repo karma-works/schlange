@@ -192,13 +192,16 @@ fn a_foreign_push_cancels_a_pending_command_and_names_the_pusher() {
     );
     assert!(!has(&out, |x| matches!(x, Decision::Enqueue { .. })));
     assert!(d.state.pending_commands.is_empty());
-    // The queue's own update does not cancel it.
+    // Critic e8a0022 N2: a push whose commit claims to come from the queue's bot cancels it
+    // too. Schlange never pushes to pull requests, and commit authorship is free to set.
     d.read(vec![pr(1, "human", "h2", false)]);
     d.comment(1, "alice", "@mergifyio queue");
-    let mut p = pr(1, "human", "h3", false);
-    p.head_by_queue = true;
-    d.read(vec![p]);
     assert!(d.state.pending_commands.contains_key(&1));
+    let mut p = pr(1, "human", "h3", false);
+    p.head_pusher = Some("schlange[bot]".into());
+    let out = d.read(vec![p]);
+    assert!(replies(&out).iter().any(|r| r.contains("cancelled")));
+    assert!(!d.state.pending_commands.contains_key(&1));
 }
 
 #[test]

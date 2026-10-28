@@ -682,7 +682,9 @@ fn pending_command(
         );
         return;
     }
-    if pr.head_sha != p.head_sha && !pr.head_by_queue {
+    // A new head cancels the command, whoever pushed it: Schlange never pushes to pull
+    // requests, and no commit metadata can prove who did (N2).
+    if pr.head_sha != p.head_sha {
         state.pending_commands.remove(&number);
         let pusher = pr
             .head_pusher

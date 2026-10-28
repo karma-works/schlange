@@ -94,13 +94,16 @@ pub struct PullRequest {
     /// Logins whose latest review approves the pull request (for `approved-by`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approved_by: Vec<String>,
-    /// Login of whoever pushed the head commit, when the forge knows it.
+    /// Login of whoever pushed the head commit, when the forge knows it for certain (never
+    /// from a commit's author, which anyone who can push may set). Only used in replies: a new
+    /// head always cancels a waiting command, whoever pushed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_pusher: Option<String>,
-    /// The head commit is the queue's own update of the pull request (Schlange does not update
-    /// pull requests yet, so the adapters never set it).
+    /// The forge could not list every changed file (GitHub lists at most 3000): `files`
+    /// is a prefix of the real list. Conditions on `files` then fail closed (an evaluation
+    /// error) instead of judging a truncated list.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub head_by_queue: bool,
+    pub files_incomplete: bool,
     /// The pull requests named in `Depends-On` lines, as the forge resolved them when it read
     /// this pull request. The engine prefers its own, fresher view of pull requests it knows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -187,7 +190,7 @@ impl PullRequest {
             commit_authors: vec![],
             approved_by: vec![],
             head_pusher: None,
-            head_by_queue: false,
+            files_incomplete: false,
             dependencies: vec![],
             config_change: None,
         }

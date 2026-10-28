@@ -519,46 +519,39 @@ fn repo_route(
             }
             reply(200, st.pr_json(n).unwrap_or_default())
         }
+        ("GET", ["activity"]) => {
+            // Newest first; `ref` filters by branch (`refs/heads/<name>` or the bare name).
+            let wanted = query_param(query, "ref").map(decode);
+            let items = st
+                .activity
+                .iter()
+                .rev()
+                .filter(|a| {
+                    wanted.as_ref().is_none_or(|r| {
+                        r == &a.branch || r.strip_prefix("refs/heads/") == Some(a.branch.as_str())
+                    })
+                })
+                .map(|a| {
+                    json!({
+                        "before": if a.before.is_empty() { "0".repeat(40) } else { a.before.clone() },
+                        "after": a.after,
+                        "ref": format!("refs/heads/{}", a.branch),
+                        "timestamp": ts(a.at),
+                        "activity_type": a.kind,
+                        "actor": { "login": a.actor },
+                    })
+                })
+                .collect();
+            paginate(base_url, path, query, items, None)
+        }
         ("GET", ["pulls", n, "files"]) => {
             let Some(pr) = num(n).and_then(|n| st.prs.get(&n).cloned()) else {
                 return err(404, "Not Found");
             };
-            let tip = st.tip(&pr.base).unwrap_or_default();
-            let (files, before, after) = match st.repo.merge_base(&tip, &pr.head_sha) {
-                Some(mb) => (
-                    st.repo.changed_paths(&mb, &pr.head_sha),
-                    st.repo.tree(&mb).clone(),
-                    st.repo.tree(&pr.head_sha).clone(),
-                ),
-                None => (vec![], Default::default(), Default::default()),
-            };
-            // GitHub's rename detection: a removed path whose content an added path has is one
-            // `renamed` entry with `previous_filename`.
-            let removed: Vec<&String> = files.iter().filter(|f| !after.contains_key(*f)).collect();
-            let mut renamed_from: Vec<String> = Vec::new();
-            let mut items = Vec::new();
-            for f in &files {
-                if !after.contains_key(f) {
-                    continue;
-                }
-                let added = !before.contains_key(f);
-                let source = removed
-                    .iter()
-                    .find(|r| added && before.get(**r) == after.get(f) && !renamed_from.contains(r))
-                    .map(|r| r.to_string());
-                match source {
-                    Some(from) => {
-                        items.push(json!({ "filename": f, "previous_filename": from, "status": "renamed" }));
-                        renamed_from.push(from);
-                    }
-                    None => items.push(json!({ "filename": f, "status": if added { "added" } else { "modified" } })),
-                }
-            }
-            for r in removed {
-                if !renamed_from.contains(r) {
-                    items.push(json!({ "filename": r, "status": "removed" }));
-                }
-            }
+            // GitHub lists at most 3000 files of a pull request (`changed_files` has the
+            // real count).
+            let mut items = st.pr_files(&pr);
+            items.truncate(st.files_cap);
             paginate(base_url, path, query, items, None)
         }
         ("GET", ["pulls", n, "commits"]) => {
