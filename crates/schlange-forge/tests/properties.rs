@@ -1243,3 +1243,69 @@ fn a_landing_car_survives_the_split_of_another_cars_red_batch() {
     }
     assert_eq!(end, report.end_state, "{log}");
 }
+
+/// Found by the long run: in isolated mode a car landed while a bisection ran; the bisection
+/// did not list it as the car to land, so the read that resolves the landing was never acted
+/// on and the queue read the same pull requests every two minutes for good (I2).
+#[test]
+fn a_landing_in_flight_is_resolved_while_another_batch_is_split() {
+    let p = OraclePlan {
+        settings: Settings {
+            batch: (1, Some(2)),
+            max_parallel: 4,
+            limit: None,
+            timeout: true,
+            single_step: false,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(3, 4), (2, 0)],
+            method: "squash",
+            mode: "isolated",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![(0, 1034), (4, 1265), (0, 589), (1, 919), (3, 456), (3, 131)],
+        culprit: 3,
+        hang: true,
+        humans: vec![(3, Human::Close(2)), (127, Human::Pause(true))],
+        faults: Faults {
+            seed: 9244885228602600115,
+            drop: 0.20323216898165541,
+            duplicate: 0.013920226237772313,
+            delay: 0.029859950670247395,
+            max_delay: 45,
+            reconcile_every: 112,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 14192663961652535705,
+        reply_drop: 0.16026383713376263,
+        reply_duplicate: 0.16446916491749367,
+        reply_delay: 0.21332527854931718,
+        max_reply_delay: 120,
+        error: 0.11194550545989572,
+        lie: 0.04100933097810113,
+        base_race: 0.06111415734608262,
+        stale_read: 0.04523112524228328,
+        max_lag: 10,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 14192663961652535705,
+            jitter: 0.1250114944534913,
+            max_create_delay: 97,
+            max_cancel_delay: 48,
+        },
+    };
+    let crash = CrashPlan::random(f.seed, 0.02, 2);
+    let (v, _sim, log) = outcome_of(&oracle_scenario(&p), p.faults.clone(), Some(f), Some(crash));
+    assert!(
+        v.is_empty(),
+        "{}\n{}",
+        v.join("\n"),
+        &log[log.len().saturating_sub(3000)..]
+    );
+}

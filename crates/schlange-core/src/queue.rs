@@ -666,6 +666,13 @@ pub(crate) fn car_conflict(
     }
 }
 
+fn landing_in_flight_car(car: &Car) -> bool {
+    matches!(
+        car.status,
+        CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+    )
+}
+
 /// Whether a `Land` for the pull request is in flight (or its outcome is being read).
 pub(crate) fn landing_in_flight(state: &State, number: u64) -> bool {
     state.trains.values().any(|t| {
@@ -1615,8 +1622,11 @@ fn deciding_car(
             }
             continue;
         }
+        // A landing in flight is resolved whatever a bisection plans: its reply (or the read
+        // after it) is the only thing that tells whether the base moved.
         if let Some(b) = &train.bisection
             && b.land != Some(c.id)
+            && !landing_in_flight_car(c)
         {
             if train.mode == Mode::Serial {
                 return None;
@@ -1652,6 +1662,7 @@ fn front(
     let car = train.cars[i].clone();
     if let Some(b) = &train.bisection
         && b.land != Some(car.id)
+        && !landing_in_flight_car(&car)
     {
         return false;
     }
