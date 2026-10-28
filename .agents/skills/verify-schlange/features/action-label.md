@@ -3,7 +3,7 @@ id: action-label
 title: "Action `label`"
 priority: P2
 arztagent: false
-status: missing
+status: partial
 inventory:
   - "action:label"
   - "config:pull_request_rules.actions.label"
@@ -19,16 +19,17 @@ source: "https://docs.mergify.com/workflow/actions/label"
 
 # Action `label`
 
-Add, remove or toggle labels. Arztagent does not use the action.
+Adds, removes or toggles labels; the labels are real labels that conditions read (unlike the queue's own labels). Arztagent does not use the action.
 
 ## Sub-features
 
-- `run`
-- `options`
+- `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Someone removing a label the rule adds gets it back.
+- `options`: built: `add`, `remove`, `remove_all` (never removes the queue's own labels), `toggle` (added while the rule matches, removed otherwise). Label names are simple templates.
+- `loop guard`: within one evaluation the first rule that changes a label owns it; a later rule's opposite change is dropped (Mergify's ten-reversals-per-hour stop is not built).
 
 ## How to get to it (user POV)
 
-- Rule with action `label`.
+- A rule in `pull_request_rules` with the action; the action's result shows on the pull request.
 
 ## Driving it with schlange
 
@@ -36,8 +37,13 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Scenario.** `target/release/schlange sim run scenarios/p2-actions-label-comment.yaml`: the WIP toggle, a label put back, a rule-added label that the queue conditions read.
+- **Engine.** `cargo test -p schlange-core --test actions`.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_actions` (serve against the fake GitHub over HTTP).
+- **Crashes.** `cargo test -p schlange-forge --test action_crashes`: a crash before and after every side effect of the action scenarios posts nothing twice and leaves the same labels, assignees, checks and copies.
+- **Properties.** `SCHLANGE_PBT_CASES=400 cargo test -p schlange-forge --test properties`: random rules with this action run next to the queue; I0–I4 and the innocence oracle hold, no action comment is posted twice.
 
 ## Gotchas
 
-- Check whether the action is edge- or level-triggered.
+- A label the action adds can queue or dequeue a pull request: it is a condition input like any other.
+- Labels that do not exist are created by GitHub on first use (its own colour).

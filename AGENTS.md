@@ -11,8 +11,8 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 
 | Path | What |
 |---|---|
-| `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`) |
-| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`) |
+| `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`), typed rule actions with `defaults` (`actions`), `extends` (`extends`) |
+| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), the actions of `pull_request_rules` and the commands that run them as `Decision::Act` (`actions`), templates (`template`) |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit), configuration validation, doctor checks, permission list |
 | `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
@@ -82,6 +82,9 @@ cargo test -p schlange-github-fake                                      # schlan
 SCHLANGE_GH_PBT_CASES=50 cargo test -p schlange-github-fake --test properties   # long property run on the fake GitHub
 cargo test -p schlange-github-fake --test e2e_commands                  # commands, checkboxes, labels, protections, commit messages
 cargo test -p schlange-core --test commands --test command_parser       # engine-level commands and the fuzzed parser
+cargo test -p schlange-core --test actions                               # rule actions: triggering, idempotence, answers, restarts
+cargo test -p schlange-forge --test action_crashes                       # a crash at every side effect of the action scenarios posts nothing twice
+cargo test -p schlange-github-fake --test e2e_actions                    # rule actions and their commands against the fake GitHub
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 
@@ -119,11 +122,20 @@ Security notes:
 - Tests never use real tokens; the fake GitHub's test key is in
   `crates/schlange-github-fake/fixtures/`.
 
+Rule actions (`Decision::Act`) are side effects: journaled before they are sent, answered with
+`Event::ActionDone`, idempotent at the forge (comments and reviews carry a marker, copies reuse
+their branch, rewrites name the head they expect). Their labels, drafts and closes are real
+changes that conditions read, unlike the queue's cosmetics.
+
 Scenarios can comment (`comment: {pr, by, body}`), tick the queue's checkboxes
 (`tick: {pr, by, checkbox: queue|requeue}`), push as someone else (`push: {pr, by}`), edit the
 description (`edit_body`), give logins permissions (`permissions:`) and keep the configuration
 in `.mergify.yml` on the default branch (`config_in_repo: true`); `expect` takes
-`held: <kind or text>`. The simulation's time 0 is 2026-01-01T00:00:00Z.
+`held: <kind or text>`, `labels`, `no_labels`, `comments: {text: count}`, `assignees`,
+`review_requested`, `draft`, `checks: {name: conclusion}`, `reviews: {STATE: count}`, `commits`
+and `up_to_date`; `expect_pull_requests` checks the pull requests copies created; `review: {pr,
+by, state}` reviews; `repo: {branches: [...]}` adds branches; `extends: {name: file}` gives the
+configurations `extends` can name. The simulation's time 0 is 2026-01-01T00:00:00Z.
 
 ## Exit codes of `schlange`
 

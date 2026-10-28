@@ -31,7 +31,6 @@ inventory:
   - "attr:closed-at"
   - "attr:merged-at"
 unsupported:
-  - "attr:merged"
   - "attr:locked"
   - "attr:linear-history"
   - "attr:merged-by"
@@ -63,7 +62,7 @@ State, texts, commits, timestamps and origin of a pull request as conditions.
 
 ## Sub-features
 
-- `state`: `closed` built in the evaluator; `merged`, `locked`, `linear-history` missing.
+- `state`: `closed` and `merged` built in the evaluator (`merged` added with the rule actions: `backport`, thank-you comments and `delete_head_branch` rules use it); `locked`, `linear-history` missing.
 - `identity`: `number`, `head` (branch name) and `title` built; `merged-by`, `merge-commit-sha`, `milestone`, `assignee`, `head-repo-full-name`, `repository-name`, `repository-full-name` missing.
 - `texts`: `body`, `body-raw` missing.
 - `commits`: `commits`, `commits-behind`, `commits-unverified`, `co-authors`, `updates` missing.

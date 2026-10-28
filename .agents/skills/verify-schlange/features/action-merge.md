@@ -3,7 +3,7 @@ id: action-merge
 title: "Action `merge`"
 priority: P2
 arztagent: false
-status: missing
+status: partial
 inventory:
   - "action:merge"
   - "config:pull_request_rules.actions.merge"
@@ -13,6 +13,16 @@ inventory:
   - "default:pull_request_rules.actions.merge.*"
   - "default:defaults.actions.merge.*"
   - "enum:method:*"
+unsupported:
+  - "config:pull_request_rules.actions.merge.commit_message_format"
+  - "config:pull_request_rules.actions.merge.commit_message_format.*"
+  - "config:pull_request_rules.actions.merge.commit_message_template"
+  - "config:pull_request_rules.actions.merge.merge_bot_account"
+  - "config:defaults.actions.merge.commit_message_format"
+  - "config:defaults.actions.merge.commit_message_format.*"
+  - "config:defaults.actions.merge.commit_message_template"
+  - "config:defaults.actions.merge.merge_bot_account"
+  - "enum:method:rebase"
 problems:
   - "MQ-06"
   - "MQ-12"
@@ -21,16 +31,16 @@ source: "https://docs.mergify.com/workflow/actions/merge"
 
 # Action `merge`
 
-Merge the pull request directly, without a queue. Arztagent does not use the action.
+Merges the pull request directly, outside the queue. Arztagent does not use the action.
 
 ## Sub-features
 
-- `run`
-- `options`
+- `run`: built. Edge-triggered (docs: workflow, "How rules are evaluated"): runs once when the rule starts to match, again only after it stopped matching. Only an open, ready pull request that no protection holds and that is not queued; the merge is bound to the head it saw. While it cannot merge, it tries again at the next evaluation.
+- `options`: `method` `squash` (default), `merge`; `fast-forward` in the simulated forge only; `rebase`, `commit_message_format`, `commit_message_template`, `merge_bot_account` not built.
 
 ## How to get to it (user POV)
 
-- Rule with action `merge`.
+- A rule in `pull_request_rules` with the action; the action's result shows on the pull request.
 
 ## Driving it with schlange
 
@@ -38,8 +48,8 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Scenario.** `target/release/schlange sim run scenarios/p2-actions-branches.yaml`: the merge counts as a merge outside the queue (like one by hand); I0 holds.
 
 ## Gotchas
 
-- Check whether the action is edge- or level-triggered.
+- Branch protection and rulesets are left to GitHub, which refuses the merge; the refusal is logged.
