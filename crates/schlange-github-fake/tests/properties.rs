@@ -234,7 +234,7 @@ enum AOp {
 
 fn aop() -> impl Strategy<Value = AOp> {
     prop_oneof![
-        6 => (0u8..5, 0u8..6).prop_map(|(kind, f)| AOp::Open { kind, f }),
+        6 => (0u8..6, 0u8..6).prop_map(|(kind, f)| AOp::Open { kind, f }),
         2 => (any::<u8>(), 0u8..5).prop_map(|(i, f)| AOp::Push { i, f }),
         1 => (any::<u8>(), any::<bool>()).prop_map(|(i, add)| AOp::Halt { i, add }),
         1 => (0u8..5).prop_map(|f| AOp::BasePush { f }),
@@ -272,7 +272,9 @@ fn arztagent_tester(drop: f64, duplicate: f64, delay_ms: u64, seed: u64) -> Test
             "Risk class and data protection",
             CiOn::Both,
         ))
-        .ci(CiRule::success("ci-ok", CiOn::PullRequest))
+        // A red check on the pull request itself keeps it out (`check-success = ci-ok`,
+        // `#check-failure = 0`).
+        .ci(CiRule::fails_on("ci-ok", CiOn::PullRequest, "RED_PR_CHECK"))
         .ci(full_suite)
         .ci(CiRule::success("KI-Review", CiOn::PullRequest))
         .merge_guard(guard_labels(&["halt"]))
@@ -295,6 +297,10 @@ fn apply_a(t: &mut Running, prs: &mut Vec<u64>, op: &AOp, n: usize) {
                     format!("v{n} BREAKS_FULL_SUITE\n"),
                 ),
                 2 => (format!("backend/f{f}-{n}.py"), format!("FLAKY_ONCE{n}\n")),
+                5 => (
+                    format!("backend/f{f}-{n}.py"),
+                    format!("v{n} RED_PR_CHECK\n"),
+                ),
                 4 => (
                     format!(".github/workflows/w{n}.yml"),
                     format!("on: [push] # {n}\n"),
@@ -346,6 +352,40 @@ fn apply_a(t: &mut Running, prs: &mut Vec<u64>, op: &AOp, n: usize) {
     std::thread::sleep(Duration::from_millis(15));
 }
 
+/// Liveness (bors: nothing sits forever without a reason): after the queue drained (`drain`
+/// bounds it to two simulated hours), every pull request is merged, or left the queue with a
+/// reason, or is held with a reason, or was never eligible (draft, `halt`, a constitution path,
+/// a red check of its own, a major Dependabot update).
+fn unexplained(t: &Running, prs: &[u64]) -> Vec<String> {
+    let st = t.status().unwrap().state;
+    let base = t.base_tree();
+    let mut out = Vec::new();
+    for &n in prs {
+        let Some(p) = t.gh.pr(n) else { continue };
+        if p.merged || !p.open {
+            continue;
+        }
+        let key = n.to_string();
+        let dequeued = st["outcomes"][&key]["outcome"] == "dequeued";
+        let held = st["holds"][&key].as_array().is_some_and(|h| !h.is_empty());
+        let tree = t.gh.tree_of(&p.head_sha);
+        let ineligible = p.draft
+            || p.labels.contains("halt")
+            || tree
+                .keys()
+                .any(|k| k.starts_with(".github/") && !base.contains_key(k))
+            || tree.values().any(|v| v.contains("RED_PR_CHECK"))
+            || p.title.contains("semver-major");
+        if !(dequeued || held || ineligible) {
+            out.push(format!(
+                "liveness: #{n} is open, eligible, not merged and has no reason (outcome {}, holds {})",
+                st["outcomes"][&key], st["holds"][&key]
+            ));
+        }
+    }
+    out
+}
+
 proptest! {
     #![proptest_config(config())]
 
@@ -365,6 +405,7 @@ proptest! {
         drain(&t);
         let mut v = t.gh.invariant_violations(true);
         v.extend(t.dequeued_but_landed());
+        v.extend(unexplained(&t, &prs));
         let halted = t.status().unwrap().halted.clone();
         t.shutdown();
         prop_assert!(v.is_empty(), "violations: {v:?}\nops: {ops:?}");
