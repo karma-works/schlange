@@ -16,8 +16,10 @@ if [ "${1:-all}" = all ]; then
   for f in "$HERE"/scenarios/*.json; do set -- "$@" "$(basename "$f" .json)"; done
 fi
 
-if [ "$repo" = schlange-e2e ] && ! command -v schlange >/dev/null; then
-  echo "::error::schlange-e2e needs schlange serve running with the queue app (not built into this workflow yet)."
+# schlange-e2e is Schlange's compatibility test: `schlange serve` must be running
+# (sandbox/ci/start-schlange.sh in the workflow, or by hand with SCHLANGE_URL set).
+if [ "$repo" = schlange-e2e ] && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8080}/healthz" >/dev/null 2>&1; then
+  echo "::error::schlange-e2e needs schlange serve running with the queue app (sandbox/ci/start-schlange.sh)."
   exit 1
 fi
 
