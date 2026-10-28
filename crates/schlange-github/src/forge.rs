@@ -1371,6 +1371,7 @@ impl GithubForge {
                 number: p.number,
                 sha: landed_sha.clone(),
                 tree: c.tree.sha.clone(),
+                extra: vec![],
             });
             expected = landed_sha;
             match tested_tree {

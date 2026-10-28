@@ -233,6 +233,7 @@ pub(crate) fn fill(
         base_sha: base_sha.to_string(),
         prs: prs.clone(),
         own: own.clone(),
+        stack_on: None,
     });
     state.trains.get_mut(base).expect("train").cars.push(Car {
         id,
@@ -252,6 +253,10 @@ pub(crate) fn fill(
         measured: false,
         drifted: false,
         replaces: None,
+        deps: vec![],
+        stacked_on: None,
+        scopes: vec![],
+        barrier: false,
     });
 }
 

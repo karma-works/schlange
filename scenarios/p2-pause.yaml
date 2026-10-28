@@ -1,0 +1,39 @@
+# Pausing the queue (queue-pause, MQ-46). Two cars run when an operator pauses the queue at
+# +0:05: both are cancelled (their drafts closed) and the pull requests stay queued with
+# PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE. #3 still joins the queue while it is paused, but
+# nothing is checked or merged until the queue is unpaused at +0:30; then all three land.
+name: p2-pause
+description: A paused queue cancels its checks, accepts pull requests and resumes on unpause.
+config: configs/two-step.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, pause: "CI incident" }
+  - { at: 8m, open: 3 }
+  - { at: 30m, unpause: true }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+expect_merged_order: [1, 2, 3]
+expect_log:
+  - "the queue is paused: CI incident"
+  - "checks of #1 ended, stays queued: PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE"
+  - "checks of #2 ended, stays queued: PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE"
+  - "enqueue #3"
+  - "the queue is unpaused"

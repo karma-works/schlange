@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use schlange_config::rules::Rules;
+use schlange_config::rules::{MergeMethod, Rules};
 
 pub use crate::control::PendingCommand;
 pub use crate::cosmetics::Cosmetic;
@@ -44,6 +44,12 @@ pub struct LandedCommit {
     pub number: u64,
     pub sha: String,
     pub tree: String,
+    /// Further commits this landing put on the base's first-parent history for the pull
+    /// request, oldest first, before `sha`: the replayed commits of a `rebase`, the pull
+    /// request's own commits of an in-place `fast-forward`. Their trees were not tested on
+    /// their own (only `sha`'s).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<String>,
 }
 
 /// Why the forge refused (part of) a landing.
@@ -155,6 +161,98 @@ pub enum Event {
     /// The configuration on the default branch changed: every pull request is evaluated again
     /// under the new rules (MQ-19).
     ConfigurationChanged,
+    /// An operator changed the queue's controls (pause, freeze) through the API or the CLI.
+    Control {
+        control: Control,
+    },
+    /// The checks the base branch's protection or rulesets require, as the forge read them
+    /// (`branch_protection_injection_mode`).
+    RequiredChecks {
+        base: String,
+        checks: Vec<String>,
+    },
+}
+
+/// An operator's change of the queue controls.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Control {
+    /// Pause the whole merge queue with a reason (docs: merge-queue/pause).
+    Pause {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
+    Unpause,
+    /// Create or replace a scheduled freeze.
+    Freeze {
+        freeze: Freeze,
+    },
+    /// Delete a freeze.
+    Unfreeze {
+        id: u64,
+    },
+}
+
+/// The queue is paused: nothing is checked or merged; pull requests can still join.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pause {
+    pub reason: String,
+    /// Engine time of the pause.
+    pub at: Time,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// A scheduled freeze (docs: merge-protections/freeze): from `start` until `end` (engine time;
+/// `None`: until deleted), matching pull requests are not merged. Their checks still run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Freeze {
+    pub id: u64,
+    pub reason: String,
+    pub start: Time,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<Time>,
+    /// Conditions a pull request must match to be frozen (empty: every pull request).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matching: Vec<String>,
+    /// Conditions that let a pull request through when it matches all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+impl Freeze {
+    pub fn active(&self, now: Time) -> bool {
+        now >= self.start && self.end.is_none_or(|e| now < e)
+    }
+
+    fn conds(list: &[String]) -> Vec<schlange_config::conditions::Condition> {
+        let v = serde_json::Value::Array(
+            list.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
+        schlange_config::conditions::parse_list(&v, "", &mut Vec::new())
+    }
+
+    /// Whether this freeze holds the pull request now (active, matching, not excepted).
+    pub fn holds(&self, pr: &PullRequest, ctx: &Context, now: Time) -> bool {
+        if !self.active(now) {
+            return false;
+        }
+        let m = Self::conds(&self.matching);
+        if m.len() != self.matching.len() {
+            return true; // an unreadable condition never lets anything through
+        }
+        if !eval::eval_list(&m, pr, ctx, &mut Vec::new()).0 {
+            return false;
+        }
+        if self.exclude.is_empty() {
+            return true;
+        }
+        let x = Self::conds(&self.exclude);
+        !(x.len() == self.exclude.len() && eval::eval_list(&x, pr, ctx, &mut Vec::new()).0)
+    }
 }
 
 /// What the engine decided. The forge adapter turns decisions into side effects.
@@ -190,6 +288,12 @@ pub enum Decision {
         prs: Vec<CarPr>,
         /// The pull requests this car checks; the others are ahead of it.
         own: Vec<u64>,
+        /// Build on this commit (the head of the car ahead) and merge only `own` into it:
+        /// `fast-forward` and `merge-batch` land the batch branch itself, so each car's branch
+        /// must contain the branch ahead. `prs` still lists every pull request in order (for
+        /// conflict reports).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stack_on: Option<String>,
     },
     /// Check the pull request in place: no queue branch, no draft pull request.
     CheckInPlace {
@@ -227,6 +331,16 @@ pub enum Decision {
         /// without an entry gets the forge's own message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         messages: Vec<CommitMessage>,
+        /// How to land (`merge_method`): `squash`, `merge` and `rebase` land each pull request at
+        /// its head; `fast-forward` moves the base onto `head`; `merge-batch` merges `head`
+        /// (the batch branch, draft `draft`) with one merge commit.
+        #[serde(default)]
+        method: MergeMethod,
+        /// The car's tested head (the queue branch, or the pull request in place).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<u64>,
     },
     /// The pull request landed on the base.
     Merged {
@@ -271,6 +385,18 @@ pub struct QueueEntry {
     /// Who queued it with a command or checkbox; `None` when a rule queued it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// From `priority_rules` (the first rule that matches; `medium`, 2000, otherwise).
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_rule: Option<String>,
+    /// The matching priority rule allows interrupting running checks of lower priority.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupt: bool,
+}
+
+fn default_priority() -> u32 {
+    schlange_config::queue_extras::DEFAULT_PRIORITY
 }
 
 /// What the host tells the engine about where it runs.
@@ -376,6 +502,19 @@ pub struct State {
     /// What the queue last showed on pull requests (labels, comments, checks).
     #[serde(default)]
     pub cosmetics: crate::cosmetics::Applied,
+    /// The merge queue is paused (docs: merge-queue/pause).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<Pause>,
+    /// Scheduled freezes by id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub freezes: BTreeMap<u64, Freeze>,
+    /// Checks the protection of each base branch requires (as last read).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub required_checks: BTreeMap<String, Vec<String>>,
+    /// Why a queued pull request may not land right now (a freeze, a merge protection, the
+    /// pause), for status output; recomputed on every step.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub landing_holds: BTreeMap<u64, String>,
 }
 
 impl State {
@@ -544,6 +683,17 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         Event::CarClosed { car } => queue::car_closed(state, *car),
         Event::Restarted => queue::expire_all(state, out),
         Event::Comments { comments } => crate::control::comments(state, rules, comments, out),
+        Event::Control { control } => crate::gates::apply(state, control, out),
+        Event::RequiredChecks { base, checks } => {
+            let mut c = checks.clone();
+            c.sort();
+            c.dedup();
+            if c.is_empty() {
+                state.required_checks.remove(base);
+            } else {
+                state.required_checks.insert(base.clone(), c);
+            }
+        }
         Event::ConfigurationChanged => {
             // Attributes and evaluation errors were judged under the old rules.
             state.blocked_attrs.clear();
@@ -576,6 +726,7 @@ fn process(
         }
         evaluate_pull_request(state, rules, &pr, now, out);
     }
+    crate::gates::refresh_priorities(state, rules);
     queue::process_trains(state, rules, now, token, out);
 }
 
@@ -612,6 +763,7 @@ pub(crate) fn dequeue(
 #[allow(clippy::too_many_arguments)]
 fn enqueue(
     state: &mut State,
+    rules: &Rules,
     number: u64,
     base: &str,
     head_sha: &str,
@@ -634,8 +786,12 @@ fn enqueue(
             waiting_since: now,
             status: EntryStatus::Waiting,
             by,
+            priority: default_priority(),
+            priority_rule: None,
+            interrupt: false,
         },
     );
+    crate::gates::assign_priority(state, rules, number);
     state
         .trains
         .entry(base.to_string())
@@ -728,7 +884,13 @@ fn pending_command(
     let mut errors = Vec::new();
     let target = rules.queue_rules.iter().find(|q| {
         p.queue.as_ref().is_none_or(|t| *t == q.name)
-            && eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors).0
+            && eval::eval_list(
+                &crate::gates::queue_conditions(state, q, &pr.base),
+                pr,
+                &ctx,
+                &mut errors,
+            )
+            .0
     });
     match target {
         Some(q) => {
@@ -736,6 +898,7 @@ fn pending_command(
             state.pending_commands.remove(&number);
             enqueue(
                 state,
+                rules,
                 number,
                 &pr.base,
                 &pr.head_sha,
@@ -844,7 +1007,8 @@ fn evaluate_pull_request(
                     format!("queue `{}` no longer exists", entry.queue),
                 )),
                 Some(q) => {
-                    let (ok, results) = eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors);
+                    let conds = crate::gates::queue_conditions(state, q, &entry.base);
+                    let (ok, results) = eval::eval_list(&conds, pr, &ctx, &mut errors);
                     if !ok {
                         Some(DequeueReason::assumed(
                             code::PR_DEQUEUED,
@@ -904,10 +1068,12 @@ fn evaluate_pull_request(
                 if target.as_ref().is_some_and(|t| *t != q.name) {
                     continue;
                 }
-                let (ok, _) = eval::eval_list(&q.queue_conditions, pr, &ctx, &mut errors);
+                let conds = crate::gates::queue_conditions(state, q, &pr.base);
+                let (ok, _) = eval::eval_list(&conds, pr, &ctx, &mut errors);
                 if ok {
                     enqueue(
                         state,
+                        rules,
                         number,
                         &pr.base,
                         &pr.head_sha,

@@ -1,0 +1,36 @@
+# `merge_queue.mode: parallel` with file-pattern scopes (queue-modes `parallel`, scopes):
+# batches that share no scope are tested and land independently; a barrier file serializes.
+merge_queue:
+  mode: parallel
+  max_parallel_checks: 4
+
+scopes:
+  source:
+    files:
+      api:
+        include:
+          - api/**
+      web:
+        include:
+          - web/**
+  barrier_files:
+    include:
+      - Makefile
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 2
+    batch_max_wait_time: 30 s
+    queue_conditions:
+      - base = main
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

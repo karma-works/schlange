@@ -1,0 +1,37 @@
+# Priorities (queue-priority, MQ-24). One check slot. #1 (medium) is being checked when #2
+# (`later`, low) and #3 (medium) join; #3 goes ahead of #2 although it came later. Then #4
+# (`urgent`, high, may interrupt) joins while #3 is checked: #3's checks are cancelled
+# (PR_WITH_HIGHER_PRIORITY_QUEUED, it stays queued), #4 is checked and lands first, then #3, then
+# #2.
+name: p2-priority
+description: Higher priority goes first; an urgent pull request interrupts running checks.
+config: configs/priority.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, labels: [later], files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+  - { number: 4, author: bot, labels: [urgent], files: { d.txt: "d\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 2m, open: 2 }
+  - { at: 3m, open: 3 }
+  - { at: 13m, open: 4 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+expect_merged_order: [1, 4, 3, 2]
+expect_log:
+  - "checks of #3 ended, stays queued: PR_WITH_HIGHER_PRIORITY_QUEUED"

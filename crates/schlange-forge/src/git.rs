@@ -78,6 +78,11 @@ pub trait GitStore {
     /// The changes of `head` since its merge base with `onto`, as one commit whose single
     /// parent is `onto`.
     fn squash(&mut self, onto: &str, head: &str, message: &str) -> Result<Sha, Conflict>;
+    /// Replays one commit onto `onto` (the change from its first parent), as a commit whose
+    /// single parent is `onto` (`rebase` landing).
+    fn cherry_pick(&mut self, onto: &str, commit: &str, message: &str) -> Result<Sha, Conflict>;
+    /// The commit message.
+    fn message(&self, sha: &str) -> String;
     /// Paths that differ between two commits' trees.
     fn changed_paths(&self, from: &str, to: &str) -> Vec<String>;
     /// First-parent history of a commit, newest first.
@@ -131,6 +136,19 @@ impl GitStore for Repo {
     }
     fn squash(&mut self, onto: &str, head: &str, message: &str) -> Result<Sha, Conflict> {
         Repo::squash(self, onto, head, message)
+    }
+    fn cherry_pick(&mut self, onto: &str, commit: &str, message: &str) -> Result<Sha, Conflict> {
+        let c = self.get(commit).clone();
+        let base = c
+            .parents
+            .first()
+            .map(|p| self.tree(p).clone())
+            .unwrap_or_default();
+        let tree = Repo::merge_trees(&base, self.tree(onto), &c.tree)?;
+        Ok(Repo::commit(self, tree, vec![onto.to_string()], message))
+    }
+    fn message(&self, sha: &str) -> String {
+        self.get(sha).message.clone()
     }
     fn changed_paths(&self, from: &str, to: &str) -> Vec<String> {
         Repo::changed_paths(self, from, to)

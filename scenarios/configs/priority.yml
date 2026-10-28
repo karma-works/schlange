@@ -1,0 +1,31 @@
+# Priorities (queue-priority, MQ-24): `urgent` is high and may interrupt running checks;
+# `later` is low; everything else is medium. One parallel check, two-step CI.
+merge_queue:
+  max_parallel_checks: 1
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+priority_rules:
+  - name: urgent fixes
+    conditions:
+      - label = urgent
+    priority: high
+    allow_checks_interruption: true
+  - name: chores
+    conditions:
+      - label = later
+    priority: low
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

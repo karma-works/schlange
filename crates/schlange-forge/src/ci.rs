@@ -44,6 +44,9 @@ pub struct CiScript {
     pub fail_when_all: Vec<String>,
     /// Fails when all of these pull requests' changes are in the tree (semantic conflict).
     pub fail_when_prs: Vec<u64>,
+    /// Fails unless some file contains one of these markers (a red intermediate state that a
+    /// later change fixes, as a flaky test looks to the queue).
+    pub fail_unless_contains: Vec<String>,
     /// Never reports when any file contains one of these markers (a hanging job, MQ-37).
     pub hang_when_contains: Vec<String>,
     /// Probability that a run which would succeed fails anyway.
@@ -71,6 +74,7 @@ impl CiScript {
             fail_when_contains: vec![],
             fail_when_all: vec![],
             fail_when_prs: vec![],
+            fail_unless_contains: vec![],
             hang_when_contains: vec![],
             flake_rate: 0.0,
             run: None,
@@ -99,6 +103,13 @@ impl CiScript {
         if !self.fail_when_all.is_empty() {
             let all: Vec<String> = self.fail_when_all.iter().map(has).collect();
             s.push_str(&format!("if {}; then exit 1; fi\n", all.join(" && ")));
+        }
+        if !self.fail_unless_contains.is_empty() {
+            let any: Vec<String> = self.fail_unless_contains.iter().map(has).collect();
+            s.push_str(&format!(
+                "if ! {{ {}; }}; then exit 1; fi\n",
+                any.join(" || ")
+            ));
         }
         s.push_str("exit 0\n");
         s
@@ -146,6 +157,8 @@ impl CiScript {
         if self.fail_when_contains.iter().any(contains)
             || (!self.fail_when_all.is_empty() && self.fail_when_all.iter().all(contains))
             || (!self.fail_when_prs.is_empty() && self.fail_when_prs.iter().all(|n| present(*n)))
+            || (!self.fail_unless_contains.is_empty()
+                && !self.fail_unless_contains.iter().any(contains))
         {
             return Some(Conclusion::Failure);
         }
