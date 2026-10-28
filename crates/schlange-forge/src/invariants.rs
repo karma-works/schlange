@@ -62,7 +62,7 @@ use schlange_core::queue::{closing_count, is_queue_branch};
 use schlange_config::rules::MergeMethod;
 use schlange_core::engine::LandedCommit;
 
-use crate::git::{GitStore, Repo, Sha};
+use crate::git::{GitStore, Sha};
 use crate::sim::{BOT, SimForge};
 
 #[derive(Clone, Debug, Default, Serialize)]

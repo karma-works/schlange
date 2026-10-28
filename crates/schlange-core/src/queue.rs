@@ -223,14 +223,14 @@ impl Train {
     }
 }
 
-/// `reset_on_external_merge: never`, unless a queue lands by `fast-forward`: a base that moved
-/// outside the queue can never be fast-forwarded onto a tested branch, so such a queue resets.
+/// `reset_on_external_merge: never`, unless a queue lands its batch branch itself
+/// (`fast-forward`, `merge-batch`): a base that moved outside the queue can never be
+/// fast-forwarded onto a tested branch, and a stacked branch was built on the car ahead, not on
+/// the base, so there is no tested change to carry over. Such a queue resets (our choice; the
+/// docs do not say).
 fn never_reset(rules: &Rules) -> bool {
     rules.merge_queue.reset_on_external_merge == "never"
-        && !rules
-            .queue_rules
-            .iter()
-            .any(|q| q.method() == schlange_config::rules::MergeMethod::FastForward)
+        && !rules.queue_rules.iter().any(|q| q.method().lands_branch())
 }
 
 pub(crate) fn rule<'a>(rules: &'a Rules, name: &str) -> Option<&'a QueueRule> {
