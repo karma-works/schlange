@@ -987,9 +987,9 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
             .collect();
         let how = if auto {
             format!(
-                "checks did not pass within the automatic checks timeout of {t}s, derived from \
-                 this queue's recent CI runtime (set `checks_timeout` to a duration, or null to \
-                 disable it)"
+                "Schlange gave the checks {t}s, a limit it estimates from how long CI took on \
+                 this queue lately, and they were not green by then (a duration in \
+                 `checks_timeout` sets the limit, null removes it)"
             )
         } else {
             format!("checks did not pass within {t}s")
