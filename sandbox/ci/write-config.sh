@@ -2,6 +2,7 @@
 # In the Actions runner: rebuilds ~/.config/schlange-sandbox from the secrets (counterpart of
 # upload-secrets.sh), so the driver and setup.sh run there as they do locally.
 set -euo pipefail
+[ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo "refused: only the organisation schlange-sandbox"; exit 1; }
 umask 077
 CONFIG="${RUNNER_TEMP:?only in the runner}/schlange-sandbox"
 mkdir -p "$CONFIG/apps"

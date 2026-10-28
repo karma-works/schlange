@@ -1,11 +1,13 @@
 name: Sandbox
 
 # Integration tests in the GitHub sandbox schlange-sandbox (docs/betrieb/sandbox.md).
-# - queue-lab: Mergify active. Records Mergify's behaviour and compares it with the
-#   baselines in sandbox/baselines/ (reports when Mergify changes).
+# - queue-lab: Mergify active. Records Mergify's behaviour and, for every scenario that
+#   has a reviewed baseline in sandbox/baselines/, compares with it (reports when Mergify
+#   changes). Scenarios without a baseline are only recorded.
 # - schlange-e2e: Schlange active. The job builds the release binary and runs `schlange serve`
-#   with the queue app in the runner (webhooks over smee when vars.SANDBOX_SMEE_URL is set,
-#   otherwise polling by reconciliation), then compares the scenarios with the same baselines.
+#   with the queue app in the runner (no webhooks: it polls by reconciliation every 10 s).
+#   A scenario is compared with sandbox/baselines/<scenario>.json when that file exists;
+#   without one the run is only recorded (and fails when a wait times out).
 #
 # Trigger it, also by agents:
 #   gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
@@ -43,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Credentials from the secrets
         env:
           SANDBOX_QUEUE_APP: ${{ secrets.SANDBOX_QUEUE_APP }}
@@ -51,12 +53,11 @@ jobs:
           SANDBOX_QUEUE_WEBHOOK_SECRET: ${{ secrets.SANDBOX_QUEUE_WEBHOOK_SECRET }}
           SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
-          SANDBOX_SMEE_URL: ${{ vars.SANDBOX_SMEE_URL }}
         run: bash sandbox/ci/write-config.sh
       - name: Rust toolchain and cache (schlange-e2e)
         if: ${{ inputs.repo == 'schlange-e2e' }}
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: ${{ inputs.repo == 'schlange-e2e' }}
       - name: Build schlange (schlange-e2e)
         if: ${{ inputs.repo == 'schlange-e2e' }}
@@ -65,8 +66,6 @@ jobs:
           cargo build --release --locked -p schlange
       - name: Start schlange serve (schlange-e2e)
         if: ${{ inputs.repo == 'schlange-e2e' }}
-        env:
-          SANDBOX_SMEE_URL: ${{ vars.SANDBOX_SMEE_URL }}
         run: bash sandbox/ci/start-schlange.sh target/release/schlange
       - name: State of the sandbox
         env:
@@ -86,11 +85,13 @@ jobs:
         if: ${{ always() && inputs.repo == 'schlange-e2e' }}
         run: |
           if [ -f "$RUNNER_TEMP/schlange.pids" ]; then xargs -r kill < "$RUNNER_TEMP/schlange.pids" || true; fi
-          echo "::group::diagnostic probe"; cat "$RUNNER_TEMP/probe.log" 2>/dev/null || true; echo "::endgroup::"
-          echo "::group::schlange serve log (end)"; tail -n 80 "$RUNNER_TEMP/schlange-serve.log" || true; echo "::endgroup::"
+          # The log mentions pull request titles; the public job log gets only problem lines.
+          echo "::group::schlange serve: problem lines (end)"
+          grep -iE "error|panic|refus|halt|fail" "$RUNNER_TEMP/schlange-serve.log" | tail -n 30 || true
+          echo "::endgroup::"
       # Public repo: only our own format, free of text. trace.json and summary.json contain
       # Mergify texts (clean room) and stay in the runner.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: sandbox-runs-${{ inputs.repo || 'queue-lab' }}-${{ github.run_id }}

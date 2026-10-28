@@ -11,6 +11,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 repo="${1:?repo}"; shift
+case "$repo" in queue-lab|schlange-e2e) ;; *) echo "::error::refused: $repo is not a sandbox repository"; exit 1;; esac
+[ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo "::error::refused: only the organisation schlange-sandbox"; exit 1; }
 if [ "${1:-all}" = all ]; then
   set --
   for f in "$HERE"/scenarios/*.json; do set -- "$@" "$(basename "$f" .json)"; done
