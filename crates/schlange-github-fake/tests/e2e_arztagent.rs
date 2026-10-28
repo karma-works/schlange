@@ -205,7 +205,9 @@ fn a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human() {
     }
     t.pr(halted).label("halt");
     t.gh.set_draft(drafted, true);
-    t.wait_until("both dequeued", |t| !queued(t, halted) && !queued(t, drafted));
+    t.wait_until("both dequeued", |t| {
+        !queued(t, halted) && !queued(t, drafted)
+    });
     // The agent removes `halt` (it may: it has write access) and the draft is ready again.
     t.pr(halted).unlabel("halt");
     t.gh.set_draft(drafted, false);
