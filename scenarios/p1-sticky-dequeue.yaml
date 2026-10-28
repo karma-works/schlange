@@ -1,0 +1,64 @@
+# Sticky dequeue (sandbox s05, s07, s11; observed on Mergify with Arztagent's configuration):
+# a pull request that left the queue because its queue conditions stopped holding (label
+# `halt`, back to draft) is not queued again when the cause goes away. It waits for a new head
+# (a push), and that wait is a hold with a reason (`dequeued-waits-for-new-head`).
+# Deliberate deviation: a `queue` command from a sender that `commands_restrictions` allows
+# also lifts it (on Mergify the command fails only because of its own cancelled check, and
+# Arztagent needs its humans to be able to queue). An agent's command does not.
+name: p1-sticky-dequeue
+description: A pull request dequeued by halt or draft rejoins only with a new head or an allowed queue command.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+permissions: { arztagent-bot: write, karma-works: admin }
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+    runs_on: pull_request
+  - check: ci-ok
+    duration: 20m
+    runs_on: queue
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: [backend/a.py] }
+  - { number: 2, author: arztagent-bot, files: [backend/b.py] }
+  - { number: 3, author: arztagent-bot, files: [backend/c.py] }
+  - { number: 4, author: arztagent-bot, files: [backend/d.py] }
+  - { number: 5, author: arztagent-bot, files: [backend/e.py] }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 0s, open: 5 }
+  # All five are queued at +0:05 and the batch is built at +0:10.
+  - { at: 12m, label: { pr: 1, name: halt } }
+  - { at: 12m, draft: 2 }
+  - { at: 12m, label: { pr: 3, name: halt } }
+  - { at: 12m, draft: 4 }
+  - { at: 14m, unlabel: { pr: 1, name: halt } }
+  - { at: 14m, ready: 2 }
+  - { at: 14m, unlabel: { pr: 3, name: halt } }
+  - { at: 14m, ready: 4 }
+  # The agent may not lift the hold with a command.
+  - { at: 20m, comment: { pr: 1, by: arztagent-bot, body: "@mergifyio queue" } }
+  # A new head lifts it for #3; a listed human's command lifts it for #4.
+  - { at: 1h, push: { pr: 3, files: { backend/c.py: "c = 2\n" } } }
+  - { at: 1h, comment: { pr: 4, by: karma-works, body: "@mergifyio queue" } }
+
+expect:
+  - { pr: 1, state: dequeued, reason: PR_DEQUEUED, held: dequeued-waits-for-new-head }
+  - { pr: 2, state: dequeued, reason: PR_DEQUEUED, held: dequeued-waits-for-new-head }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+  - { pr: 5, state: merged }
+expect_log:
+  - "dequeue #1 from `default`: PR_DEQUEUED"
+  - "dequeue #2 from `default`: PR_DEQUEUED"
+  - "@arztagent-bot, you may not run `queue` on this pull request"
+  - "enqueue #4 into `default` (rule `queue command by @karma-works`)"

@@ -181,3 +181,59 @@ fn only_the_two_listed_humans_may_queue_by_command() {
     t.assert_invariants();
     t.shutdown();
 }
+
+fn holds(t: &Running, n: u64) -> String {
+    t.status()
+        .map(|s| s.state["holds"][n.to_string()].to_string())
+        .unwrap_or_default()
+}
+
+/// Sticky dequeue (sandbox s05, s07, s11; Mergify's observed behaviour): a pull request that
+/// left the queue because `halt` was set or it went back to draft is not queued again when
+/// the cause goes away. The wait is a hold with a reason; a new head lifts it, and so does a
+/// `queue` command from a listed human (a documented deviation), not one from the agent.
+#[test]
+fn a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human() {
+    let t = start();
+    t.permission("karma-works", "admin");
+    t.permission(BOT, "write");
+    let halted = t.open_pr(BOT).file("a.py", "a\n").create();
+    let drafted = t.open_pr(BOT).file("b.py", "b\n").create();
+    for n in [halted, drafted] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.pr(halted).label("halt");
+    t.gh.set_draft(drafted, true);
+    t.wait_until("both dequeued", |t| !queued(t, halted) && !queued(t, drafted));
+    // The agent removes `halt` (it may: it has write access) and the draft is ready again.
+    t.pr(halted).unlabel("halt");
+    t.gh.set_draft(drafted, false);
+    t.settle();
+    t.advance("10m");
+    t.settle();
+    for n in [halted, drafted] {
+        assert!(!queued(&t, n), "#{n} must not rejoin on its own");
+        let h = holds(&t, n);
+        assert!(h.contains("dequeued-waits-for-new-head"), "#{n}: {h}");
+    }
+    assert!(t.gh.open_queue_drafts().is_empty(), "no merge restarted");
+    // The agent's command does not lift it.
+    t.pr(halted).comment(BOT, "@mergifyio queue");
+    t.pr(halted)
+        .wait_comment("@arztagent-bot, you may not run `queue`");
+    t.settle();
+    assert!(!queued(&t, halted));
+    // A new head does; a listed human's command does.
+    t.pr(halted).push("a.py", "a2\n");
+    green(&t, halted, true);
+    t.pr(halted).wait_queued();
+    t.pr(drafted).comment("karma-works", "@mergifyio queue");
+    t.pr(drafted).wait_queued();
+    t.advance("5m");
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(halted).wait_merged();
+    t.pr(drafted).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
