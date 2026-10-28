@@ -1,0 +1,11 @@
+{
+  "id": "S16",
+  "title": "PR opened with an already-existing base conflict",
+  "refs": ["MQ-06", "MQ-27", "MQ-47"],
+  "steps": [
+    {"prepare": "a", "conflict": true},
+    {"main_commit": {"shared/conflict.txt": "Shared file for text conflicts between scenario PRs.\nline: main ({run})\n"}},
+    {"open": "a", "prepared": true},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

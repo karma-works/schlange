@@ -63,7 +63,7 @@ $D run sandbox/scenarios/s01-single-pr.json --repo queue-lab
 | Dequeue on `halt`, new push, draft (MQ-07, MQ-09, MQ-11) | S05, S06, S07 | both |
 | `commands_restrictions`, constitution paths (MQ-50, MQ-52) | S08, S11 | both |
 | Checks that never pass, missing check (MQ-16, MQ-37) | S09 | both |
-| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10, S12, S13 | both |
+| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10, S12, S13, S16, S17 | both; record new reference scenarios first |
 | Same-name Actions checks and manual custom-review retry (MQ-14, MQ-15) | S14, S15 | both; record reference first |
 
 No scenario fits? Write one (section 6) before changing code: the scenario is the test.

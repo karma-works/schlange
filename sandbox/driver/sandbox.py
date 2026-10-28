@@ -15,6 +15,8 @@ against later.
 Scenario format (JSON), steps in order:
   {"open": "a", "flags": ["fail-full"], "files": {...}, "draft": false, "datenschutz": true,
    "ki_review": "gruen"|"rot", "as": "driver"|"human", "conflict": true, "title": "..."}
+  {"prepare": "a", "conflict": true}                     create branch and commit without opening a PR
+  {"open": "a", "prepared": true}                       open that exact prepared branch
   {"push": "a", "flags": [...], "files": {...}}        new commit on the PR branch
   {"comment": "a", "text": "@mergifyio queue", "as": "human"}
   {"label": "a", "add": "halt"} / {"label": "a", "remove": "halt"}
@@ -288,6 +290,7 @@ class Run:
         self.out = out_dir
         self.actors = {"driver": installation_client("driver", org), "human": human_client()}
         self.prs = {}  # key -> {"number", "branch"}
+        self.prepared = {}  # branches created before opening their pull requests
         self.checkpoints = []
         self.timed_out = False
         self.started = now_iso()
@@ -326,14 +329,26 @@ class Run:
         files[self.flag_path(key)] = f"# {self.run_id} {key} commit {n}\n" + self.flag_lines(spec.get("flags", []))
         if spec.get("conflict"):
             files["shared/conflict.txt"] = f"Shared file for text conflicts between scenario PRs.\nline: {key} ({self.run_id})\n"
-        self.commit_files(client, branch, files, f"Scenario {self.run_id}: {key} ({n})")
+        return self.commit_files(client, branch, files, f"Scenario {self.run_id}: {key} ({n})")
 
-    def step_open(self, s):
-        key, client = s["open"], self.actor(s)
+    def step_prepare(self, s):
+        key, client = s["prepare"], self.actor(s)
+        if key in self.prepared or key in self.prs:
+            raise ValueError(f"duplicate scenario key {key}")
         branch = f"sbx/{self.run_id}/{key}"
         main = client.call("GET", f"{self.r}/git/ref/heads/main")
         client.call("POST", f"{self.r}/git/refs", {"ref": f"refs/heads/{branch}", "sha": main["object"]["sha"]})
-        self.write_changes(client, branch, key, s, 1)
+        head = self.write_changes(client, branch, key, s, 1)
+        self.prepared[key] = branch
+        self.checkpoints.append({"kind": "prepared", "at": now_iso(), "pr": key,
+                                 "base_sha": main["object"]["sha"], "head_sha": head})
+        log(f"Prepared {key} before opening a pull request")
+
+    def step_open(self, s):
+        key, client = s["open"], self.actor(s)
+        if not s.get("prepared"):
+            self.step_prepare({**s, "prepare": key})
+        branch = self.prepared.pop(key)
         pr = client.call("POST", f"{self.r}/pulls", {
             "title": s.get("title", f"Scenario {self.scenario['id']}: {key}"),
             "head": branch, "base": "main", "body": pr_body(s, self.run_id, key), "draft": s.get("draft", False),
@@ -392,8 +407,8 @@ class Run:
         self.checkpoints.append({"kind": "base_push_started", "at": now_iso()})
         self.save_state()
         files = {path: content.replace("{run}", self.run_id) for path, content in s["main_commit"].items()}
-        self.commit_files(self.actors["human"], "main", files, f"Scenario {self.run_id}: base moves")
-        self.checkpoints.append({"kind": "base_push_completed", "at": now_iso()})
+        sha = self.commit_files(self.actors["human"], "main", files, f"Scenario {self.run_id}: base moves")
+        self.checkpoints.append({"kind": "base_push_completed", "at": now_iso(), "sha": sha})
         self.save_state()
         log("Commit directly on main (admin bypass)")
 
@@ -543,7 +558,7 @@ class Run:
     def execute(self):
         (self.out / "scenario.json").write_text(json.dumps(self.scenario, indent=2, ensure_ascii=False))
         for s in self.scenario["steps"]:
-            kind = next(k for k in ("open", "push", "comment", "label", "ready", "draft", "edit_body",
+            kind = next(k for k in ("prepare", "open", "push", "comment", "label", "ready", "draft", "edit_body",
                                     "close", "main_commit", "sleep", "wait", "assert_unqueued",
                                     "dispatch_workflow", "wait_check", "assert_check_pair") if k in s)
             if kind == "sleep":

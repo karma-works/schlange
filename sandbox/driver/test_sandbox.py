@@ -97,6 +97,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(run.checkpoints[0]['kind'], 'base_push_started')
         run.save_state.assert_called_once_with()
 
+    def test_successful_base_push_records_commit(self):
+        run = object.__new__(driver.Run)
+        run.run_id = 'run-123'
+        run.checkpoints = []
+        run.actors = {'human': object()}
+        run.save_state = unittest.mock.Mock()
+        run.commit_files = unittest.mock.Mock(return_value='new-base')
+        run.step_main_commit({'main_commit': {'x': '{run}'}})
+        self.assertEqual(run.checkpoints[-1]['sha'], 'new-base')
+
     def test_wait_queued_requires_an_unmatched_entry_and_fails_on_timeout(self):
         run = object.__new__(driver.Run)
         run.prs = {'a': {'number': 42}}
@@ -173,6 +183,29 @@ class CheckpointTests(unittest.TestCase):
                                     'inputs': {'pr': '{pr}'}})
         client.call.assert_called_with('POST', run.r + '/actions/workflows/ai-review.yml/dispatches',
                                        {'ref': 'main', 'inputs': {'pr': '42'}}, retry=False)
+
+    def test_prepare_branch_then_open_preserves_pre_push_head(self):
+        run = object.__new__(driver.Run)
+        run.run_id = 'run-123'
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.scenario = {'id': 'S16'}
+        run.prs = {}
+        run.prepared = {}
+        run.checkpoints = []
+        client = unittest.mock.Mock()
+        client.call.side_effect = [
+            {'object': {'sha': 'old-base'}}, None,
+            {'number': 42, 'node_id': 'pr-node'},
+        ]
+        run.actor = lambda _: client
+        run.write_changes = unittest.mock.Mock(return_value='prepared-head')
+        run.step_prepare({'prepare': 'a', 'conflict': True})
+        run.step_open({'open': 'a', 'prepared': True})
+        self.assertEqual(run.prs['a']['branch'], 'sbx/run-123/a')
+        self.assertEqual(run.checkpoints[0]['base_sha'], 'old-base')
+        self.assertEqual(run.checkpoints[0]['head_sha'], 'prepared-head')
+        run.write_changes.assert_called_once()
+        self.assertEqual(client.call.call_count, 3)
 
     def test_wait_check_records_id_and_rejects_old_result(self):
         run = object.__new__(driver.Run)

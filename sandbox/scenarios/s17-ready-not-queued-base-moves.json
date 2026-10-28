@@ -1,0 +1,18 @@
+{
+  "id": "S17",
+  "title": "Base moves while a ready conflicting PR is held out of the queue",
+  "refs": ["MQ-06", "MQ-27", "MQ-47"],
+  "steps": [
+    {"open": "a", "draft": true, "conflict": true},
+    {"label": "a", "add": "halt", "as": "human"},
+    {"ready": "a"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "a", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
+    {"assert_unqueued": "a"},
+    {"main_commit": {"shared/conflict.txt": "Shared file for text conflicts between scenario PRs.\nline: main ({run})\n"}},
+    {"assert_unqueued": "a"},
+    {"label": "a", "remove": "halt", "as": "human"},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}
