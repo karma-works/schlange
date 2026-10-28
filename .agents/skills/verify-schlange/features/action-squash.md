@@ -27,7 +27,7 @@ Squashes the pull request's commits into one. Arztagent does not use the action.
 
 ## Sub-features
 
-- `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open, not queued pull request with more than one commit.
+- `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open pull request that is not queued and has no waiting `queue` command with more than one commit.
 - `options`: `commit_message` built (`all-commits`: title with the number and one line per commit; `first-commit`; `title+body`).
 - `command`: `@mergifyio squash [mode]` built.
 
@@ -50,3 +50,4 @@ Preconditions:
 
 - `bot_account` is accepted and ignored: Schlange acts as its app (impersonating users needs their tokens); the support matrix flags it.
 - On GitHub a fork's branch is refused.
+- Never resent after a failure or a restart; the engine decides again on the next read. The new head is a new head like any other: it cancels a waiting `queue` command.

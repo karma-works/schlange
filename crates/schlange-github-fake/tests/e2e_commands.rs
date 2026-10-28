@@ -107,7 +107,9 @@ fn queue_dequeue_refresh_squash_and_restrictions() {
     t.pr(b).comment("alice", "@mergifyio queue");
     t.wait_until("pending", |t| holds(t, b).contains("queue-command"));
     t.pr(b).push_as("mallory", "b.txt", "b2\n");
-    t.pr(b).wait_comment("@mallory pushed new commits");
+    // GitHub does not say reliably who pushed (a commit's author is free text), so the reply
+    // does not name anyone (critic e8a0022 N2).
+    t.pr(b).wait_comment("someone pushed new commits");
     // #a: queued once its quick check is green; a second command is ignored with a reply.
     t.pr(a).comment("alice", "@mergifyio queue");
     t.pr(a).check("quick").succeed();

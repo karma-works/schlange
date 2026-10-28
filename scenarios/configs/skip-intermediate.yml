@@ -1,0 +1,21 @@
+# `skip_intermediate_results` (queue-skip-intermediate, MQ-23): a green car stands in for the
+# cars ahead of it. Two-step CI, three parallel checks.
+merge_queue:
+  max_parallel_checks: 3
+  skip_intermediate_results: true
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

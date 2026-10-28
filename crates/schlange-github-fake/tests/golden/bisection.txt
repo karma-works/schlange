@@ -17,8 +17,8 @@
 {"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked in draft pull request #4."}}
 {"type":"cosmetic","cosmetic":{"kind":"labels","number":2,"add":["dequeued"],"remove":["queued"]}}
 {"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · left the queue\n\nReason: CHECKS_FAILED: every split without it passed: merge conditions are false on #3; failed: ci-ok\n\n- [ ] Put this pull request back into the queue <!-- schlange:box:requeue -->"}}
-{"type":"land","car":"<car2>","queue":"default","base_branch":"main","expected_base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"expected_tree":"<sha4>"}
+{"type":"land","car":"<car2>","queue":"default","base_branch":"main","expected_base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"}],"expected_tree":"<sha4>","method":"squash","head":"<sha5>","draft":4}
 {"type":"close_car","car":"<car2>","branch":"mergify/merge-queue/<branch2>","draft":4}
-{"type":"merged","number":1,"queue":"default","sha":"<sha5>"}
+{"type":"merged","number":1,"queue":"default","sha":"<sha6>"}
 {"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":[],"remove":["queued"]}}
 {"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · merged\n\nMerged by the queue as 001dfa5."}}

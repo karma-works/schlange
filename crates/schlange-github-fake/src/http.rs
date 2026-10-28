@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 
 use schlange_github::time::unix_now;
 
+use schlange_forge::git::Sha;
+
 use crate::{FakePr, FakeToken, FaultKind, Inner, Squash, St, ts};
 
 pub(crate) struct Reply {
@@ -598,46 +600,39 @@ fn repo_route(
             }
             reply(200, st.pr_json(n).unwrap_or_default())
         }
+        ("GET", ["activity"]) => {
+            // Newest first; `ref` filters by branch (`refs/heads/<name>` or the bare name).
+            let wanted = query_param(query, "ref").map(decode);
+            let items = st
+                .activity
+                .iter()
+                .rev()
+                .filter(|a| {
+                    wanted.as_ref().is_none_or(|r| {
+                        r == &a.branch || r.strip_prefix("refs/heads/") == Some(a.branch.as_str())
+                    })
+                })
+                .map(|a| {
+                    json!({
+                        "before": if a.before.is_empty() { "0".repeat(40) } else { a.before.clone() },
+                        "after": a.after,
+                        "ref": format!("refs/heads/{}", a.branch),
+                        "timestamp": ts(a.at),
+                        "activity_type": a.kind,
+                        "actor": { "login": a.actor },
+                    })
+                })
+                .collect();
+            paginate(base_url, path, query, items, None)
+        }
         ("GET", ["pulls", n, "files"]) => {
             let Some(pr) = num(n).and_then(|n| st.prs.get(&n).cloned()) else {
                 return err(404, "Not Found");
             };
-            let tip = st.tip(&pr.base).unwrap_or_default();
-            let (files, before, after) = match st.repo.merge_base(&tip, &pr.head_sha) {
-                Some(mb) => (
-                    st.repo.changed_paths(&mb, &pr.head_sha),
-                    st.repo.tree(&mb).clone(),
-                    st.repo.tree(&pr.head_sha).clone(),
-                ),
-                None => (vec![], Default::default(), Default::default()),
-            };
-            // GitHub's rename detection: a removed path whose content an added path has is one
-            // `renamed` entry with `previous_filename`.
-            let removed: Vec<&String> = files.iter().filter(|f| !after.contains_key(*f)).collect();
-            let mut renamed_from: Vec<String> = Vec::new();
-            let mut items = Vec::new();
-            for f in &files {
-                if !after.contains_key(f) {
-                    continue;
-                }
-                let added = !before.contains_key(f);
-                let source = removed
-                    .iter()
-                    .find(|r| added && before.get(**r) == after.get(f) && !renamed_from.contains(r))
-                    .map(|r| r.to_string());
-                match source {
-                    Some(from) => {
-                        items.push(json!({ "filename": f, "previous_filename": from, "status": "renamed" }));
-                        renamed_from.push(from);
-                    }
-                    None => items.push(json!({ "filename": f, "status": if added { "added" } else { "modified" } })),
-                }
-            }
-            for r in removed {
-                if !renamed_from.contains(r) {
-                    items.push(json!({ "filename": r, "status": "removed" }));
-                }
-            }
+            // GitHub lists at most 3000 files of a pull request (`changed_files` has the
+            // real count).
+            let mut items = st.pr_files(&pr);
+            items.truncate(st.files_cap);
             paginate(base_url, path, query, items, None)
         }
         ("GET", ["pulls", n, "commits"]) => {
@@ -675,8 +670,9 @@ fn repo_route(
                     "Head branch was modified. Review and try the merge again.",
                 );
             }
-            if body["merge_method"].as_str() != Some("squash") {
-                return err(405, "the fake only squashes");
+            let method = body["merge_method"].as_str().unwrap_or("merge").to_string();
+            if !matches!(method.as_str(), "squash" | "merge" | "rebase") {
+                return err(422, "merge_method must be merge, squash or rebase");
             }
             let tip = st.tip(&pr.base).expect("base");
             // GitHub's defaults when no title or message is given: the title `<title> (#n)`,
@@ -708,16 +704,62 @@ fn repo_route(
             } else {
                 format!("{title}\n\n{text}")
             };
-            let Ok(c) = st.repo.squash(&tip, &pr.head_sha, &message) else {
+            // The pull request's own commits (not on the base yet), oldest first.
+            let mut own: Vec<Sha> = st
+                .repo
+                .first_parent_history(&pr.head_sha)
+                .into_iter()
+                .take_while(|c| !st.repo.is_ancestor(c, &tip))
+                .collect();
+            own.reverse();
+            let mut replayed: Vec<Sha> = Vec::new();
+            let landed = match method.as_str() {
+                "merge" => {
+                    let m = body["commit_title"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Merge pull request #{n} from {}/{}\n\n{}",
+                                st.cfg.owner, pr.head_ref, pr.title
+                            )
+                        });
+                    st.repo.merge(&tip, &pr.head_sha, &m).ok()
+                }
+                "rebase" => {
+                    let mut cur = Some(tip.clone());
+                    for c in &own {
+                        let msg = st.repo.get(c).message.clone();
+                        cur = cur.and_then(|at| {
+                            schlange_forge::git::GitStore::cherry_pick(&mut st.repo, &at, c, &msg)
+                                .ok()
+                        });
+                        if let Some(x) = &cur {
+                            replayed.push(x.clone());
+                        }
+                    }
+                    replayed.pop();
+                    cur.filter(|_| !own.is_empty())
+                }
+                _ => st.repo.squash(&tip, &pr.head_sha, &message).ok(),
+            };
+            let Some(c) = landed else {
                 return err(405, "Pull Request is not mergeable");
+            };
+            let message = if method == "squash" {
+                message
+            } else {
+                st.repo.get(&c).message.clone()
             };
             if let Some(m) = st.workflow_refusal(&st.repo.changed_paths(&tip, &c)) {
                 return err(403, &m);
             }
             let tree = st.repo.tree_id_of(&c);
             let tested_green = st.tree_tested_green(&tree);
-            let head_tested =
-                st.head_tested(&pr.head_sha) || st.checked_in_place(&pr.head_sha, &tip);
+            let head_tested = st.head_tested(&pr.head_sha) || st.checked_in_place(&pr.head_sha, &tip)
+                    // A batch pull request merged as a whole (merge-batch): its own head was
+                    // tested when its tree is the green tree of an open draft.
+                    || (pr.user == st.bot() && tested_green);
             let guard = st.merge_guard.clone().and_then(|g| g(&pr));
             let before = st.pr_json(n);
             st.before_write(&format!("pull:{n}"), before);
@@ -729,6 +771,24 @@ fn repo_route(
             p.open = false;
             p.merge_commit_sha = Some(c.clone());
             let merged_by = st.bot();
+            let mut parent_of = tip.clone();
+            for r in &replayed {
+                let tree = st.repo.tree_id_of(r);
+                st.squashes.push(Squash {
+                    pr: n,
+                    sha: r.clone(),
+                    parent: parent_of.clone(),
+                    tree,
+                    tested_green: false,
+                    head: pr.head_sha.clone(),
+                    head_tested,
+                    guard: guard.clone(),
+                    message: st.repo.get(r).message.clone(),
+                    merged_by: merged_by.clone(),
+                    intermediate: true,
+                });
+                parent_of = r.clone();
+            }
             st.squashes.push(Squash {
                 pr: n,
                 sha: c.clone(),
@@ -740,10 +800,13 @@ fn repo_route(
                 guard,
                 message,
                 merged_by,
+                intermediate: false,
             });
             st.touched(&pr.base);
             st.emit_push(&pr.base, &tip, Some(&c));
             st.emit_pr("closed", n, json!({}));
+            // A merged draft (merge-batch) carries the pull requests merged into its branch.
+            st.mark_reachable(&pr.base, &c);
             reply(
                 200,
                 json!({ "sha": c, "merged": true, "message": "Pull Request successfully merged" }),
@@ -805,9 +868,13 @@ fn repo_route(
             }
             let before = st.ref_json(&name);
             st.before_write(&format!("ref:{name}"), before);
+            if name == st.cfg.default_branch {
+                st.record_fast_forward(&old, &new);
+            }
             st.repo.update_ref(&name, &old, &new).expect("cas");
             st.touched(&name);
             st.emit_push(&name, &old, Some(&new));
+            st.mark_reachable(&name, &new);
             reply(
                 200,
                 json!({ "ref": format!("refs/heads/{name}"), "object": { "sha": new } }),
@@ -1037,12 +1104,22 @@ fn repo_route(
                 None => err(404, "Not Found"),
             }
         }
-        ("GET", ["rules", "branches", _b @ ..]) => {
-            let items = st
+        ("GET", ["rules", "branches", b @ ..]) => {
+            let mut items: Vec<Value> = st
                 .rulesets
                 .iter()
                 .map(|r| json!({ "type": "pull_request", "ruleset_id": r["id"] }))
                 .collect();
+            if b.join("/") == st.cfg.default_branch && !st.required_checks.is_empty() {
+                let checks: Vec<Value> = st
+                    .required_checks
+                    .iter()
+                    .map(|c| json!({ "context": c }))
+                    .collect();
+                items.push(json!({ "type": "required_status_checks", "ruleset_id": 77,
+                                   "parameters": { "required_status_checks": checks,
+                                                   "strict_required_status_checks_policy": false } }));
+            }
             paginate(base_url, path, query, items, None)
         }
         ("GET", ["branches", _b @ .., "protection"]) => {

@@ -1,4 +1,3 @@
 phase2a.yml: unsupported[support] feature queue-bot-accounts (P1, partial): config:queue_rules.merge_bot_account (28:5)
-phase2a.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
 phase2a.yml: unsupported[support] feature queue-commit-message (P1, partial): config:queue_rules.commit_message_template (27:5)
-phase2a.yml: valid for Mergify; 3 entries not supported by Schlange yet (--strict makes this exit 2)
+phase2a.yml: valid for Mergify; 2 entries not supported by Schlange yet (--strict makes this exit 2)

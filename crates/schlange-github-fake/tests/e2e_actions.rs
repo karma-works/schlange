@@ -273,3 +273,48 @@ fn extends_reads_the_other_repository() {
         t.gh.pr(p).is_some_and(|x| x.labels.contains("local"))
     });
 }
+
+/// The `merge` action lands outside the queue: only on a fresh read where its guard holds, at
+/// the head of that read; a constitution change never passes the guard.
+#[test]
+fn merge_action_lands_only_what_its_guard_allows() {
+    let cfg = r#"queue_rules:
+  - name: default
+    queue_conditions:
+      - check-success = quick
+pull_request_rules:
+  - name: automerge
+    conditions:
+      - label = automerge
+      - -label = halt
+      - check-success = quick
+      - -files ~= ^\.github/
+    actions:
+      merge:
+        method: squash
+"#;
+    let t = ci(Tester::new(cfg)).start();
+    let ok = t
+        .open_pr("alice")
+        .file("a.rs", "a\n")
+        .label("automerge")
+        .create();
+    t.pr(ok).wait_merged();
+    let evil = t
+        .open_pr("agent")
+        .file(".github/workflows/x.yml", "evil\n")
+        .label("automerge")
+        .create();
+    // A clean pull request that gets a constitution file pushed, then the label.
+    let late = t.open_pr("agent").file("b.rs", "b\n").create();
+    t.pr(late).push(".github/workflows/y.yml", "evil\n");
+    t.pr(late).label("automerge");
+    t.advance("5m");
+    t.settle();
+    assert!(!t.gh.pr(evil).unwrap().merged, "constitution change merged");
+    assert!(!t.gh.pr(late).unwrap().merged, "constitution change merged");
+    assert!(
+        t.decisions().iter().any(|d| d.contains("\"refresh\"")),
+        "decided on a fresh read"
+    );
+}

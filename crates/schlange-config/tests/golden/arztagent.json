@@ -3,15 +3,7 @@
   "valid": true,
   "strict": false,
   "exit_code": 0,
-  "findings": [
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
-      "feature": "queue-branch-protection"
-    }
-  ],
+  "findings": [],
   "support": [
     {
       "id": "action:queue",
@@ -27,7 +19,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/6/or/1"
     },
     {
       "id": "attr:base",
@@ -35,7 +27,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/0"
     },
     {
       "id": "attr:check-failure",
@@ -43,7 +35,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/3"
     },
     {
       "id": "attr:check-success",
@@ -51,7 +43,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/4"
     },
     {
       "id": "attr:dependabot-update-type",
@@ -59,7 +51,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/pull_request_rules/1/conditions"
+      "pointer": "/pull_request_rules/1/conditions/4/or/0"
     },
     {
       "id": "attr:draft",
@@ -67,7 +59,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/1"
     },
     {
       "id": "attr:files",
@@ -75,7 +67,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/pull_request_rules/0/conditions"
+      "pointer": "/pull_request_rules/0/conditions/4"
     },
     {
       "id": "attr:label",
@@ -83,7 +75,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/2"
     },
     {
       "id": "attr:sender",
@@ -91,7 +83,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/queue/conditions"
+      "pointer": "/commands_restrictions/queue/conditions/0/or/0"
     },
     {
       "id": "config:commands_restrictions",
@@ -336,11 +328,8 @@
       "id": "default:queue_rules.branch_protection_injection_mode",
       "feature": "queue-branch-protection",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.checks_timeout",

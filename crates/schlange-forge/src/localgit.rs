@@ -297,18 +297,24 @@ impl LocalGit {
 
     /// `git merge-tree --write-tree`: the merged tree, or the conflicting paths.
     fn merge_tree(&self, ours: &str, theirs: &str) -> Result<String, Conflict> {
-        let out = self.raw(
-            &[
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "--no-messages",
-                ours,
-                theirs,
-            ],
-            None,
-            &[],
-        );
+        self.merge_tree_from(None, ours, theirs)
+    }
+
+    /// `git merge-tree --write-tree [--merge-base=<base>]`.
+    fn merge_tree_from(
+        &self,
+        base: Option<&str>,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<String, Conflict> {
+        let mb = base.map(|b| format!("--merge-base={b}"));
+        let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
+        if let Some(m) = &mb {
+            args.push(m);
+        }
+        args.push(ours);
+        args.push(theirs);
+        let out = self.raw(&args, None, &[]);
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         let mut lines = text.lines();
         let tree = lines.next().unwrap_or("").to_string();
@@ -495,6 +501,25 @@ impl GitStore for LocalGit {
     fn squash(&mut self, onto: &str, head: &str, message: &str) -> Result<Sha, Conflict> {
         let tree = self.merge_tree(onto, head)?;
         Ok(self.commit_tree(&tree, &[onto.to_string()], message))
+    }
+
+    fn cherry_pick(&mut self, onto: &str, commit: &str, message: &str) -> Result<Sha, Conflict> {
+        let parent = self.parents(commit).first().cloned();
+        let tree = match parent {
+            Some(p) => self.merge_tree_from(Some(&p), onto, commit)?,
+            None => self.tree_id_of(commit),
+        };
+        Ok(self.commit_tree(&tree, &[onto.to_string()], message))
+    }
+
+    fn merged_tree_id(&self, base: &str, ours: &str, theirs: &str) -> Result<String, Conflict> {
+        self.merge_tree_from(Some(base), ours, theirs)
+    }
+
+    fn message(&self, sha: &str) -> String {
+        self.ok(&["log", "-1", "--format=%B", sha])
+            .trim_end()
+            .to_string()
     }
 
     fn changed_paths(&self, from: &str, to: &str) -> Vec<String> {

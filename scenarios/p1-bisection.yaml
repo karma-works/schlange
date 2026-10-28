@@ -1,5 +1,5 @@
 # A red batch of four with one culprit (queue-bisection, MQ-21). With two parallel checks the
-# first three are cut into parts [1, 2] and [3]; tests: [1, 2] and [1, 2, 3]. #3 breaks the full
+# first three form the groups [1, 2] and [3]; tests: [1, 2] and [1, 2, 3]. #3 breaks the full
 # suite: [1, 2] passes, [1, 2, 3] fails, so #1 and #2 land, #4 goes back to the queue and the
 # failing part [3] is a single pull request: the culprit, dequeued with CHECKS_FAILED.
 name: p1-bisection

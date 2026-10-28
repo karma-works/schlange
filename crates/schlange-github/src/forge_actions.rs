@@ -220,7 +220,7 @@ impl GithubForge {
                         "fast-forward merges are not built for the merge action",
                     ));
                 }
-                match self.api.merge_pull(n, head_sha, m, prio)? {
+                match self.api.merge_pull(n, head_sha, m, None, None, prio)? {
                     PullMergeOutcome::Merged { .. } => done(),
                     PullMergeOutcome::HeadMoved => skipped("the head moved"),
                     PullMergeOutcome::NotMergeable(why) => refused(why),

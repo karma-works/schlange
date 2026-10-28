@@ -20,6 +20,7 @@
 //!     fail_when_contains: [BUG]         # fail when a file contains a marker
 //!     fail_when_all: [A, B]             # fail when both markers are present (MQ-01)
 //!     fail_when_prs: [1, 2]             # fail when both pull requests are present
+//!     fail_unless_contains: [FIXED]     # fail unless some file contains a marker
 //!     hang_when_contains: HANG          # never report when a file contains a marker
 //!     flake_rate: 0.1
 //!     run: sh ci/compile.sh             # a real command in a checkout of the tested commit:
@@ -40,6 +41,11 @@
 //!   - { at: 16m, tick: { pr: 1, by: alice, checkbox: queue } }   # queue | requeue
 //!   - { at: 17m, edit_body: { pr: 1, body: "Depends-On: #2" } }
 //!   - { at: 18m, push: { pr: 1, by: mallory } }       # a push by someone else
+//!   - { at: 19m, pause: "CI incident" }               # an operator pauses the queue
+//!   - { at: 20m, unpause: true }
+//!   - { at: 21m, freeze: { id: 1, reason: release, end: 30m, matching: [base = main], exclude: [label = hotfix] } }
+//!   - { at: 22m, unfreeze: 1 }
+//! required_checks: [ci]                 # checks the base branch's protection requires
 //! permissions: { alice: write, mallory: read }      # sender-permission; others: none
 //! config_in_repo: true                  # the configuration is .mergify.yml on the base
 //! expect:
@@ -58,6 +64,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use schlange_config::rules::{Rules, parse_duration};
+use schlange_core::engine::{Control, Freeze};
 use schlange_core::model::{Conclusion, Time};
 
 use crate::ci::{CiScript, RunsOn};
@@ -149,6 +156,8 @@ struct CiSpec {
     fail_when_all: Vec<String>,
     #[serde(default)]
     fail_when_prs: Vec<u64>,
+    #[serde(default)]
+    fail_unless_contains: OneOrMany,
     #[serde(default)]
     hang_when_contains: OneOrMany,
     #[serde(default)]
@@ -279,6 +288,29 @@ enum StepAction {
     Tick(TickSpec),
     EditBody(EditBodySpec),
     Review(ReviewSpec),
+    /// Pause the queue with a reason (an operator through the API).
+    Pause(String),
+    /// Unpause it (the value is ignored).
+    Unpause(#[allow(dead_code)] serde_yaml_ng::Value),
+    Freeze(FreezeSpec),
+    /// Delete the freeze with this id.
+    Unfreeze(u64),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FreezeSpec {
+    id: u64,
+    reason: String,
+    /// Durations from the simulation's time 0; without `start`, at once.
+    #[serde(default)]
+    start: Option<String>,
+    #[serde(default)]
+    end: Option<String>,
+    #[serde(default)]
+    matching: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,6 +394,8 @@ struct ScenarioSpec {
     extends: BTreeMap<String, String>,
     #[serde(default)]
     expect_pull_requests: Vec<crate::runner::ExpectPr>,
+    #[serde(default)]
+    required_checks: Vec<String>,
 }
 
 /// Content a pull request writes to a path given only by name.
@@ -424,6 +458,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         s.fail_when_contains = c.fail_when_contains.list();
         s.fail_when_all = c.fail_when_all.clone();
         s.fail_when_prs = c.fail_when_prs.clone();
+        s.fail_unless_contains = c.fail_unless_contains.list();
         s.hang_when_contains = c.hang_when_contains.list();
         s.flake_rate = c.flake_rate;
         s.run = c.run.clone();
@@ -492,6 +527,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             .as_ref()
             .map(|r| r.branches.clone())
             .unwrap_or_default(),
+        required_checks: spec.required_checks.clone(),
     };
 
     let mut steps = Vec::new();
@@ -574,6 +610,27 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             },
             StepAction::MergeManually(n) => Action::MergeManually(known(*n)?),
             StepAction::PushQueueBranch(n) => Action::PushQueueBranch(known(*n)?),
+            StepAction::Pause(reason) => Action::Control(Control::Pause {
+                reason: reason.clone(),
+                by: Some("operator".into()),
+            }),
+            StepAction::Unpause(_) => Action::Control(Control::Unpause),
+            StepAction::Freeze(f) => Action::Control(Control::Freeze {
+                freeze: Freeze {
+                    id: f.id,
+                    reason: f.reason.clone(),
+                    start: f
+                        .start
+                        .as_deref()
+                        .map(|d| dur("freeze start", d))
+                        .transpose()?
+                        .unwrap_or(at),
+                    end: f.end.as_deref().map(|d| dur("freeze end", d)).transpose()?,
+                    matching: f.matching.clone(),
+                    exclude: f.exclude.clone(),
+                },
+            }),
+            StepAction::Unfreeze(id) => Action::Control(Control::Unfreeze { id: *id }),
         };
         steps.push((at, action));
     }

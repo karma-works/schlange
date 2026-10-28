@@ -1,0 +1,31 @@
+# Priorities without interruption (queue-priority). `later` is low and `urgent` is high but
+# its rule does not allow interrupting checks.
+# One check slot: #1 is checked; #2 (low) and #3 (high, no interruption) wait. #3
+# goes right after the running car, ahead of #2 that came first; #1's checks are not cancelled.
+name: p2-priority-no-interrupt
+description: A higher priority goes right after the running checks without interrupting them.
+config: configs/priority-no-interrupt.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, labels: [later], files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, labels: [urgent], files: { c.txt: "c\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 2m, open: 2 }
+  - { at: 3m, open: 3 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+expect_merged_order: [1, 3, 2]

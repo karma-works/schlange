@@ -26,7 +26,7 @@ Merges the base into the pull request. Arztagent does not use the action.
 
 ## Sub-features
 
-- `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open pull request that is not queued and is behind its base (as read, or the base moved since the read); at most once per evaluation.
+- `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open pull request that is not queued and has no waiting `queue` command (a rewrite would cancel it) and is behind its base (as read, or the base moved since the read); at most once per evaluation.
 - `options`: `bot_account` not built.
 - `command`: `@mergifyio update` built (answers when up to date, closed or queued).
 
@@ -49,3 +49,4 @@ Preconditions:
 
 - `bot_account` is accepted and ignored: Schlange acts as its app (impersonating users needs their tokens); the support matrix flags it.
 - The head the update pushes does not trigger `dismiss_reviews` (`synchronize`).
+- Never resent after a failure or a restart; the engine decides again on the next read. The new head is a new head like any other: it cancels a waiting `queue` command.

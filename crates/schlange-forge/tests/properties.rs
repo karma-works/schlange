@@ -34,6 +34,7 @@
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 
+use schlange_core::engine::{Control, Freeze};
 use schlange_forge::Scenario;
 use schlange_forge::dsl::{Sim, ci};
 use schlange_forge::faults::{CrashPlan, ForgeFaults};
@@ -76,6 +77,18 @@ struct Settings {
     auto: bool,
     /// Rules with actions next to the queue rule: (condition, action) indices.
     actions: Vec<(u8, u8)>,
+    /// `merge_method`.
+    method: &'static str,
+    /// `merge_queue.mode`: serial, isolated, or parallel with file-pattern scopes.
+    mode: &'static str,
+    /// `priority_rules`: `urgent` is high (and may interrupt checks when `interrupt`), `later`
+    /// low.
+    priority: bool,
+    interrupt: bool,
+    /// `skip_intermediate_results: true`.
+    skip: bool,
+    /// A second queue rule `hotfix` (queue conditions `label = urgent`) listed first.
+    two_queues: bool,
 }
 
 /// Conditions of the random action rules.
@@ -116,8 +129,9 @@ impl Settings {
             (n, None) => format!("{n}"),
             (min, Some(max)) => format!("{{min: {min}, max: {max}}}"),
         };
+        let method = self.method;
         let mut rule = format!(
-            "  - name: default\n    merge_method: squash\n    batch_size: {batch}\n    batch_max_wait_time: 1 min\n"
+            "  - name: default\n    merge_method: {method}\n    batch_size: {batch}\n    batch_max_wait_time: 1 min\n"
         );
         if let Some(l) = self.limit {
             rule.push_str(&format!("    batch_max_failure_resolution_attempts: {l}\n"));
@@ -150,12 +164,37 @@ impl Settings {
             }
             (true, false) => {}
         }
-        let reset = if self.never {
-            "  reset_on_external_merge: never\n"
-        } else {
-            ""
-        };
+        let mut mq = String::new();
+        if self.never {
+            mq.push_str("  reset_on_external_merge: never\n");
+        }
+        if self.mode != "serial" {
+            mq.push_str(&format!("  mode: {}\n", self.mode));
+        }
+        if self.skip {
+            mq.push_str("  skip_intermediate_results: true\n");
+        }
         let mut extra = String::new();
+        if self.mode == "parallel" {
+            extra.push_str(
+                "scopes:\n  source:\n    files:\n      left:\n        include: [a.rs, b.rs]\n      right:\n        include: [c.rs, d.rs]\n  barrier_files:\n    include: [f.rs]\n",
+            );
+        }
+        if self.priority {
+            extra.push_str(&format!(
+                "priority_rules:\n  - name: urgent\n    conditions: [label = urgent]\n    priority: high\n    allow_checks_interruption: {}\n  - name: later\n    conditions: [label = later]\n    priority: low\n",
+                self.interrupt
+            ));
+        }
+        let hotfix = if self.two_queues {
+            format!(
+                "  - name: hotfix\n    merge_method: {method}\n    queue_conditions:\n      - base = main\n      - -draft\n      - -label = halt\n      - label = urgent\n      - check-success = quick\n    merge_conditions:\n      - check-success = {}\n",
+                if self.single_step { "quick" } else { "full" }
+            )
+        } else {
+            String::new()
+        };
+        let mut action_rules = String::new();
         for (k, (c, a)) in self.actions.iter().enumerate() {
             let cond = ACTION_CONDITIONS[*c as usize % ACTION_CONDITIONS.len()];
             // Copies only of pull requests against main (a copy of a copy would never end).
@@ -164,13 +203,13 @@ impl Settings {
             } else {
                 format!("{cond}\n      - base = main")
             };
-            extra.push_str(&format!(
+            action_rules.push_str(&format!(
                 "  - name: action {k}\n    conditions:{cond}\n    actions:\n{}",
                 ACTIONS[*a as usize % ACTIONS.len()]
             ));
         }
         format!(
-            "merge_queue:\n  max_parallel_checks: {}\n{reset}queue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n{extra}",
+            "merge_queue:\n  max_parallel_checks: {}\n{mq}{extra}queue_rules:\n{hotfix}{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n{action_rules}",
             self.max_parallel
         )
     }
@@ -193,6 +232,21 @@ fn settings() -> impl Strategy<Value = Settings> {
             prop::bool::weighted(0.15),
             prop::bool::weighted(0.3),
         ),
+        (
+            prop::sample::select(vec![
+                "squash",
+                "squash",
+                "merge",
+                "rebase",
+                "fast-forward",
+                "merge-batch",
+            ]),
+            prop::sample::select(vec!["serial", "serial", "serial", "isolated", "parallel"]),
+            prop::bool::weighted(0.4),
+            any::<bool>(),
+            prop::bool::weighted(0.25),
+            prop::bool::weighted(0.2),
+        ),
         prop::collection::vec((0u8..7, 0u8..17), 0..=3),
     )
         .prop_map(
@@ -204,19 +258,35 @@ fn settings() -> impl Strategy<Value = Settings> {
                 single_step,
                 wip,
                 (never, retries, branch_edit, auto),
+                (method, mode, priority, interrupt, skip, two_queues),
                 actions,
-            )| Settings {
-                batch,
-                max_parallel,
-                limit,
-                timeout,
-                single_step,
-                wip,
-                never,
-                retries,
-                branch_edit,
-                auto,
-                actions,
+            )| {
+                // Mergify refuses fast-forward in parallel and isolated mode (docs: merge
+                // strategies); such a configuration is never run.
+                let mode = if method == "fast-forward" {
+                    "serial"
+                } else {
+                    mode
+                };
+                Settings {
+                    batch,
+                    max_parallel,
+                    limit,
+                    timeout,
+                    single_step,
+                    wip,
+                    never,
+                    retries,
+                    branch_edit,
+                    auto,
+                    method,
+                    mode,
+                    priority,
+                    interrupt,
+                    skip: skip && mode != "isolated",
+                    two_queues,
+                    actions,
+                }
             },
         )
 }
@@ -245,6 +315,12 @@ enum Human {
     Command(usize, u8, bool),
     /// A push by mallory (someone else than the author): cancels a waiting `queue` command.
     PushByOther(usize),
+    /// The `urgent` label on or off (priority rules, the `hotfix` queue).
+    Urgent(usize, bool),
+    /// An operator pauses (true) or unpauses (false) the queue.
+    Pause(bool),
+    /// A freeze of main for this many seconds, with `label = urgent` as the exception.
+    Freeze(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -341,6 +417,9 @@ fn human() -> impl Strategy<Value = Human> {
         (0usize..6, 0u8..8, prop::bool::weighted(0.8))
             .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
         (0usize..6).prop_map(Human::PushByOther),
+        (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Urgent(n, on)),
+        any::<bool>().prop_map(Human::Pause),
+        (60u64..2400).prop_map(Human::Freeze),
     ]
 }
 
@@ -438,6 +517,29 @@ fn human_action(p: &Plan, k: usize, h: &Human) -> Action {
                 format!("pushed by mallory {k}\n"),
             )],
         },
+        Human::Urgent(i, true) => Action::Label {
+            number: pr(i),
+            label: "urgent".into(),
+        },
+        Human::Urgent(i, false) => Action::Unlabel {
+            number: pr(i),
+            label: "urgent".into(),
+        },
+        Human::Pause(true) => Action::Control(Control::Pause {
+            reason: format!("incident {k}"),
+            by: None,
+        }),
+        Human::Pause(false) => Action::Control(Control::Unpause),
+        Human::Freeze(len) => Action::Control(Control::Freeze {
+            freeze: Freeze {
+                id: k as u64,
+                reason: format!("freeze {k}"),
+                start: 0,
+                end: Some(*len + 3600),
+                matching: vec!["base = main".into()],
+                exclude: vec!["label = urgent".into()],
+            },
+        }),
     }
 }
 
@@ -500,6 +602,13 @@ fn scenario(p: &Plan) -> Scenario {
     }
     for (k, (t, h)) in p.humans.iter().enumerate() {
         sim = sim.at(&format!("{t}s"), human_action(p, k, h));
+    }
+    // A pause always ends: an operator unpauses after the last action.
+    if p.humans
+        .iter()
+        .any(|(_, h)| matches!(h, Human::Pause(true)))
+    {
+        sim = sim.at("3700s", Action::Control(Control::Unpause));
     }
     let mut s = sim.build();
     s.max_time = 3 * 86400;
@@ -615,6 +724,9 @@ fn oracle_plan() -> impl Strategy<Value = OraclePlan> {
                     (0usize..6, 0u8..8, prop::bool::weighted(0.8))
                         .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
                     (0usize..6).prop_map(Human::PushByOther),
+                    (0usize..6, any::<bool>()).prop_map(|(n, on)| Human::Urgent(n, on)),
+                    any::<bool>().prop_map(Human::Pause),
+                    (60u64..2400).prop_map(Human::Freeze),
                 ],
             ),
             0..=5,
@@ -690,6 +802,12 @@ fn oracle_scenario(p: &OraclePlan) -> Scenario {
             continue;
         }
         sim = sim.at(&format!("{t}s"), human_action(&as_plan, k, h));
+    }
+    if p.humans
+        .iter()
+        .any(|(_, h)| matches!(h, Human::Pause(true)))
+    {
+        sim = sim.at("3700s", Action::Control(Control::Unpause));
     }
     let mut s = sim.build();
     s.max_time = 3 * 86400;

@@ -20,7 +20,11 @@ source: "https://docs.mergify.com/commands"
 Further comment commands that run the operations of the actions of the same name once
 (`crates/schlange-core/src/actions.rs`, `command`). Every command is checked against its
 restriction first (documented defaults included, see `commands-restrictions`), acknowledged
-with 👍, and answered in a reply once the forge answered.
+with 👍, and answered in a reply once the forge answered. Like `queue`, an edited comment never
+runs, and a command acts only on the head it vouched for (the head GitHub's activity log shows
+at the comment): if the pull request moved on, nothing is done and the reply says so; a waiting
+`backport` is cancelled when the pull request merges at another head. `update`, `rebase` and
+`squash` are never resent after a failure or a restart (the reply asks to comment again).
 
 ## Sub-features
 

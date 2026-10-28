@@ -363,12 +363,44 @@ pub struct PendingAction {
     pub report: Option<CopyReport>,
     pub sent: Time,
     pub attempts: u32,
+    /// The `fired` key of an edge-triggered request that is decided again (not resent) when
+    /// it fails or is in doubt (`merge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<String>,
+}
+
+/// Whether a request in doubt may simply be sent again. Writes that change code (a merge onto
+/// the base, a rewritten head) never are: the engine decides them again on a fresh read. A
+/// dispatch cannot be deduplicated.
+pub fn resendable(op: &Op) -> bool {
+    !matches!(
+        op,
+        Op::Merge { .. }
+            | Op::Update { .. }
+            | Op::Rebase { .. }
+            | Op::Squash { .. }
+            | Op::Dispatch { .. }
+    )
+}
+
+/// A fresh read before a `merge` action: the engine merges only if the rule, the protections
+/// and the head still hold on it (I1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRead {
+    pub number: u64,
+    pub rule: String,
+    pub head_sha: String,
+    pub since: Time,
 }
 
 /// A `backport` command on an open pull request, waiting for the merge.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingBackport {
     pub branches: Vec<String>,
+    /// The head the command vouched for: a pull request merged at another head is not
+    /// backported.
+    #[serde(default)]
+    pub head_sha: String,
     pub reply: CommandReply,
 }
 
@@ -422,6 +454,9 @@ pub struct ActionsState {
     /// other's change. Cleared when the configuration changes.
     #[serde(default)]
     pub frozen_labels: BTreeSet<String>,
+    /// Fresh reads before `merge` actions, by refresh token.
+    #[serde(default)]
+    pub merge_reads: BTreeMap<u64, MergeRead>,
 }
 
 /// How the actions last changed one label on one pull request.
@@ -601,6 +636,7 @@ pub fn condition_text(c: &Condition) -> String {
 
 /// What one evaluation of one pull request has decided so far.
 struct Eval<'a> {
+    rules: &'a Rules,
     pr: &'a PullRequest,
     open: bool,
     /// Behind its base: as the forge read it, or the base moved since that read.
@@ -632,6 +668,7 @@ fn send(
             report,
             sent: now,
             attempts: 1,
+            edge: None,
         },
     );
     out.push(Decision::Act {
@@ -658,9 +695,10 @@ fn level(state: &mut State, out: &mut Vec<Decision>, k: &str, rule: &str, op: Op
 }
 
 /// Runs the actions of every rule on every pull request (after the queue's own decisions).
-pub(crate) fn run(state: &mut State, rules: &Rules, out: &mut Vec<Decision>) {
+pub(crate) fn run(state: &mut State, rules: &Rules, token: Option<u64>, out: &mut Vec<Decision>) {
     state.actions.own_labels = cosmetics::queue_labels(rules);
     resend_overdue(state, out);
+    merge_after_read(state, rules, token, out);
     if rules
         .pull_request_rules
         .iter()
@@ -690,6 +728,7 @@ pub(crate) fn run(state: &mut State, rules: &Rules, out: &mut Vec<Decision>) {
         }
         let behind = behind(state, &pr);
         let mut ev = Eval {
+            rules,
             pr: &pr,
             open,
             behind,
@@ -784,8 +823,34 @@ fn decide(
                 }
             }
             let now = state.now;
+            let frozen_before = state.actions.frozen_labels.len();
+            let wanted: Vec<String> = a.iter().chain(r.iter()).cloned().collect();
             a.retain(|l| label_change_allowed(&mut state.actions, n, l, true, now));
             r.retain(|l| label_change_allowed(&mut state.actions, n, l, false, now));
+            if state.actions.frozen_labels.len() > frozen_before {
+                // Make the stop visible on the pull request (and in `/status`, which shows
+                // `actions.frozen_labels`).
+                for l in wanted
+                    .iter()
+                    .filter(|l| state.actions.frozen_labels.contains(&format!("{n}/{l}")))
+                    .filter(|l| !a.contains(l) && !r.contains(l))
+                {
+                    cosmetics::emit(
+                        out,
+                        Cosmetic::Reply {
+                            number: n,
+                            to: None,
+                            body: format!(
+                                "The rule actions stopped changing the label `{l}` on this pull \
+                                 request: rules kept undoing each other's change of it ({} \
+                                 times within an hour). Make their conditions exclusive; the \
+                                 stop is lifted when the configuration changes.",
+                                LABEL_REVERSALS
+                            ),
+                        },
+                    );
+                }
+            }
             (!a.is_empty() || !r.is_empty()).then_some(Op::Labels {
                 number: n,
                 add: a,
@@ -903,7 +968,12 @@ fn decide(
             draft: d,
         }),
         RuleAction::Update | RuleAction::Rebase | RuleAction::Squash { .. } => {
-            if ev.queued || ev.exclusive.contains(action.name()) {
+            // A queued pull request is the queue's; a waiting `queue` command vouches for the
+            // head as it is (a rewrite would cancel it).
+            if ev.queued
+                || state.pending_commands.contains_key(&n)
+                || ev.exclusive.contains(action.name())
+            {
                 None
             } else {
                 let op = match action {
@@ -1196,24 +1266,35 @@ fn edge(
                 });
             }
         }
-        RuleAction::Merge { method } => {
-            let held = state.holds.get(&n).is_some_and(|h| !h.is_empty());
-            if ev.open && !pr.draft && !ev.queued && !held {
-                ops.push(Op::Merge {
-                    number: n,
-                    head_sha: pr.head_sha.clone(),
-                    method: method.clone(),
+        RuleAction::Merge { .. } => {
+            // Never on the engine's view alone: read the pull request again first; the merge
+            // is decided on that fresh read (`merge_after_read`).
+            state
+                .actions
+                .generation
+                .entry(k.to_string())
+                .and_modify(|g| *g -= 1);
+            let waiting = state.actions.merge_reads.values().any(|r| r.number == n);
+            if !waiting && merge_ready(state, ev.rules, rule, pr) {
+                let token = state.next_id();
+                state.actions.merge_reads.insert(
+                    token,
+                    MergeRead {
+                        number: n,
+                        rule: rule.name.clone(),
+                        head_sha: pr.head_sha.clone(),
+                        since: state.now,
+                    },
+                );
+                out.push(Decision::Refresh {
+                    token,
+                    numbers: vec![n],
+                    branches: vec![pr.base.clone()],
                 });
             } else {
-                // Not mergeable now: try again at the next evaluation.
-                state
-                    .actions
-                    .generation
-                    .entry(k.to_string())
-                    .and_modify(|g| *g -= 1);
                 ev.exclusive.remove("merge");
-                return;
             }
+            return;
         }
         RuleAction::GithubActions { dispatch } => {
             for d in dispatch {
@@ -1282,6 +1363,106 @@ fn copy_op(state: &State, pr: &PullRequest, spec: &CopySpec, branches: &[String]
     })
 }
 
+/// Whether the `merge` action of `rule` may merge `pr` now: the rule matches without an
+/// evaluation error (a truncated file list fails closed), the pull request is open, ready,
+/// not queued, no protection holds it, and neither the pause, a freeze nor a merge protection
+/// holds it (stricter than the docs for the freeze, which they leave to the queue).
+fn merge_ready(state: &State, rules: &Rules, rule: &PullRequestRule, pr: &PullRequest) -> bool {
+    if pr.closed || pr.merged || pr.draft || pr.files_incomplete {
+        return false;
+    }
+    if state.queued.contains_key(&pr.number)
+        || state.pending_commands.contains_key(&pr.number)
+        || state.holds.get(&pr.number).is_some_and(|h| !h.is_empty())
+    {
+        return false;
+    }
+    let ctx = context(state, pr.number);
+    let mut errors = Vec::new();
+    let (ok, _) = eval::eval_list(&rule.conditions, pr, &ctx, &mut errors);
+    ok && errors.is_empty() && crate::gates::landing_hold(state, rules, pr, state.now).is_none()
+}
+
+/// The fresh read for a `merge` action arrived (`token`): merge if everything still holds on
+/// it, at exactly the head the decision saw. Reads that never came back expire.
+fn merge_after_read(state: &mut State, rules: &Rules, token: Option<u64>, out: &mut Vec<Decision>) {
+    let now = state.now;
+    state
+        .actions
+        .merge_reads
+        .retain(|_, r| now < r.since.saturating_add(ACTION_TIMEOUT));
+    let Some(read) = token.and_then(|t| state.actions.merge_reads.remove(&t)) else {
+        return;
+    };
+    let Some(pr) = state.pull_requests.get(&read.number).cloned() else {
+        return;
+    };
+    let Some(rule) = rules
+        .pull_request_rules
+        .iter()
+        .find(|r| r.name == read.rule)
+    else {
+        return;
+    };
+    let Some(RuleAction::Merge { method }) = rule
+        .actions
+        .iter()
+        .find(|a| matches!(a, RuleAction::Merge { .. }))
+    else {
+        return;
+    };
+    if pr.head_sha != read.head_sha || !merge_ready(state, rules, rule, &pr) {
+        return;
+    }
+    let k = key(pr.number, &rule.name, "merge");
+    if state.actions.fired.contains(&k) {
+        return;
+    }
+    state.actions.fired.insert(k.clone());
+    *state.actions.generation.entry(k.clone()).or_default() += 1;
+    send(
+        state,
+        out,
+        &rule.name,
+        Op::Merge {
+            number: pr.number,
+            head_sha: pr.head_sha.clone(),
+            method: method.clone(),
+        },
+        None,
+        None,
+        None,
+    );
+    if let Some(p) = state.actions.pending.values_mut().last() {
+        p.edge = Some(k);
+    }
+}
+
+/// Drops a request in doubt that is never resent: an edge request becomes undecided again, a
+/// command is answered.
+fn abandon(state: &mut State, p: &PendingAction, why: &str, out: &mut Vec<Decision>) {
+    if let Some(k) = &p.edge {
+        state.actions.fired.remove(k);
+    }
+    if let Some(k) = &p.level {
+        state.actions.asked.remove(k);
+    }
+    if let Some(r) = &p.reply {
+        cosmetics::emit(
+            out,
+            Cosmetic::Reply {
+                number: p.op.number(),
+                to: Some(r.comment),
+                body: format!(
+                    "@{}, `{}` is not confirmed ({why}); nothing is retried, comment again if \
+                     it is still needed.",
+                    r.sender, r.command
+                ),
+            },
+        );
+    }
+}
+
 fn waiting_backport_commands(state: &mut State, pr: &PullRequest, out: &mut Vec<Decision>) {
     if !pr.closed {
         return;
@@ -1290,6 +1471,22 @@ fn waiting_backport_commands(state: &mut State, pr: &PullRequest, out: &mut Vec<
         return;
     };
     for w in list {
+        if pr.merged && !w.head_sha.is_empty() && pr.head_sha != w.head_sha {
+            cosmetics::emit(
+                out,
+                Cosmetic::Reply {
+                    number: pr.number,
+                    to: Some(w.reply.comment),
+                    body: format!(
+                        "@{}, the backport is cancelled: the pull request was merged at a head \
+                         ({}) the command did not vouch for.",
+                        w.reply.sender,
+                        crate::engine::short(&pr.head_sha)
+                    ),
+                },
+            );
+            continue;
+        }
         if !pr.merged {
             cosmetics::emit(
                 out,
@@ -1320,7 +1517,7 @@ fn resend_overdue(state: &mut State, out: &mut Vec<Decision>) {
     let now = state.now;
     let mut wake = None;
     for (id, p) in state.actions.pending.iter_mut() {
-        if p.level.is_some() || matches!(p.op, Op::Dispatch { .. }) {
+        if p.level.is_some() || !resendable(&p.op) {
             continue;
         }
         let due = p.sent.saturating_add(ACTION_TIMEOUT);
@@ -1345,15 +1542,13 @@ fn resend_overdue(state: &mut State, out: &mut Vec<Decision>) {
         .iter()
         .filter(|(_, p)| {
             now >= p.sent.saturating_add(ACTION_TIMEOUT)
-                && (p.level.is_some() || p.attempts >= ACTION_ATTEMPTS)
+                && (p.level.is_some() || !resendable(&p.op) || p.attempts >= ACTION_ATTEMPTS)
         })
         .map(|(id, _)| *id)
         .collect();
     for id in stale {
-        if let Some(p) = state.actions.pending.remove(&id)
-            && let Some(k) = p.level
-        {
-            state.actions.asked.remove(&k);
+        if let Some(p) = state.actions.pending.remove(&id) {
+            abandon(state, &p, "no answer", out);
         }
     }
     if let Some(at) = wake {
@@ -1484,7 +1679,13 @@ pub(crate) fn failed(state: &mut State, id: u64, error: &str, out: &mut Vec<Deci
                 .last_error
                 .insert(k.clone(), error.to_string());
         }
-        // Edge requests stay pending and are sent again after the timeout (idempotent).
+        // A code-changing write (merge, head rewrite by command) is decided again, never
+        // resent as is.
+        None if !resendable(&p.op) => {
+            state.actions.pending.remove(&id);
+            abandon(state, &p, error, out);
+        }
+        // Other edge requests stay pending and are sent again after the timeout (idempotent).
         None => {
             let at = p.sent.saturating_add(ACTION_TIMEOUT);
             crate::queue::wake(state, at, out);
@@ -1493,13 +1694,27 @@ pub(crate) fn failed(state: &mut State, id: u64, error: &str, out: &mut Vec<Deci
 }
 
 /// After a restart: level requests are re-decided from the fresh read; edge requests and
-/// commands in doubt are sent again (idempotent), workflow dispatches are not (at most once).
+/// commands in doubt are sent again when that is idempotent; code-changing writes (merge,
+/// head rewrites) are decided again, workflow dispatches are not repeated (at most once).
 pub(crate) fn restarted(state: &mut State, out: &mut Vec<Decision>) {
     state.actions.asked.clear();
+    state.actions.merge_reads.clear();
+    let doubt: Vec<PendingAction> = state
+        .actions
+        .pending
+        .values()
+        .filter(|p| p.level.is_none() && !resendable(&p.op))
+        .cloned()
+        .collect();
+    for p in &doubt {
+        if !matches!(p.op, Op::Dispatch { .. }) {
+            abandon(state, p, "the engine restarted", out);
+        }
+    }
     state
         .actions
         .pending
-        .retain(|_, p| p.level.is_none() && !matches!(p.op, Op::Dispatch { .. }));
+        .retain(|_, p| p.level.is_none() && resendable(&p.op));
     let now = state.now;
     let ids: Vec<u64> = state.actions.pending.keys().copied().collect();
     for id in ids {
@@ -1543,6 +1758,20 @@ pub(crate) fn command(
     };
     let rule = format!("command `{}` by @{}", name.as_str(), c.sender);
     let open = !pr.closed && !pr.merged;
+    // The command vouches for the head at the comment's time (as the adapter read it); a
+    // pull request that moved on since is not touched under the sender's name.
+    let vouched = c.head_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
+    if open && vouched != pr.head_sha {
+        return say(
+            out,
+            format!(
+                "the pull request changed after the command (head {} instead of {}); nothing \
+                 was done, comment again to vouch for the new head.",
+                crate::engine::short(&pr.head_sha),
+                crate::engine::short(&vouched)
+            ),
+        );
+    }
     match name {
         Name::Update | Name::Rebase | Name::Squash => {
             if !open {
@@ -1621,6 +1850,7 @@ pub(crate) fn command(
                     .or_default()
                     .push(WaitingBackport {
                         branches: args.clone(),
+                        head_sha: vouched.clone(),
                         reply,
                     });
                 return say(

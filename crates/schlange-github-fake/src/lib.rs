@@ -174,6 +174,10 @@ pub struct Squash {
     pub head_tested: bool,
     /// What the merge guard said at landing time (`None`: the conditions held).
     pub guard: Option<String>,
+    /// A commit the landing put on the base before the pull request's last one (a `rebase`
+    /// replaying its commits, a fast-forward in place over its own commits): its tree is not
+    /// tested on its own, the landing's last commit is.
+    pub intermediate: bool,
 }
 
 /// Decides whether a pull request may land right now (I1 at landing time): `Some(why)` when
@@ -393,8 +397,27 @@ pub(crate) struct St {
     /// Former repository names (renames answer with redirects).
     pub old_names: Vec<String>,
     pub rulesets: Vec<Value>,
+    /// Checks a ruleset on the default branch requires (`GET /rules/branches/…`).
+    pub required_checks: Vec<String>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
+    /// How many files `GET /pulls/{n}/files` lists at most (GitHub: 3000).
+    pub files_cap: usize,
+    /// Pushes to branches, oldest first (`GET /activity`): GitHub records when and by whom
+    /// a branch moved, which no commit metadata can fake.
+    pub activity: Vec<Activity>,
+}
+
+/// One entry of the repository activity (`GET /repos/{o}/{r}/activity`).
+#[derive(Clone, Debug)]
+pub struct Activity {
+    pub branch: String,
+    pub before: Sha,
+    pub after: Sha,
+    pub actor: String,
+    /// On the comment clock, so pushes and comments are ordered.
+    pub at: u64,
+    pub kind: &'static str,
 }
 
 impl St {
@@ -416,6 +439,84 @@ impl St {
     }
 
     /// A push to a branch: pull requests on it get `mergeable: null` for a while.
+    /// GitHub marks an open pull request merged once its head is reachable from its base
+    /// branch (a fast-forward, a merged batch pull request; MQ-05).
+    pub fn mark_reachable(&mut self, branch: &str, tip: &str) {
+        let now: Vec<u64> = self
+            .prs
+            .values()
+            .filter(|p| p.open && !p.merged && p.base == branch)
+            .filter(|p| self.repo.is_ancestor(&p.head_sha, tip))
+            .map(|p| p.number)
+            .collect();
+        for n in now {
+            let p = self.prs.get_mut(&n).expect("pr");
+            p.merged = true;
+            p.open = false;
+            p.merge_commit_sha = Some(tip.to_string());
+            self.emit_pr("closed", n, json!({}));
+        }
+    }
+
+    /// Records a fast-forward of the default branch from `old` to `new` as landings: every
+    /// commit on the new first-parent line is a queue branch commit (`Merge #n`, tested as a
+    /// prefix of a green draft) or, checked in place, the pull request's own commits whose tip
+    /// is the tested head.
+    pub fn record_fast_forward(&mut self, old: &str, new: &str) {
+        let mut line: Vec<Sha> = self
+            .repo
+            .first_parent_history(new)
+            .into_iter()
+            .take_while(|c| c != old)
+            .collect();
+        line.reverse();
+        let bot = self.bot();
+        let in_place = self
+            .prs
+            .values()
+            .find(|p| p.open && p.user != bot && p.head_sha == new)
+            .map(|p| p.number);
+        let mut parent = old.to_string();
+        for (k, c) in line.iter().enumerate() {
+            let commit = self.repo.get(c).clone();
+            let (pr, head) = match in_place {
+                Some(n) => (n, new.to_string()),
+                None => {
+                    let n = commit
+                        .message
+                        .strip_prefix("Merge #")
+                        .and_then(|r| r.split_whitespace().next())
+                        .and_then(|x| x.parse().ok())
+                        .unwrap_or(0);
+                    let head = commit.parents.get(1).cloned().unwrap_or_default();
+                    (n, head)
+                }
+            };
+            let last = k + 1 == line.len();
+            let tree = commit.tree_id.clone();
+            let tested_green = self.tree_tested_green(&tree);
+            let head_tested = self.head_tested(&head) || self.checked_in_place(&head, old);
+            let guard = match (self.merge_guard.clone(), self.prs.get(&pr).cloned()) {
+                (Some(g), Some(p)) => g(&p),
+                _ => None,
+            };
+            self.squashes.push(Squash {
+                pr,
+                sha: c.clone(),
+                parent: parent.clone(),
+                tree,
+                tested_green,
+                head,
+                head_tested,
+                guard,
+                message: commit.message.clone(),
+                merged_by: bot.clone(),
+                intermediate: in_place.is_some() && !last,
+            });
+            parent = c.clone();
+        }
+    }
+
     pub fn touched(&mut self, branch: &str) {
         if self.mergeable_lag == 0 {
             return;
@@ -625,6 +726,69 @@ impl St {
         Some(self.repo.squash(&tip, &pr.head_sha, "probe").is_ok())
     }
 
+    /// Records that `actor` moved `branch` from `before` to `after` (GitHub's activity log);
+    /// pushes and comments share one clock.
+    pub fn record_push(&mut self, branch: &str, before: &str, after: &str, actor: &str) {
+        self.comment_clock += 1;
+        self.activity.push(Activity {
+            branch: branch.into(),
+            before: before.into(),
+            after: after.into(),
+            actor: actor.into(),
+            at: self.comment_clock,
+            kind: if before.is_empty() {
+                "branch_creation"
+            } else {
+                "push"
+            },
+        });
+    }
+
+    /// The files of a pull request as `GET /pulls/{n}/files` lists them, uncapped: changes
+    /// between the merge base and the head, with GitHub's rename detection (a removed path
+    /// whose content an added path has is one `renamed` entry with `previous_filename`).
+    pub fn pr_files(&self, pr: &FakePr) -> Vec<Value> {
+        let tip = self.tip(&pr.base).unwrap_or_default();
+        let (files, before, after) = match self.repo.merge_base(&tip, &pr.head_sha) {
+            Some(mb) => (
+                self.repo.changed_paths(&mb, &pr.head_sha),
+                self.repo.tree(&mb).clone(),
+                self.repo.tree(&pr.head_sha).clone(),
+            ),
+            None => (vec![], Default::default(), Default::default()),
+        };
+        let removed: Vec<&String> = files.iter().filter(|f| !after.contains_key(*f)).collect();
+        let mut renamed_from: Vec<String> = Vec::new();
+        let mut items = Vec::new();
+        for f in &files {
+            if !after.contains_key(f) {
+                continue;
+            }
+            let added = !before.contains_key(f);
+            let source = removed
+                .iter()
+                .find(|r| added && before.get(**r) == after.get(f) && !renamed_from.contains(r))
+                .map(|r| r.to_string());
+            match source {
+                Some(from) => {
+                    items.push(
+                        json!({ "filename": f, "previous_filename": from, "status": "renamed" }),
+                    );
+                    renamed_from.push(from);
+                }
+                None => items.push(
+                    json!({ "filename": f, "status": if added { "added" } else { "modified" } }),
+                ),
+            }
+        }
+        for r in removed {
+            if !renamed_from.contains(r) {
+                items.push(json!({ "filename": r, "status": "removed" }));
+            }
+        }
+        items
+    }
+
     pub fn pr_json(&mut self, n: u64) -> Option<Value> {
         let pr = self.prs.get(&n)?.clone();
         let mergeable = if pr.open { self.mergeable(&pr) } else { None };
@@ -653,6 +817,7 @@ impl St {
             "requested_reviewers": pr.requested_reviewers.iter().map(|l| json!({ "login": l })).collect::<Vec<_>>(),
             "requested_teams": pr.requested_teams.iter().map(|t| json!({ "slug": t })).collect::<Vec<_>>(),
             "merged_by": pr.merged_by.as_ref().map(|l| json!({ "login": l })),
+            "changed_files": self.pr_files(&pr).len(),
         }))
     }
 
@@ -914,11 +1079,14 @@ impl FakeGithub {
             stale: BTreeMap::new(),
             old_names: Vec::new(),
             rulesets: Vec::new(),
+            required_checks: Vec::new(),
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
             comment_clock: 1_800_000_000,
             commit_authors: BTreeMap::new(),
             squash_message_setting: "COMMIT_MESSAGES".into(),
+            files_cap: 3000,
+            activity: Vec::new(),
         };
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
@@ -1029,6 +1197,11 @@ impl FakeGithub {
         self.with(|s| s.cfg.permissions = p);
     }
 
+    /// A ruleset on the default branch that requires these checks.
+    pub fn set_required_checks(&self, checks: &[&str]) {
+        self.with(|s| s.required_checks = checks.iter().map(|c| c.to_string()).collect());
+    }
+
     pub fn add_ruleset(&self, ruleset: Value) {
         self.with(|s| s.rulesets.push(ruleset));
     }
@@ -1077,6 +1250,10 @@ impl FakeGithub {
             s.commit_authors.insert(head.clone(), author.to_string());
             let head_ref = format!("pr-{n}");
             s.repo.create_ref(&head_ref, &head).expect("new branch");
+            if !fork {
+                // A fork's branch lives in another repository's activity log.
+                s.record_push(&head_ref, "", &head, author);
+            }
             s.prs.insert(
                 n,
                 FakePr {
@@ -1128,6 +1305,9 @@ impl FakeGithub {
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
             s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            if !pr.fork {
+                s.record_push(&pr.head_ref, &pr.head_sha, &head, by);
+            }
             s.touched(&pr.head_ref);
             s.emit_pr("synchronize", n, json!({}));
             s.run_ci(n);
@@ -1150,6 +1330,9 @@ impl FakeGithub {
                 .update_ref(&pr.head_ref, &pr.head_sha, &head)
                 .expect("cas");
             s.prs.get_mut(&n).expect("pr").head_sha = head.clone();
+            if !pr.fork {
+                s.record_push(&pr.head_ref, &pr.head_sha, &head, &pr.user);
+            }
             s.emit_pr("synchronize", n, json!({}));
             s.run_ci(n);
             head
@@ -1175,6 +1358,51 @@ impl FakeGithub {
                 json!({}),
             );
         });
+    }
+
+    /// `editor` edits comment `id` to `body` and `issue_comment.edited` goes out, sent by
+    /// `editor`. As on GitHub, the comment's author may edit it, and so may anyone with write
+    /// access or more to the repository (an agent with write access can rewrite a human's
+    /// comment). `Err` when GitHub would refuse; the comment is then unchanged.
+    pub fn edit_comment(&self, id: u64, editor: &str, body: &str) -> Result<(), String> {
+        self.with(|s| {
+            let Some(c) = s.comments.iter().find(|c| c.id == id) else {
+                return Err(format!("comment {id} does not exist"));
+            };
+            let may = c.user == editor
+                || editor == s.bot()
+                || s.collaborators
+                    .get(editor)
+                    .is_some_and(|p| matches!(p.as_str(), "write" | "maintain" | "admin"));
+            if !may {
+                return Err(format!(
+                    "{editor} may not edit comment {id} of {}: it needs write access",
+                    c.user
+                ));
+            }
+            s.edit_comment(id, editor, body);
+            Ok(())
+        })
+    }
+
+    /// The head of pull request `n` right before `at` on the comment clock (a comment's
+    /// `created_at`), from the activity log: the head a commenter at that moment saw. For
+    /// test oracles.
+    pub fn head_at(&self, n: u64, at: u64) -> Option<Sha> {
+        self.with(|s| {
+            let branch = s.prs.get(&n)?.head_ref.clone();
+            s.activity
+                .iter()
+                .rev()
+                .find(|a| a.branch == branch && a.at < at)
+                .map(|a| a.after.clone())
+        })
+    }
+
+    /// Sets how many files `GET /pulls/{n}/files` lists at most (GitHub: 3000), so a test can
+    /// reach the cap with a few files.
+    pub fn set_files_cap(&self, cap: usize) {
+        self.with(|s| s.files_cap = cap);
     }
 
     /// `user` comments `body` on pull request `n`; returns the comment id.
@@ -1389,6 +1617,11 @@ impl FakeGithub {
         self.with(|s| s.repo.tree_id_of(sha))
     }
 
+    /// Whether `ancestor` is reachable from `of`.
+    pub fn is_ancestor(&self, ancestor: &str, of: &str) -> bool {
+        self.with(|s| s.repo.is_ancestor(ancestor, of))
+    }
+
     pub fn parents_of(&self, sha: &str) -> Vec<Sha> {
         self.with(|s| s.repo.get(sha).parents.clone())
     }
@@ -1454,7 +1687,7 @@ impl FakeGithub {
     pub fn invariant_violations(&self, quiescent: bool) -> Vec<String> {
         self.with(|s| {
             let mut v = s.violations.clone();
-            for q in &s.squashes {
+            for q in s.squashes.iter().filter(|q| !q.intermediate) {
                 if !q.head_tested {
                     v.push(format!(
                         "I1: #{} landed at head {} that no open queue draft tested",
@@ -1477,13 +1710,15 @@ impl FakeGithub {
                 match s.squashes.iter().find(|q| q.sha == c) {
                     None => v.push(format!("I0: {c} on the base was not made by a landing")),
                     Some(q) => {
-                        if !q.tested_green {
+                        if !q.tested_green && !q.intermediate {
                             v.push(format!(
                                 "I0: #{} landed as {c} with a tree the queue never saw green",
                                 q.pr
                             ));
                         }
-                        *seen_prs.entry(q.pr).or_insert(0) += 1;
+                        if !q.intermediate {
+                            *seen_prs.entry(q.pr).or_insert(0) += 1;
+                        }
                     }
                 }
             }
@@ -1493,7 +1728,7 @@ impl FakeGithub {
                 }
             }
             let mut per_pr: BTreeMap<u64, u32> = BTreeMap::new();
-            for q in &s.squashes {
+            for q in s.squashes.iter().filter(|q| !q.intermediate) {
                 *per_pr.entry(q.pr).or_default() += 1;
             }
             for (pr, k) in per_pr {

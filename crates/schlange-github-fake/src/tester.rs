@@ -491,6 +491,58 @@ impl Running {
         self.clock.advance(secs(d));
     }
 
+    /// Calls `serve`'s queue API (`/repos/{owner}/{repo}/<path>`) with the admin token; the
+    /// status code and the body.
+    pub fn admin(&self, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
+        self.admin_as(method, path, body, Some("test-admin-token"))
+    }
+
+    /// [`Running::admin`] with another (or no) bearer token.
+    pub fn admin_as(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        token: Option<&str>,
+    ) -> (u16, String) {
+        let base = self
+            .service
+            .as_ref()
+            .expect("serve runs")
+            .webhook_url()
+            .trim_end_matches("/webhook")
+            .to_string();
+        let url = format!("{base}/repos/{}/{path}", self.gh.config().full_name());
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_global(Some(std::time::Duration::from_secs(40)))
+                .build(),
+        );
+        let auth = token.map(|t| format!("Bearer {t}")).unwrap_or_default();
+        let resp = match (method, body) {
+            ("GET", _) => agent.get(&url).header("authorization", &auth).call(),
+            ("DELETE", _) => agent.delete(&url).header("authorization", &auth).call(),
+            ("PUT", b) => agent
+                .put(&url)
+                .header("authorization", &auth)
+                .header("content-type", "application/json")
+                .send(b.unwrap_or("")),
+            (_, b) => agent
+                .post(&url)
+                .header("authorization", &auth)
+                .header("content-type", "application/json")
+                .send(b.unwrap_or("")),
+        };
+        match resp {
+            Ok(mut r) => {
+                let status = r.status().as_u16();
+                (status, r.body_mut().read_to_string().unwrap_or_default())
+            }
+            Err(e) => (0, e.to_string()),
+        }
+    }
+
     pub fn status(&self) -> Option<schlange_github::service::WorkerStatus> {
         self.service
             .as_ref()?

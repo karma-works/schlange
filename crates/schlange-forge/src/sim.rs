@@ -18,7 +18,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use schlange_core::engine::{CarPr, CommitMessage, Cosmetic, LandError, LandedCommit, short};
+use schlange_config::rules::MergeMethod;
+use schlange_core::engine::{
+    CarPr, CommitMessage, Control, Cosmetic, Freeze, LandError, LandedCommit, short,
+};
 use schlange_core::model::{
     CheckRun, Comment, Conclusion, Dependency, DependencyState, PullRequest, Time,
 };
@@ -175,6 +178,8 @@ pub enum Action {
         by: String,
         state: String,
     },
+    /// An operator pauses or unpauses the queue, or creates or deletes a freeze (API, CLI).
+    Control(Control),
 }
 
 /// Webhook faults. All probabilities are per delivery.
@@ -310,6 +315,7 @@ pub struct CarRecord {
 pub struct LandingRecord {
     pub at: Time,
     pub car: u64,
+    pub method: MergeMethod,
     pub queue: String,
     pub base_branch: String,
     pub expected_base: Sha,
@@ -382,6 +388,14 @@ pub struct SimForge<G: GitStore = Repo> {
     pub deleted_branches: Vec<String>,
     next_copy: u64,
     next_review: u64,
+    /// Operator controls in the order they were made, each with the number of landings that
+    /// had happened before it (the checker judges every landing by the controls before it).
+    pub controls: Vec<(usize, Control)>,
+    /// Controls the engine has not been told yet (the runner hands them over at once, as the
+    /// API of `serve` does).
+    pub undelivered_controls: Vec<Control>,
+    /// Checks the base branches' protection requires (`branch_protection_injection_mode`).
+    pub required_checks: BTreeMap<String, Vec<String>>,
 }
 
 /// `Name <email>` of a simulated account.
@@ -449,6 +463,9 @@ impl<G: GitStore> SimForge<G> {
             deleted_branches: Vec::new(),
             next_copy: 2000,
             next_review: 0,
+            controls: Vec::new(),
+            undelivered_controls: Vec::new(),
+            required_checks: BTreeMap::new(),
         }
     }
 
@@ -456,6 +473,28 @@ impl<G: GitStore> SimForge<G> {
     pub fn add_branch(&mut self, name: &str) {
         let root = self.initial_commit.clone();
         self.repo.create_ref(name, &root).ok();
+    }
+
+    /// The pause and the freezes in force for the landing with index `landing` (made before it).
+    pub fn controls_before(&self, landing: usize) -> (Option<String>, Vec<Freeze>) {
+        let mut pause = None;
+        let mut freezes: BTreeMap<u64, Freeze> = BTreeMap::new();
+        for (n, c) in &self.controls {
+            if *n > landing {
+                break;
+            }
+            match c {
+                Control::Pause { reason, .. } => pause = Some(reason.clone()),
+                Control::Unpause => pause = None,
+                Control::Freeze { freeze } => {
+                    freezes.insert(freeze.id, freeze.clone());
+                }
+                Control::Unfreeze { id } => {
+                    freezes.remove(id);
+                }
+            }
+        }
+        (pause, freezes.into_values().collect())
     }
 
     /// A comment as the engine sees it (with the sender's permission now).
@@ -1113,6 +1152,23 @@ impl<G: GitStore> SimForge<G> {
                 self.emit(Hint::PullRequest(number), format!("#{number} reviewed"));
                 format!("{by} reviewed #{number}: {state}")
             }
+            Action::Control(c) => {
+                let text = match &c {
+                    Control::Pause { reason, .. } => format!("the queue is paused: {reason}"),
+                    Control::Unpause => "the queue is unpaused".into(),
+                    Control::Freeze { freeze } => format!(
+                        "freeze {} `{}` from {} to {}",
+                        freeze.id,
+                        freeze.reason,
+                        freeze.start,
+                        freeze.end.map_or("its removal".into(), |e| e.to_string())
+                    ),
+                    Control::Unfreeze { id } => format!("freeze {id} deleted"),
+                };
+                self.controls.push((self.landings.len(), c.clone()));
+                self.undelivered_controls.push(c);
+                text
+            }
             Action::EditBody { number, body } => {
                 if let Some(p) = self.prs.get_mut(&number) {
                     p.body = body;
@@ -1371,10 +1427,14 @@ impl<G: GitStore> SimForge<G> {
                 base_sha,
                 prs,
                 own,
+                stack_on,
             } => {
-                let mut cur = base_sha.clone();
+                let mut cur = stack_on.clone().unwrap_or_else(|| base_sha.clone());
                 let mut prefix = Vec::new();
                 for (i, p) in prs.iter().enumerate() {
+                    if stack_on.is_some() && !own.contains(&p.number) {
+                        continue; // carried by the branch it is stacked on
+                    }
                     match self
                         .repo
                         .merge(&cur, &p.head_sha, &format!("Merge #{}", p.number))
@@ -1422,7 +1482,7 @@ impl<G: GitStore> SimForge<G> {
                         branch: Some(branch.clone()),
                         draft: Some(draft),
                         in_place: false,
-                        base_sha: base_sha.clone(),
+                        base_sha: stack_on.clone().unwrap_or_else(|| base_sha.clone()),
                         prefix,
                         heads: prs.iter().map(|p| (p.number, p.head_sha.clone())).collect(),
                         head: cur.clone(),
@@ -1543,8 +1603,19 @@ impl<G: GitStore> SimForge<G> {
                 expected_base_sha,
                 prs,
                 messages,
+                method,
+                head,
                 ..
-            } => vec![self.land(*car, queue, base_branch, expected_base_sha, prs, messages)],
+            } => vec![self.land(
+                *car,
+                queue,
+                base_branch,
+                expected_base_sha,
+                prs,
+                messages,
+                *method,
+                head.as_deref(),
+            )],
             Decision::WakeAt { at } => {
                 let at = (*at).max(self.now());
                 self.push_pending(at, Pending::Tick);
@@ -1567,6 +1638,127 @@ impl<G: GitStore> SimForge<G> {
         }
     }
 
+    /// The commits of a pull request that are not on `onto` yet, oldest first (its first-parent
+    /// history down to the first commit `onto` contains).
+    fn own_commits(&self, head: &str, onto: &str) -> Vec<Sha> {
+        let mut v: Vec<Sha> = self
+            .repo
+            .first_parent_history(head)
+            .into_iter()
+            .take_while(|c| !self.repo.is_ancestor(c, onto))
+            .collect();
+        v.reverse();
+        v
+    }
+
+    /// Lands a car by moving the base (`fast-forward`) or with one merge commit of the batch
+    /// branch (`merge-batch`). Every pull request must be open at its tested head; the base
+    /// must be exactly the expected commit (compare-and-swap). A pull request counts as merged
+    /// only once its head is reachable from the new base (MQ-05).
+    #[allow(clippy::too_many_arguments)]
+    fn land_branch(
+        &mut self,
+        car: u64,
+        base_branch: &str,
+        expected: &str,
+        prs: &[CarPr],
+        method: MergeMethod,
+        head: &str,
+    ) -> (Vec<LandedCommit>, Option<LandError>) {
+        for p in prs {
+            match self.prs.get(&p.number) {
+                Some(t) if !t.closed && t.head_sha == p.head_sha => {}
+                _ => return (vec![], Some(LandError::HeadChanged { number: p.number })),
+            }
+        }
+        let tip = self.read_branch(base_branch).unwrap_or_default();
+        if tip != expected {
+            return (vec![], Some(LandError::BaseMoved { actual: tip }));
+        }
+        let record = self.cars.get(&car).cloned();
+        let new = match method {
+            MergeMethod::FastForward => {
+                if !self.repo.is_ancestor(expected, head) {
+                    let number = prs.first().map_or(0, |p| p.number);
+                    return (
+                        vec![],
+                        Some(LandError::Refused {
+                            number,
+                            message: "the tested branch does not contain the base: not a fast \
+                                      forward"
+                                .into(),
+                        }),
+                    );
+                }
+                head.to_string()
+            }
+            _ => {
+                let title = format!(
+                    "Merged {}",
+                    prs.iter()
+                        .map(|p| format!("#{}", p.number))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let message = format!("{title}\n\nMerged by the merge queue");
+                match self.repo.merge(expected, head, &message) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        let number = prs.first().map_or(0, |p| p.number);
+                        return (vec![], Some(LandError::Conflict { number }));
+                    }
+                }
+            }
+        };
+        if let Err(e) = self.repo.update_ref(base_branch, expected, &new) {
+            let actual = match e {
+                crate::git::RefError::Stale { actual, .. } => actual.unwrap_or_default(),
+                _ => String::new(),
+            };
+            return (vec![], Some(LandError::BaseMoved { actual }));
+        }
+        let mut commits = Vec::new();
+        let in_place = record.as_ref().is_some_and(|r| r.in_place);
+        for p in prs {
+            let (sha, extra) = if method == MergeMethod::MergeBatch {
+                (new.clone(), vec![])
+            } else if in_place {
+                let mut own = self.own_commits(head, expected);
+                let last = own.pop().unwrap_or_else(|| head.to_string());
+                (last, own)
+            } else {
+                let sha = record
+                    .as_ref()
+                    .and_then(|r| r.prefix.iter().find(|(n, ..)| *n == p.number))
+                    .map(|(_, s, _)| s.clone())
+                    .unwrap_or_else(|| new.clone());
+                (sha, vec![])
+            };
+            if self.repo.is_ancestor(&p.head_sha, &new) {
+                let pr = self.prs.get_mut(&p.number).expect("pr");
+                pr.merged = true;
+                pr.closed = true;
+                pr.merge_commit_sha = Some(sha.clone());
+            }
+            commits.push(LandedCommit {
+                number: p.number,
+                tree: self.repo.tree_id_of(&sha),
+                sha,
+                extra,
+            });
+        }
+        if method == MergeMethod::MergeBatch
+            && let Some(d) = record.as_ref().and_then(|r| r.draft).filter(|_| !in_place)
+            && let Some(pr) = self.prs.get_mut(&d)
+        {
+            pr.merged = true;
+            pr.closed = true;
+            pr.merge_commit_sha = Some(new.clone());
+        }
+        (commits, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn land(
         &mut self,
         car: u64,
@@ -1575,6 +1767,8 @@ impl<G: GitStore> SimForge<G> {
         expected_base: &str,
         prs: &[CarPr],
         messages: &[CommitMessage],
+        method: MergeMethod,
+        head: Option<&str>,
     ) -> Event {
         let before: Vec<PullRequest> = prs
             .iter()
@@ -1588,7 +1782,16 @@ impl<G: GitStore> SimForge<G> {
         let mut expected = expected_base.to_string();
         let mut commits = Vec::new();
         let mut error = None;
-        for p in prs {
+        if method.lands_branch() {
+            let head = head
+                .map(str::to_string)
+                .or_else(|| self.cars.get(&car).map(|c| c.head.clone()))
+                .unwrap_or_default();
+            let (c, e) = self.land_branch(car, base_branch, expected_base, prs, method, &head);
+            commits = c;
+            error = e;
+        }
+        for p in prs.iter().filter(|_| !method.lands_branch()) {
             let Some(truth) = self.prs.get(&p.number).cloned() else {
                 error = Some(LandError::HeadChanged { number: p.number });
                 break;
@@ -1616,7 +1819,36 @@ impl<G: GitStore> SimForge<G> {
                 None if inherited.is_empty() => title,
                 None => format!("{title}\n\n{inherited}"),
             };
-            let Ok(c) = self.repo.squash(&expected, &p.head_sha, &message) else {
+            let mut extra = Vec::new();
+            let landed = match method {
+                MergeMethod::Merge => {
+                    let head_ref = truth.head_ref.clone();
+                    let m = format!(
+                        "Merge pull request #{} from {head_ref}\n\n{}",
+                        p.number, truth.title
+                    );
+                    self.repo.merge(&expected, &p.head_sha, &m)
+                }
+                MergeMethod::Rebase => {
+                    let own = self.own_commits(&p.head_sha, &expected);
+                    let mut cur = Ok(expected.clone());
+                    for c in &own {
+                        let Ok(at) = cur.clone() else { break };
+                        let msg = self.repo.message(c);
+                        cur = self.repo.cherry_pick(&at, c, &msg);
+                        if let Ok(n) = &cur {
+                            extra.push(n.clone());
+                        }
+                    }
+                    if own.is_empty() {
+                        cur = Err(crate::git::Conflict(vec![]));
+                    }
+                    extra.pop();
+                    cur
+                }
+                _ => self.repo.squash(&expected, &p.head_sha, &message),
+            };
+            let Ok(c) = landed else {
                 error = Some(LandError::Conflict { number: p.number });
                 break;
             };
@@ -1634,11 +1866,16 @@ impl<G: GitStore> SimForge<G> {
             pr.closed = true;
             pr.merge_commit_sha = Some(c.clone());
             let now = self.now();
-            self.landed_messages.push((now, p.number, message.clone()));
+            let logged = match method {
+                MergeMethod::Squash => message.clone(),
+                _ => self.repo.message(&c),
+            };
+            self.landed_messages.push((now, p.number, logged));
             commits.push(LandedCommit {
                 number: p.number,
                 sha: c.clone(),
                 tree: self.repo.tree_id_of(&c),
+                extra,
             });
             expected = c;
         }
@@ -1657,6 +1894,7 @@ impl<G: GitStore> SimForge<G> {
         self.landings.push(LandingRecord {
             at: self.now(),
             car,
+            method,
             queue: queue.to_string(),
             base_branch: base_branch.to_string(),
             expected_base: expected_base.to_string(),
@@ -1758,6 +1996,7 @@ mod tests {
             base_sha: base.clone(),
             prs,
             own: vec![1, 2],
+            stack_on: None,
         });
         assert!(matches!(
             &r[..],
@@ -1781,6 +2020,7 @@ mod tests {
             base_sha: base2.clone(),
             prs: vec![pr(&f, 3)],
             own: vec![3],
+            stack_on: None,
         });
         assert!(matches!(
             &r[..],
@@ -1798,6 +2038,9 @@ mod tests {
             prs: vec![pr(&f, 1)],
             expected_tree: String::new(),
             messages: vec![],
+            method: Default::default(),
+            head: None,
+            draft: None,
         });
         assert!(matches!(
             &r[..],
@@ -1814,6 +2057,9 @@ mod tests {
             prs: vec![pr(&f, 1)],
             expected_tree: String::new(),
             messages: vec![],
+            method: Default::default(),
+            head: None,
+            draft: None,
         });
         assert!(
             matches!(&r[..], [Event::Landed { error: None, commits, .. }] if commits.len() == 1)

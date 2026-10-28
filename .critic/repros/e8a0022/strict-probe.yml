@@ -1,0 +1,29 @@
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 3
+    queue_conditions:
+      - "#approved-reviews-by >= 1"
+      - schedule = Mon-Fri 09:00-17:00[Europe/Berlin]
+      - head ~= ^feature/
+      - "#commits-behind = 0"
+      - linear-history
+      - review-threads-unresolved = 0
+      - body ~= (?i)ready
+      - created-at < 7 days ago
+    merge_conditions:
+      - check-success = ci
+    update_method: rebase
+    allow_inplace_checks: false
+    commit_message_template: "{{ title }}"
+pull_request_rules:
+  - name: label
+    conditions:
+      - author = bot
+    actions:
+      label:
+        add: [x]
+      queue:
+        name: default
+      comment:
+        message: hi

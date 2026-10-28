@@ -374,3 +374,171 @@ fn backport_and_squash_commands() {
         "{o:?}"
     );
 }
+
+const MERGE: &str = "pull_request_rules:\n  - name: automerge\n    conditions:\n      - label = automerge\n      - -files ~= ^\\.github/\n    actions:\n      merge:\n        method: squash\n";
+
+fn refresh_token(d: &[Decision]) -> Option<u64> {
+    d.iter().find_map(|x| match x {
+        Decision::Refresh { token, .. } => Some(*token),
+        _ => None,
+    })
+}
+
+fn fresh(d: &mut Driver, p: PullRequest, token: u64) -> Vec<Decision> {
+    d.feed(Event::Snapshot {
+        pull_requests: vec![p],
+        branches: BTreeMap::from([("main".to_string(), Some("b0".to_string()))]),
+        token: Some(token),
+    })
+}
+
+fn automerge(n: u64) -> PullRequest {
+    let mut p = pr(n, "t");
+    p.labels.insert("automerge".into());
+    p.files = vec!["src/a.rs".into()];
+    p
+}
+
+/// The `merge` action lands outside the queue: it is decided on a fresh read of the pull
+/// request (I1), at exactly the head of that read, and never on the engine's view alone.
+#[test]
+fn merge_is_decided_on_a_fresh_read_at_its_head() {
+    let mut d = Driver::new(MERGE);
+    let out = d.read(vec![automerge(1)]);
+    assert!(
+        ops(&out).is_empty(),
+        "no merge on the engine's view: {out:?}"
+    );
+    let token = refresh_token(&out).expect("a fresh read first");
+    // The fresh read still matches: merge at that head.
+    let out = fresh(&mut d, automerge(1), token);
+    assert!(
+        matches!(&ops(&out)[..], [Op::Merge { head_sha, .. }] if head_sha == "h1"),
+        "{out:?}"
+    );
+
+    // A head that moved between the decision and the read: no merge at the new head yet.
+    let mut d = Driver::new(MERGE);
+    let token = refresh_token(&d.read(vec![automerge(2)])).unwrap();
+    let mut moved = automerge(2);
+    moved.head_sha = "h2b".into();
+    let out = fresh(&mut d, moved.clone(), token);
+    assert!(ops(&out).is_empty(), "{out:?}");
+    // It asks again for the new head instead.
+    let token = refresh_token(&out).expect("a new read for the new head");
+    let out = fresh(&mut d, moved, token);
+    assert!(matches!(&ops(&out)[..], [Op::Merge { head_sha, .. }] if head_sha == "h2b"));
+
+    // The fresh read shows a constitution file: nothing.
+    let mut d = Driver::new(MERGE);
+    let token = refresh_token(&d.read(vec![automerge(3)])).unwrap();
+    let mut evil = automerge(3);
+    evil.files.push(".github/workflows/x.yml".into());
+    assert!(ops(&fresh(&mut d, evil, token)).is_empty());
+
+    // A truncated file list fails closed, also before the read.
+    let mut d = Driver::new(MERGE);
+    let mut cut = automerge(4);
+    cut.files_incomplete = true;
+    let out = d.read(vec![cut]);
+    assert!(
+        refresh_token(&out).is_none() && ops(&out).is_empty(),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn merge_honours_the_pause_and_is_never_resent() {
+    let mut d = Driver::new(MERGE);
+    d.feed(Event::Control {
+        control: schlange_core::engine::Control::Pause {
+            reason: "release".into(),
+            by: None,
+        },
+    });
+    let out = d.read(vec![automerge(1)]);
+    assert!(
+        refresh_token(&out).is_none() && ops(&out).is_empty(),
+        "paused: {out:?}"
+    );
+    let out = d.feed(Event::Control {
+        control: schlange_core::engine::Control::Unpause,
+    });
+    let token = refresh_token(&out).expect("unpaused");
+    let out = fresh(&mut d, automerge(1), token);
+    let a = acts(&out);
+    let [(id, Op::Merge { .. })] = &a[..] else {
+        panic!("{out:?}")
+    };
+    // The merge call fails (perhaps after merging): it is not sent again as is.
+    let decision = out
+        .iter()
+        .find(|x| matches!(x, Decision::Act { .. }))
+        .cloned()
+        .unwrap();
+    let _ = id;
+    let out = d.feed(Event::Failed {
+        decision,
+        error: "502".into(),
+    });
+    let mut all = out;
+    d.now += 10_000;
+    all.extend(d.feed(Event::Tick));
+    all.extend(d.read(vec![automerge(1)]));
+    assert!(
+        !ops(&all).iter().any(|o| matches!(o, Op::Merge { .. })),
+        "{all:?}"
+    );
+    // It is decided again, through a fresh read.
+    assert!(refresh_token(&all).is_some(), "{all:?}");
+}
+
+#[test]
+fn a_restart_does_not_resend_a_merge_or_a_head_rewrite() {
+    let mut d = Driver::new(MERGE);
+    let token = refresh_token(&d.read(vec![automerge(1)])).unwrap();
+    let out = fresh(&mut d, automerge(1), token);
+    assert_eq!(ops(&out).len(), 1);
+    let out = d.feed(Event::Restarted);
+    assert!(
+        ops(&out).is_empty(),
+        "a merge in doubt is decided again: {out:?}"
+    );
+}
+
+/// A command vouches for the head at the comment's time: a push in between means nothing is
+/// done under the sender's name.
+#[test]
+fn commands_are_bound_to_the_head_at_the_comment() {
+    let mut d = Driver::new("pull_request_rules: []\n");
+    let mut p = pr(1, "t");
+    p.behind_base = true;
+    p.commit_messages = vec!["a".into(), "b".into()];
+    d.read(vec![p]);
+    for (id, body) in [
+        (1, "@mergifyio update"),
+        (2, "@mergifyio squash"),
+        (3, "@mergifyio copy stable"),
+        (4, "@mergifyio backport stable"),
+    ] {
+        let out = d.feed(Event::Comments {
+            comments: vec![schlange_core::model::Comment {
+                id,
+                number: 1,
+                author: "w".into(),
+                sender: "w".into(),
+                body: body.into(),
+                edited: false,
+                version: String::new(),
+                sender_permission: Some("write".into()),
+                by_queue: false,
+                head_sha: Some("older".into()),
+            }],
+        });
+        assert!(ops(&out).is_empty(), "{body}: {out:?}");
+        assert!(
+            out.iter().any(|x| matches!(x, Decision::Cosmetic { cosmetic: schlange_core::engine::Cosmetic::Reply { body, .. } } if body.contains("changed after the command"))),
+            "{body}: {out:?}"
+        );
+    }
+}

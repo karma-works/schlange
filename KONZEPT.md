@@ -175,6 +175,22 @@ schlange (ein statisches Binary)
   - *`reset_on_external_merge: never`:* Nach einem Fremd-Commit ist der gelandete Commit die
     getestete Änderung auf dem tatsächlichen Elternteil (Dreiwege-Merge), nicht der getestete
     Tree selbst; der Nutzer verzichtet damit ausdrücklich aufs Neutesten.
+  - *Merge-Methoden (P2, nachgetragen):* `merge` und `fast-forward` (Bündel-Branch): jeder
+    Commit der First-Parent-Linie ist der getestete Präfix-Tree (wie `squash`); die Commits der
+    PRs bleiben als zweite Eltern erhalten. `rebase` und `fast-forward` in place: der letzte
+    Commit eines PRs hat den getesteten Tree, seine früheren (nachgespielten bzw. eigenen)
+    Commits bilden eine Kette auf dem erwarteten Elternteil, ihre Trees wurden nicht eigens
+    getestet. `merge-batch`: ein Merge-Commit pro Bündel, dessen Tree der getestete
+    Bündel-Tree ist.
+  - *Modi `parallel` und `isolated` (P2):* Ein Car, das nicht auf einem gerade gelandeten Car
+    aufbaut, landet wie bei `never` als getestete Änderung auf dem tatsächlichen Elternteil;
+    dazwischen dürfen nur Landungen anderer Spuren liegen (`isolated`: jede; `parallel`: nur
+    in Scopes, die das Car nicht berührt), Fremd-Commits nur mit `never`.
+  - *`skip_intermediate_results` (P2):* Ein grünes Car steht für die Cars davor ein; es gilt
+    die Bündel-Semantik, auch bei Bündelgröße 1.
+  - *I1 (P2):* Keine Landung, während die Queue pausiert ist, ein Freeze den PR hält oder eine
+    `merge_protections`-Regel nicht erfüllt ist; Pflicht-Checks des Rulesets zählen zu den
+    Bedingungen.
 - **I1:** Kein PR landet, dessen Bedingungen zum Landezeitpunkt falsch sind, dessen Head nicht
   der beim Bau des Cars aufgezeichnete getestete Head ist, oder der schon gelandet ist (nichts
   landet zweimal, auch nicht über Abstürze hinweg). Voraussetzung: Der Prüf-Read vor dem Landen

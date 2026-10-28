@@ -37,6 +37,7 @@
 +0:04:00  ci        #3 check `quick` completed on 5a0b628: success
 +0:05:00  ci        #5 check `quick` completed on 37c32e6: success
 +0:05:00  webhook   #5 check `quick` completed on 37c32e6: success
++0:05:00  decision  read #5 main before acting
 +0:05:00  decision  action of `merge docs directly`: merge #5 directly (squash)
 +0:05:00  reply     action done
 +0:05:00  webhook   push to main
@@ -53,18 +54,18 @@
 +0:11:00  ci        #7 check `quick` completed on 445a693: success
 +0:11:00  webhook   #7 check `quick` completed on 445a693: success
 +0:11:00  decision  enqueue #7 into `default` (rule `queue`)
-+0:11:00  decision  build car 13 on mergify/merge-queue/b06017e54d: base 37c32e6 + #7 (checks #7)
-+0:11:00  reply     car 13 built at 0199522, draft #1000
++0:11:00  decision  build car 14 on mergify/merge-queue/0eaf9c52f0: base 37c32e6 + #7 (checks #7)
++0:11:00  reply     car 14 built at 0199522, draft #1000
 +0:11:00  decision  labels #7 +queued
 +0:11:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked.
 +0:11:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
 +0:12:00  ci        #1000 check `quick` completed on 0199522: success
 +0:12:00  webhook   #1000 check `quick` completed on 0199522: success
-+0:12:00  decision  read #7 #1000 main mergify/merge-queue/b06017e54d before acting
-+0:12:00  decision  land car 13: squash #7 onto main if it is still 37c32e6
++0:12:00  decision  read #7 #1000 main mergify/merge-queue/0eaf9c52f0 before acting
++0:12:00  decision  land car 14: squash #7 onto main if it is still 37c32e6
 +0:12:00  message   #7: Pull request 7 (#7)
-+0:12:00  reply     car 13 landed #7 as 445a693
-+0:12:00  decision  close car 13, delete mergify/merge-queue/b06017e54d, close #1000
++0:12:00  reply     car 14 landed #7 as 445a693
++0:12:00  decision  close car 14, delete mergify/merge-queue/0eaf9c52f0, close #1000
 +0:12:00  decision  #7 merged as 445a693
 +0:12:00  decision  action of `keep up to date`: update #1 with its base
 +0:12:00  reply     action done

@@ -35,7 +35,7 @@ Merges the pull request directly, outside the queue. Arztagent does not use the 
 
 ## Sub-features
 
-- `run`: built. Edge-triggered (docs: workflow, "How rules are evaluated"): runs once when the rule starts to match, again only after it stopped matching. Only an open, ready pull request that no protection holds and that is not queued; the merge is bound to the head it saw. While it cannot merge, it tries again at the next evaluation.
+- `run`: built. Edge-triggered (docs: workflow, "How rules are evaluated"). A landing path outside the queue, so it is decided like a landing: the engine first reads the pull request again (`Refresh`) and merges only on that fresh read (I1), when the rule still matches without an evaluation error (a truncated file list fails closed), the pull request is open, ready, not queued, not held (protections, a waiting `queue` command), and neither the pause, a freeze nor a merge protection holds it (stricter than the docs for the freeze, which they leave to the queue). The merge call names the head of that read (GitHub refuses another head). A merge that fails or is in doubt after a restart is never resent, neither by the adapter nor by the engine: the engine decides again on a new read.
 - `options`: `method` `squash` (default), `merge`; `fast-forward` in the simulated forge only; `rebase`, `commit_message_format`, `commit_message_template`, `merge_bot_account` not built.
 
 ## How to get to it (user POV)

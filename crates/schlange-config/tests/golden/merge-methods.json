@@ -70,31 +70,6 @@
       "pointer": "",
       "message": "default `defaults.queue_rule.queue_branch_prefix` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
-      "feature": "queue-branch-protection"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/defaults/queue_rule/merge_method",
-      "line": 7,
-      "column": 5,
-      "message": "`enum:merge_method:fast-forward` is not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
-      "feature": "queue-merge-methods-other"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/1/merge_method",
-      "line": 13,
-      "column": 5,
-      "message": "`enum:merge_method:merge-batch` is not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
-      "feature": "queue-merge-methods-other"
     }
   ],
   "support": [
@@ -408,11 +383,8 @@
       "id": "default:queue_rules.branch_protection_injection_mode",
       "feature": "queue-branch-protection",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.checks_timeout",
@@ -432,22 +404,16 @@
       "id": "enum:merge_method:fast-forward",
       "feature": "queue-merge-methods-other",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/defaults/queue_rule/merge_method"
     },
     {
       "id": "enum:merge_method:merge-batch",
       "feature": "queue-merge-methods-other",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/1/merge_method"
     },
     {

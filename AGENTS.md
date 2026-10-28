@@ -12,7 +12,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | Path | What |
 |---|---|
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`), typed rule actions with `defaults` (`actions`), `extends` (`extends`) |
-| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), the actions of `pull_request_rules` and the commands that run them as `Decision::Act` (`actions`), templates (`template`) |
+| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), queue controls and P2 gates: pause, freezes, merge protections, priorities, required checks (`gates`), the queue status view (`status`), the actions of `pull_request_rules` and the commands that run them as `Decision::Act` (`actions`), templates (`template`) |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit), configuration validation, doctor checks, permission list |
 | `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
@@ -80,6 +80,8 @@ SCHLANGE_LOCALGIT_PBT_CASES=50 cargo test --release -p schlange-forge --test loc
 cargo run -q -p schlange --features localgit -- sim run --forge localgit scenarios/p1-bisection.yaml
 cargo test -p schlange-github-fake                                      # schlange serve against the fake GitHub over HTTP
 SCHLANGE_GH_PBT_CASES=50 cargo test -p schlange-github-fake --test properties   # long property run on the fake GitHub
+SCHLANGE_GH_ATTACK_CASES=50 cargo test -p schlange-github-fake --test attacker  # an agent with write access as attacker
+cargo test -p schlange-github-fake --test security                      # critic reproductions: edits, forged authors, races, 405/409
 cargo test -p schlange-github-fake --test e2e_commands                  # commands, checkboxes, labels, protections, commit messages
 cargo test -p schlange-core --test commands --test command_parser       # engine-level commands and the fuzzed parser
 cargo test -p schlange-core --test actions                               # rule actions: triggering, idempotence, answers, restarts
@@ -103,8 +105,8 @@ decisions against the fake GitHub), then review the diff.
 | `--webhook-secret-file` | `SCHLANGE_WEBHOOK_SECRET_FILE` or `SCHLANGE_WEBHOOK_SECRET` | – | at least 16 bytes; `--webhook-secret` on the command line works but warns (visible in `ps`) |
 | `--data-dir` | `SCHLANGE_DATA_DIR` | `/data` | `schlange.db` (SQLite, WAL): journal, snapshots, `auto` history, webhook dedup, audit |
 | `--schema` | `SCHLANGE_SCHEMA` | `.research/mergify/schema.json` upwards | `serve` does not start without it: the configuration is validated like `config validate` |
-| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status`; without it `/status` answers 404 |
-| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status` |
+| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status` and the queue API; without it both answer 404 |
+| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |
 | `--insecure-test-api` | `SCHLANGE_INSECURE_TEST_API` | off | allows `http://` API URLs; tests against the fake GitHub only |
 | `--reconcile-every`, `--config`, `--check-name`, `--installation-id` | … | | see `schlange serve --help` |
@@ -121,6 +123,27 @@ Security notes:
   `crates/schlange-github/src/api.rs` for the guards and the trade-off.
 - Tests never use real tokens; the fake GitHub's test key is in
   `crates/schlange-github-fake/fixtures/`.
+- Threat model (Arztagent): an agent with write access may push, comment, label and edit
+  anyone's comments. So an edited comment never runs as a command (only its webhook names the
+  editor, and it counts only as a ticked checkbox by that sender); a commit's author never
+  vouches for anything (any new head cancels a waiting command); a command vouches for the
+  head GitHub's activity log shows before the comment, never one read later; landing is
+  decided by the engine alone (a transient 405/409 goes back to it, never retried in the
+  adapter); a truncated file list fails every `files` condition. Tests:
+  `cargo test -p schlange-github-fake --test security --test attacker`
+  (`SCHLANGE_GH_ATTACK_CASES=50` for a long run). Residuals: `commands.md` (`head-binding`,
+  Gotchas).
+- Rule actions under the same model: the `merge` action (a landing outside the queue) is
+  decided on a fresh read of the pull request (a `Refresh` before the merge, I1), only where its
+  rule matches without an evaluation error (truncated file lists fail closed), nothing holds the
+  pull request and neither the pause, a freeze nor a merge protection holds it, and the merge
+  call names the head of that read; it is never resent, by the adapter or the engine: a failure
+  or a restart makes the engine decide again on a new read. `update`, `rebase` and `squash`
+  (rule or command) are never resent either, and leave queued pull requests and pull requests
+  with a waiting `queue` command alone; a head they push is a new head like any other (it
+  cancels a waiting command). The commands `backport`, `copy`, `rebase`, `squash` and `update`
+  pass `commands_restrictions`, never run from an edited comment, and act only on the head the
+  comment vouched for (a waiting `backport` only if the pull request merged at that head).
 
 Rule actions (`Decision::Act`) are side effects: journaled before they are sent, answered with
 `Event::ActionDone`, idempotent at the forge (comments and reviews carry a marker, copies reuse
@@ -135,7 +158,11 @@ in `.mergify.yml` on the default branch (`config_in_repo: true`); `expect` takes
 `review_requested`, `draft`, `checks: {name: conclusion}`, `reviews: {STATE: count}`, `commits`
 and `up_to_date`; `expect_pull_requests` checks the pull requests copies created; `review: {pr,
 by, state}` reviews; `repo: {branches: [...]}` adds branches; `extends: {name: file}` gives the
-configurations `extends` can name. The simulation's time 0 is 2026-01-01T00:00:00Z.
+configurations `extends` can name. The simulation's time 0 is 2026-01-01T00:00:00Z. Operators pause
+(`pause: <reason>`, `unpause: true`) and freeze (`freeze: {id, reason, start, end, matching,
+exclude}`, `unfreeze: <id>`); `required_checks: [..]` are the checks the base branch's protection
+requires. `schlange queue status|pause --reason …|unpause --url … --repo owner/name` calls the
+queue API of a running `serve` (admin token in `SCHLANGE_ADMIN_TOKEN`).
 
 ## Exit codes of `schlange`
 

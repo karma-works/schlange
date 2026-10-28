@@ -28,7 +28,7 @@ pull request; each of these commits must have a tree that was tested as such (in
 - `tree-equality`: built. Engine: last landed tree = car tree, else halt. Checker (I0): every landed commit's tree equals the tree the queue built for exactly that prefix of the car, and the first commit's parent has the tree the car was built on.
 - `real-git`: built on `localgit` (tests and `sim run --forge localgit`): queue branches are chains of real merge commits, each pull request lands as a real squash commit (`git merge-tree --write-tree` onto the base, `git commit-tree` with one parent), the base moves by `git update-ref` compare-and-swap. Matrix squash × batch 1–5 with every pull request editing the same file on different lines: I0 holds on every commit (`cargo test -p schlange-forge --test localgit matrix_squash_by_batch_size_one_to_five_keeps_i0_on_real_git`).
 - `commit-message`: missing; the simulated squash message is `<title> (#N)`, see `queue-commit-message`.
-- `other methods`: `merge_method` is parsed; any value lands as squash in the simulation. `config validate` flags the other values through `queue-merge-methods-other` (missing).
+- `other methods`: `merge`, `rebase`, `fast-forward`, `merge-batch` are `queue-merge-methods-other` (partial).
 - `unset`: missing (listed as `unsupported`: `default:queue_rules.merge_method`). Without `merge_method`, Mergify uses the first method the repository allows; Schlange squashes regardless, so a configuration that leaves it unset is flagged.
 
 ## How to get to it (user POV)

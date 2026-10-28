@@ -108,11 +108,30 @@ pub struct IssueComment {
     pub user: User,
     #[serde(default)]
     pub body: String,
+    /// Equal to `updated_at` until someone edits the comment. The REST API does not say who
+    /// edited it: anyone with write access may edit anyone's comment.
+    #[serde(default)]
+    pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
     /// `…/issues/<n>`.
     #[serde(default)]
     pub issue_url: String,
+}
+
+/// One entry of the repository's activity log (`GET /repos/{o}/{r}/activity`): GitHub's own
+/// record of a branch moving, with its time and actor. Unlike commit metadata, the pusher
+/// cannot write it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Activity {
+    #[serde(default)]
+    pub before: String,
+    #[serde(default)]
+    pub after: String,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(default)]
+    pub activity_type: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -165,6 +184,9 @@ pub struct Pull {
     pub requested_teams: Vec<TeamRef>,
     #[serde(default)]
     pub merged_by: Option<User>,
+    /// How many files the pull request changes; `GET /pulls/{n}/files` lists at most 3000.
+    #[serde(default)]
+    pub changed_files: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -325,6 +347,27 @@ pub struct BranchRule {
     pub kind: String,
     #[serde(default)]
     pub ruleset_id: Option<u64>,
+    /// The rule's parameters (`required_status_checks` lists the required contexts).
+    #[serde(default)]
+    pub parameters: Option<Value>,
+}
+
+impl BranchRule {
+    /// The check contexts a `required_status_checks` rule requires.
+    pub fn required_checks(&self) -> Vec<String> {
+        if self.kind != "required_status_checks" {
+            return vec![];
+        }
+        self.parameters
+            .as_ref()
+            .and_then(|p| p["required_status_checks"].as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|c| c["context"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -454,14 +497,21 @@ impl RepoApi {
         )
     }
 
-    pub fn pull_files(&self, n: u64, prio: Priority) -> Result<Vec<String>, Error> {
+    /// The paths a pull request changes, and how many entries GitHub listed (a rename is one
+    /// entry with two paths). GitHub lists at most 3000 entries; the caller compares the count
+    /// with the pull request's `changed_files`.
+    pub fn pull_files(&self, n: u64, prio: Priority) -> Result<(Vec<String>, u64), Error> {
         let files: Vec<PullFile> = self.list(&format!("/pulls/{n}/files"), prio, None)?;
+        let listed = files.len() as u64;
         // A renamed file counts at both of its paths (docs: conditions, renamed files), so a
         // `git mv` out of a guarded path cannot pass a `files` gate.
-        Ok(files
-            .into_iter()
-            .flat_map(|f| f.previous_filename.into_iter().chain([f.filename]))
-            .collect())
+        Ok((
+            files
+                .into_iter()
+                .flat_map(|f| f.previous_filename.into_iter().chain([f.filename]))
+                .collect(),
+            listed,
+        ))
     }
 
     pub fn pull_commits(&self, n: u64, prio: Priority) -> Result<Vec<RepoCommit>, Error> {
@@ -477,10 +527,14 @@ impl RepoApi {
         self.list(&format!("/issues/{n}/comments"), prio, None)
     }
 
-    /// The 100 most recently updated comments of the repository (one page, for reconciliation).
-    pub fn recent_comments(&self, prio: Priority) -> Result<Vec<IssueComment>, Error> {
+    /// The 100 newest moves of a branch of this repository, newest first.
+    pub fn branch_activity(&self, branch: &str, prio: Priority) -> Result<Vec<Activity>, Error> {
+        let r = format!("refs/heads/{branch}");
         self.get(
-            "/issues/comments?sort=updated&direction=desc&per_page=100",
+            &format!(
+                "/activity?ref={}&direction=desc&per_page=100",
+                enc_query(&r)
+            ),
             prio,
         )
     }
@@ -741,7 +795,20 @@ impl RepoApi {
         message: Option<&str>,
         prio: Priority,
     ) -> Result<PullMergeOutcome, Error> {
-        let mut body = json!({ "merge_method": "squash", "sha": sha });
+        self.merge_pull(n, sha, "squash", title, message, prio)
+    }
+
+    /// `PUT /pulls/{n}/merge` with a merge method (`squash`, `merge`, `rebase`) at head `sha`.
+    pub fn merge_pull(
+        &self,
+        n: u64,
+        sha: &str,
+        method: &str,
+        title: Option<&str>,
+        message: Option<&str>,
+        prio: Priority,
+    ) -> Result<PullMergeOutcome, Error> {
+        let mut body = json!({ "merge_method": method, "sha": sha });
         if let Some(t) = title {
             body["commit_title"] = json!(t);
         }
@@ -947,30 +1014,6 @@ impl RepoApi {
             Some(&json!({ "sha": sha, "force": true })),
         )
         .map(|_| ())
-    }
-
-    /// Merges pull request `n` with `method` only if its head is still `sha`.
-    pub fn merge_pull(
-        &self,
-        n: u64,
-        sha: &str,
-        method: &str,
-        prio: Priority,
-    ) -> Result<PullMergeOutcome, Error> {
-        let body = json!({ "merge_method": method, "sha": sha });
-        match self.send("PUT", &format!("/pulls/{n}/merge"), prio, Some(&body)) {
-            Ok(r) => {
-                let m: ShaOnly = r.json("merge")?;
-                Ok(PullMergeOutcome::Merged { sha: m.sha })
-            }
-            Err(Error::Status { status: 409, .. }) => Ok(PullMergeOutcome::HeadMoved),
-            Err(Error::Status {
-                status: 405,
-                message,
-                ..
-            }) => Ok(PullMergeOutcome::NotMergeable(message)),
-            Err(e) => Err(e),
-        }
     }
 
     /// Starts a workflow (`workflow_dispatch`).

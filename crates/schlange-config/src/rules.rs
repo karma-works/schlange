@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::conditions::{self, Condition, ParseError};
+pub use crate::queue_extras::{
+    InjectionMode, MergeMethod, MergeProtection, PriorityRule, Scopes, UpdateMethod,
+};
 
 /// `batch_size`: a fixed size or a `{min, max}` range. Default 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +63,10 @@ pub struct QueueRule {
     /// The deprecated Jinja2 `commit_message_template`. Schlange does not render it (the
     /// support matrix reports it as unsupported); it is kept so a host can see it is set.
     pub commit_message_template: Option<String>,
+    /// `update_method`; `None` when unset (then `merge`, or `rebase` for `fast-forward`).
+    pub update_method: Option<UpdateMethod>,
+    /// `branch_protection_injection_mode` (default `queue`).
+    pub injection_mode: InjectionMode,
 }
 
 /// `commit_message_format.title`.
@@ -122,7 +129,23 @@ impl QueueRule {
             max_checks_retries: 0,
             commit_message_format: None,
             commit_message_template: None,
+            update_method: None,
+            injection_mode: InjectionMode::Queue,
         }
+    }
+
+    /// The merge method Schlange lands with: the configured one; unset is `squash`.
+    pub fn method(&self) -> MergeMethod {
+        self.merge_method
+            .as_deref()
+            .and_then(MergeMethod::parse)
+            .unwrap_or_default()
+    }
+
+    /// The update method: the configured one, else the documented default for the method.
+    pub fn update(&self) -> UpdateMethod {
+        self.update_method
+            .unwrap_or_else(|| self.method().default_update())
     }
 
     /// Two-step CI: `merge_conditions` set and different from `queue_conditions`.
@@ -245,6 +268,10 @@ pub struct Rules {
     pub queue_rules: Vec<QueueRule>,
     pub pull_request_rules: Vec<PullRequestRule>,
     pub commands_restrictions: CommandsRestrictions,
+    pub priority_rules: Vec<PriorityRule>,
+    pub merge_protections: Vec<MergeProtection>,
+    /// `scopes`; `None` when no source is set.
+    pub scopes: Option<Scopes>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -422,6 +449,9 @@ impl Rules {
                 actions,
             });
         }
+        rules.priority_rules = crate::queue_extras::priority_rules(value, &mut errors)?;
+        rules.merge_protections = crate::queue_extras::merge_protections(value, &mut errors)?;
+        rules.scopes = crate::queue_extras::scopes(value)?;
         if errors.is_empty() {
             Ok(rules)
         } else {
@@ -463,6 +493,35 @@ fn duration(v: &Value, pointer: &str) -> Result<u64, RulesError> {
 fn queue_options(q: &Value, p: &str, rule: &mut QueueRule) -> Result<(), RulesError> {
     if let Some(m) = q.get("merge_method").and_then(Value::as_str) {
         rule.merge_method = Some(m.to_string());
+    }
+    // The deprecated spelling of `merge_method: fast-forward` wins over `merge_method` (schema).
+    if q.get("queue_branch_merge_method").and_then(Value::as_str) == Some("fast-forward") {
+        rule.merge_method = Some("fast-forward".into());
+    }
+    match q.get("update_method").and_then(Value::as_str) {
+        None => {}
+        Some("merge") => rule.update_method = Some(UpdateMethod::Merge),
+        Some("rebase") => rule.update_method = Some(UpdateMethod::Rebase),
+        Some(_) => {
+            return Err(shape(
+                &format!("{p}/update_method"),
+                "must be merge or rebase",
+            ));
+        }
+    }
+    match q
+        .get("branch_protection_injection_mode")
+        .and_then(Value::as_str)
+    {
+        None | Some("queue") => {}
+        Some("merge") => rule.injection_mode = InjectionMode::Merge,
+        Some("none") => rule.injection_mode = InjectionMode::None,
+        Some(_) => {
+            return Err(shape(
+                &format!("{p}/branch_protection_injection_mode"),
+                "must be queue, merge or none",
+            ));
+        }
     }
     match q.get("batch_size") {
         None | Some(Value::Null) => {}

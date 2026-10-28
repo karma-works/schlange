@@ -21,13 +21,6 @@
       "column": 5,
       "message": "`config:queue_rules.merge_bot_account` is not supported by Schlange yet (feature queue-bot-accounts, P1, partial: not built in this partial feature (`config:queue_rules.merge_bot_account`))",
       "feature": "queue-bot-accounts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
-      "feature": "queue-branch-protection"
     }
   ],
   "support": [
@@ -45,7 +38,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/pull_request_rules/0/conditions"
+      "pointer": "/pull_request_rules/0/conditions/0"
     },
     {
       "id": "attr:check-success",
@@ -53,7 +46,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/0"
     },
     {
       "id": "attr:depends-on",
@@ -61,7 +54,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/2"
     },
     {
       "id": "attr:from-fork",
@@ -69,7 +62,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/rebase/conditions"
+      "pointer": "/commands_restrictions/rebase/conditions/0/or/1/and/1"
     },
     {
       "id": "attr:label",
@@ -77,7 +70,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/0"
     },
     {
       "id": "attr:mergify-configuration-changed",
@@ -85,7 +78,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/1"
     },
     {
       "id": "attr:queue-dequeue-reason",
@@ -93,7 +86,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/1"
     },
     {
       "id": "attr:queue-position",
@@ -101,7 +94,7 @@
       "priority": "P2",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/merge_conditions"
+      "pointer": "/queue_rules/0/merge_conditions/1"
     },
     {
       "id": "attr:queued-at",
@@ -109,7 +102,7 @@
       "priority": "P2",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/merge_conditions"
+      "pointer": "/queue_rules/0/merge_conditions/2"
     },
     {
       "id": "attr:sender",
@@ -117,7 +110,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/rebase/conditions"
+      "pointer": "/commands_restrictions/rebase/conditions/0/or/1/and/0"
     },
     {
       "id": "attr:sender-permission",
@@ -125,7 +118,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/queue/conditions"
+      "pointer": "/commands_restrictions/queue/conditions/0"
     },
     {
       "id": "config:commands_restrictions",
@@ -446,11 +439,8 @@
       "id": "default:queue_rules.branch_protection_injection_mode",
       "feature": "queue-branch-protection",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.checks_timeout",

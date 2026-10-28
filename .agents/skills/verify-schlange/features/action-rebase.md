@@ -26,7 +26,7 @@ Rebases the pull request onto its base. Arztagent does not use the action.
 
 ## Sub-features
 
-- `run`: built in the simulated forge. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open, not queued pull request that is behind its base and not from a fork.
+- `run`: built in the simulated forge. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Only for an open pull request that is not queued and has no waiting `queue` command that is behind its base and not from a fork.
 - `github`: not built: without a git CLI the API cannot replay commits; the adapter refuses with a hint to use `update`.
 - `command`: `@mergifyio rebase` built (answers when up to date, a fork, closed or queued).
 
@@ -47,3 +47,4 @@ Preconditions:
 
 - `bot_account` is accepted and ignored: Schlange acts as its app (impersonating users needs their tokens); the support matrix flags it.
 - The non-linear-history trigger (merge commits in the pull request) is not built; only "behind the base" triggers a rebase.
+- Never resent after a failure or a restart; the engine decides again on the next read. The new head is a new head like any other: it cancels a waiting `queue` command.

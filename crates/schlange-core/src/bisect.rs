@@ -1,13 +1,14 @@
-//! Splitting a red batch to find the pull request that broke it (docs: merge-queue/batches,
-//! "Handling Batch Failure or Timeout"), in our own words:
+//! Finding the pull request that turned a batch red (behaviour as documented under
+//! merge-queue/batches, "Handling Batch Failure or Timeout"; the description is ours):
 //!
-//! - Of a failed batch of n pull requests, the first n − 1 are cut into parts: as many as
-//!   `max_parallel_checks` (at least 2), each of `ceil((n − 1) / parts)` pull requests.
-//! - Test i holds parts 1..i on the base. The last pull request is not tested again.
-//! - All tests green: the last pull request is the culprit; the others land.
-//! - Test f is the first red one: parts before f land, parts after f and the last pull request
-//!   go back to the queue, part f is split again (next round). A red part of one pull request
-//!   is the culprit.
+//! - The red batch has n pull requests. The newest one is set aside: it was already tested,
+//!   as part of the whole batch. The n − 1 before it are grouped in order into `parts` groups
+//!   (`parts` = `max_parallel_checks`, never less than 2) of `ceil((n − 1) / parts)` each.
+//! - Test cars grow by one group each: car i has groups 1 to i on top of the base.
+//! - Every test car green: the set-aside pull request is to blame; all others land.
+//! - Otherwise the earliest red car f decides: groups before f land, the groups after it and
+//!   the set-aside pull request queue again, and group f is split the same way in the next
+//!   round. A red group of a single pull request names the culprit.
 //! - `batch_max_failure_resolution_attempts` limits the rounds. A red part of several pull
 //!   requests in the last round leaves the queue as a whole. With one parallel check, the last
 //!   round tests only the first part; the pull requests after it are dropped untested.
@@ -233,6 +234,7 @@ pub(crate) fn fill(
         base_sha: base_sha.to_string(),
         prs: prs.clone(),
         own: own.clone(),
+        stack_on: None,
     });
     state.trains.get_mut(base).expect("train").cars.push(Car {
         id,
@@ -252,6 +254,10 @@ pub(crate) fn fill(
         measured: false,
         drifted: false,
         replaces: None,
+        deps: vec![],
+        stacked_on: None,
+        scopes: vec![],
+        barrier: false,
     });
 }
 
@@ -576,7 +582,7 @@ mod tests {
 
     #[test]
     fn splits_as_documented() {
-        // 13 with 3 checks: 12 cut into 3 parts of 4.
+        // 13 with 3 checks: 12 in 3 groups of 4.
         let b: Vec<u64> = (1..=12).collect();
         assert_eq!(
             split(&b, 3),

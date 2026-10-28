@@ -325,7 +325,10 @@ fn queue_operations_on_the_fake() {
             .unwrap(),
         "none"
     );
-    assert_eq!(a.pull_files(p2, Priority::Normal).unwrap(), vec!["a.txt"]);
+    assert_eq!(
+        a.pull_files(p2, Priority::Normal).unwrap(),
+        (vec!["a.txt".to_string()], 1)
+    );
     let main_now = a.branch_sha("main", Priority::Normal).unwrap();
     assert_eq!(
         a.compare(&main_now, &h2, Priority::Normal)
@@ -513,7 +516,8 @@ fn a_renamed_constitution_file_still_trips_arztagents_files_gate() {
         &[],
     );
     gh.move_in_pr(n, ".github/workflows/ci.yml", "docs/ci.yml");
-    let files = a.pull_files(n, Priority::Normal).unwrap();
+    let (files, listed) = a.pull_files(n, Priority::Normal).unwrap();
+    assert_eq!(listed, 2, "a rename is one entry");
     for path in [".github/workflows/ci.yml", "docs/ci.yml", "b.txt"] {
         assert!(files.iter().any(|f| f == path), "{path} missing: {files:?}");
     }

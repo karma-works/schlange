@@ -105,37 +105,45 @@ fn strict_exits_2_only_for_real_gaps() {
     let features = FeatureMap::embedded().unwrap();
     let strict = |src: &str| validate("t.yml", src, &schema, &features, true);
     assert_eq!(strict("{}\n").exit_code, exit::VALID);
-    let off = strict("merge_queue:\n  skip_intermediate_results: false\n");
+    let off = strict(
+        "queue_rules:\n  - name: default\n    merge_method: squash\n    update_method: null\n",
+    );
     assert_eq!(off.exit_code, exit::VALID, "{}", off.to_text());
-    let on = strict("merge_queue:\n  skip_intermediate_results: true\n");
+    let on = strict(
+        "queue_rules:\n  - name: default\n    merge_method: squash\n    update_method: rebase\n",
+    );
     assert_eq!(on.exit_code, exit::UNSUPPORTED, "{}", on.to_text());
     let plain = strict(
         "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n\
          pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
     );
     // Off-valued defaults (`update_method: null`, `queue_branch_merge_method: null`) are not
-    // uses. The one gap left is real: Mergify's default `branch_protection_injection_mode:
-    // queue` adds the checks branch protection requires to the queue conditions; Schlange
-    // does not read branch protection yet.
+    // uses, and Mergify's default `branch_protection_injection_mode: queue` is built (the
+    // checks rulesets require join the queue conditions): a plain queue configuration has no
+    // gap.
     let gaps: Vec<&str> = plain
         .support
         .iter()
         .filter(|r| !r.supported)
         .map(|r| r.id.as_str())
         .collect();
-    assert_eq!(
-        gaps,
-        vec!["default:queue_rules.branch_protection_injection_mode"],
-        "{}",
-        plain.to_text()
-    );
+    assert!(gaps.is_empty(), "{}", plain.to_text());
+    assert_eq!(plain.exit_code, exit::VALID, "{}", plain.to_text());
     let none = strict(
         "queue_rules:\n  - name: default\n    branch_protection_injection_mode: none\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n",
     );
-    assert_eq!(
-        none.exit_code,
-        exit::UNSUPPORTED,
-        "`none` is the missing feature's own value: {}",
-        none.to_text()
-    );
+    assert_eq!(none.exit_code, exit::VALID, "{}", none.to_text());
+}
+
+/// Critic e8a0022 M3: an unsupported attribute is reported at its condition's own line (also
+/// inside `or`), not at the line of the list's key.
+#[test]
+fn unsupported_attributes_point_at_their_condition() {
+    let schema = schema();
+    let features = FeatureMap::embedded().unwrap();
+    let src = "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n      - schedule = Mon-Fri 09:00-17:00\n      - or:\n          - check-success = a\n          - \"#approved-reviews-by >= 1\"\n";
+    let report = validate("t.yml", src, &schema, &features, true);
+    let text = report.to_text();
+    assert!(text.contains("attr:schedule (6:9)"), "{text}");
+    assert!(text.contains("attr:approved-reviews-by (9:13)"), "{text}");
 }

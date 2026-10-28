@@ -1,0 +1,5 @@
+queue_rules:
+  - name: a
+    merge_conditions:
+      - label = yes
+    queue_conditions: on

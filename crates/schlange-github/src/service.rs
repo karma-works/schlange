@@ -33,6 +33,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use schlange_config::rules::Rules;
+use schlange_core::engine::{Control, Freeze};
 use schlange_core::journal::{Journal, is_side_effect};
 use schlange_core::model::Time;
 use schlange_core::{Decision, Event, State, step};
@@ -106,6 +107,9 @@ pub enum Msg {
     /// A full reconciliation now.
     Reconcile,
     Shutdown,
+    /// An operator's queue control from the admin API (pause, freeze); the worker answers
+    /// once the engine applied it (and the state was journaled).
+    Control(Control, Sender<Result<serde_json::Value, String>>),
 }
 
 /// What `/status` shows of a worker.
@@ -132,6 +136,8 @@ pub struct WorkerStatus {
     pub log_tail: Vec<String>,
     /// The engine state (outcomes cut to the newest [`STATUS_OUTCOMES`]).
     pub state: serde_json::Value,
+    /// The queue in the shape of the merge queue status API (`schlange_core::status`).
+    pub queue: serde_json::Value,
 }
 
 struct Shared {
@@ -438,8 +444,168 @@ impl Service {
     }
 }
 
+/// Whether the request carries the admin token (constant-time comparison).
+fn authorized(req: &Request, token: &str) -> bool {
+    let given = req
+        .header("authorization")
+        .and_then(|a| a.strip_prefix("Bearer "))
+        .unwrap_or("");
+    ct_eq(given.as_bytes(), token.as_bytes())
+}
+
+/// Unix seconds of an API timestamp; `timezone` must be UTC (the only zone Schlange reads).
+fn api_time(v: &serde_json::Value, timezone: &str) -> Result<Option<i64>, String> {
+    match v {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(s) => {
+            if !matches!(timezone, "UTC" | "Etc/UTC" | "GMT" | "Z" | "") {
+                return Err(format!(
+                    "time zone `{timezone}` is not supported; use UTC or an offset in the timestamp"
+                ));
+            }
+            schlange_core::time::parse_timestamp(s)
+                .map(Some)
+                .map_err(|e| format!("`{s}` is not a timestamp ({e:?})"))
+        }
+        _ => Err("a timestamp must be a string".into()),
+    }
+}
+
+/// The documented queue API under `/repos/{owner}/{repository}/…`, behind the admin token:
+/// `GET merge-queue/status`, `GET|PUT|DELETE merge-queue/pause` (also `queue/pause`), and
+/// `GET|POST scheduled_freeze`, `DELETE scheduled_freeze/{id}`. Shapes follow the public API
+/// reference; texts are ours.
+fn repo_api(req: &Request, router: &Router, shared: &Shared, path: &str) -> Response {
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    let ["repos", owner, name, rest @ ..] = &parts[..] else {
+        return Response::text(404, "not found");
+    };
+    let repo = format!("{owner}/{name}");
+    let Some(sink) = router.sinks.get(&repo) else {
+        return Response::text(404, "repository not served");
+    };
+    let status = shared.statuses.lock().expect("status").get(&repo).cloned();
+    let body: serde_json::Value = if req.body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        match serde_json::from_slice(&req.body) {
+            Ok(v) => v,
+            Err(e) => return Response::text(400, format!("body is not JSON: {e}")),
+        }
+    };
+    let control = |c: Control| -> Response {
+        let (tx, rx) = channel();
+        shared.inflight.fetch_add(1, Ordering::SeqCst);
+        if sink.send(Msg::Control(c, tx)).is_err() {
+            shared.inflight.fetch_sub(1, Ordering::SeqCst);
+            return Response::text(503, "worker stopped");
+        }
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(v)) => Response::json(200, v.to_string()),
+            Ok(Err(e)) => Response::text(422, e),
+            Err(_) => Response::text(503, "the worker did not answer in time"),
+        }
+    };
+    let queue = status.map(|s| s.queue).unwrap_or(serde_json::Value::Null);
+    match (req.method.as_str(), rest) {
+        ("GET", ["merge-queue", "status"]) => Response::json(200, queue.to_string()),
+        ("GET", ["merge-queue" | "queue", "pause"]) => {
+            let p = &queue["pause"];
+            if p.is_null() {
+                Response::json(200, serde_json::json!({ "paused": false }).to_string())
+            } else {
+                Response::json(200, p.to_string())
+            }
+        }
+        ("PUT", ["merge-queue" | "queue", "pause"]) => {
+            let Some(reason) = body["reason"].as_str().filter(|r| !r.is_empty()) else {
+                return Response::text(422, "a pause needs a `reason`");
+            };
+            if reason.chars().count() > 255 {
+                return Response::text(422, "the reason is longer than 255 characters");
+            }
+            control(Control::Pause {
+                reason: reason.to_string(),
+                by: Some("admin API".into()),
+            })
+        }
+        ("DELETE", ["merge-queue" | "queue", "pause"]) | ("POST", ["queue", "pause", "delete"]) => {
+            control(Control::Unpause)
+        }
+        ("GET", ["scheduled_freeze"]) => Response::json(
+            200,
+            serde_json::json!({ "scheduled_freezes": queue["freezes"] }).to_string(),
+        ),
+        ("POST", ["scheduled_freeze"]) => {
+            let tz = body["timezone"].as_str().unwrap_or("UTC");
+            let Some(reason) = body["reason"].as_str().filter(|r| !r.is_empty()) else {
+                return Response::text(422, "a freeze needs a `reason`");
+            };
+            let start = match api_time(&body["start"], tz) {
+                Ok(s) => s,
+                Err(e) => return Response::text(422, e),
+            };
+            let end = match api_time(&body["end"], tz) {
+                Ok(e) => e,
+                Err(e) => return Response::text(422, e),
+            };
+            let list = |key: &str| -> Result<Vec<String>, String> {
+                match &body[key] {
+                    serde_json::Value::Null => Ok(vec![]),
+                    serde_json::Value::Array(items) => items
+                        .iter()
+                        .map(|c| {
+                            c.as_str().map(str::to_string).ok_or_else(|| {
+                                format!("`{key}` must be a list of condition strings")
+                            })
+                        })
+                        .collect(),
+                    _ => Err(format!("`{key}` must be a list")),
+                }
+            };
+            let (matching, exclude) =
+                match (list("matching_conditions"), list("exclude_conditions")) {
+                    (Ok(m), Ok(x)) => (m, x),
+                    (Err(e), _) | (_, Err(e)) => return Response::text(422, e),
+                };
+            for c in matching.iter().chain(&exclude) {
+                if let Err(e) = schlange_config::conditions::parse_atom(c) {
+                    return Response::text(422, format!("condition `{c}`: {e}"));
+                }
+            }
+            control(Control::Freeze {
+                freeze: Freeze {
+                    id: 0,
+                    reason: reason.to_string(),
+                    // 0: now (the worker reads its clock).
+                    start: start.unwrap_or(0).max(0) as Time,
+                    end: end.map(|e| e as Time),
+                    matching,
+                    exclude,
+                },
+            })
+        }
+        ("DELETE", ["scheduled_freeze", id]) | ("POST", ["scheduled_freeze", id, "delete"]) => {
+            match id.parse::<u64>() {
+                Ok(id) => control(Control::Unfreeze { id }),
+                Err(_) => Response::text(404, "no such freeze"),
+            }
+        }
+        _ => Response::text(404, "not found"),
+    }
+}
+
 fn route(req: &Request, router: &Router, shared: &Shared, admin: Option<&str>) -> Response {
     let path = req.url.split('?').next().unwrap_or("");
+    if path.starts_with("/repos/") {
+        let Some(token) = admin else {
+            return Response::text(404, "the queue API is off (no admin token configured)");
+        };
+        if !authorized(req, token) {
+            return Response::text(401, "needs Authorization: Bearer <admin token>");
+        }
+        return repo_api(req, router, shared, path);
+    }
     match (req.method.as_str(), path) {
         ("POST", "/webhook") | ("POST", "/") => {
             let get = |name: &str| req.header(name).map(str::to_string);
@@ -505,8 +671,10 @@ struct Worker {
     recovered: Option<Vec<String>>,
     crash: Option<CrashPoint>,
     dead: bool,
-    /// Comments whose sender's permission could not be read yet (retried each round).
-    comments_waiting: Vec<CommentHint>,
+    /// Comments whose sender's permission could not be read yet (retried each round), each
+    /// with the head the engine knew for its pull request when the delivery arrived (before
+    /// the read it triggers).
+    comments_waiting: Vec<(CommentHint, Option<String>)>,
 }
 
 impl Worker {
@@ -571,6 +739,11 @@ impl Worker {
                     handled += 1;
                 }
                 Msg::Shutdown => stop = true,
+                Msg::Control(c, reply) => {
+                    let r = this.control(c);
+                    let _ = reply.send(r);
+                    handled += 1;
+                }
             };
             match self.rx.recv_timeout(self.poll) {
                 Ok(m) => {
@@ -589,6 +762,22 @@ impl Worker {
             if hints.contains(&Hint::Full) || now >= self.next_reconcile {
                 reconcile = true;
             }
+            // The head each commented pull request had in the engine's view before anything
+            // is read: a command vouches at most for that one (a push that lands between the
+            // comment and the read must not be attributed to the commenter).
+            let arrived: Vec<(CommentHint, Option<String>)> = hints
+                .iter()
+                .filter_map(|h| match h {
+                    Hint::Comment(c) => Some((
+                        (**c).clone(),
+                        self.state
+                            .pull_requests
+                            .get(&c.number)
+                            .map(|p| p.head_sha.clone()),
+                    )),
+                    _ => None,
+                })
+                .collect();
             if reconcile {
                 self.reconcile();
             }
@@ -604,11 +793,7 @@ impl Worker {
                     }
                     self.read_hints(&hints);
                 }
-                for h in &hints {
-                    if let Hint::Comment(c) = h {
-                        self.comments_waiting.push((**c).clone());
-                    }
-                }
+                self.comments_waiting.extend(arrived);
             }
             self.deliver_comments();
             let due: Vec<Time> = self.timers.iter().copied().filter(|t| *t <= now).collect();
@@ -729,6 +914,14 @@ impl Worker {
     }
 
     fn reconcile(&mut self) {
+        // The heads before this round's reads: a command recovered below vouches at most for
+        // these.
+        let heads_before: BTreeMap<u64, String> = self
+            .state
+            .pull_requests
+            .iter()
+            .map(|(n, p)| (*n, p.head_sha.clone()))
+            .collect();
         let now = self.clock.now();
         self.next_reconcile = now + self.every;
         self.load_config();
@@ -745,11 +938,15 @@ impl Worker {
                 if self.dead {
                     return;
                 }
+                self.required_checks();
+                if self.dead {
+                    return;
+                }
                 self.forge.sweep(&sweep, &self.state);
                 self.forge.hurry_pending();
                 self.last_reconcile = Some(now);
                 self.reconciliations += 1;
-                match self.forge.unhandled_commands(&self.state) {
+                match self.forge.unhandled_commands(&self.state, &heads_before) {
                     Ok(comments) if !comments.is_empty() => {
                         self.feed(Event::Comments { comments });
                     }
@@ -811,9 +1008,9 @@ impl Worker {
         }
         let mut ready = Vec::new();
         let mut later = Vec::new();
-        for c in std::mem::take(&mut self.comments_waiting) {
+        for (c, head_before) in std::mem::take(&mut self.comments_waiting) {
             if !self.state.pull_requests.contains_key(&c.number) {
-                later.push(c);
+                later.push((c, head_before));
                 continue;
             }
             let by_queue = c.author == self.forge.opts.bot_login;
@@ -831,10 +1028,32 @@ impl Worker {
                             "permission of {} not read (comment {} waits): {e}",
                             c.sender, c.id
                         ));
-                        later.push(c);
+                        later.push((c, head_before));
                         continue;
                     }
                 }
+            };
+            // The head the command vouches for: the one GitHub's activity log shows at the
+            // moment of the comment (or of the tick), else the one known before it arrived.
+            let vouches = by_queue && c.sender != c.author
+                || (!by_queue && !c.edited && is_queue_command(&c.body));
+            let head_sha = if vouches {
+                match self.forge.vouched_head(
+                    &self.state,
+                    c.number,
+                    &c.version,
+                    head_before.clone(),
+                ) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        self.forge
+                            .note(format!("head at comment {} not read (it waits): {e}", c.id));
+                        later.push((c, head_before));
+                        continue;
+                    }
+                }
+            } else {
+                self.forge.head_of(c.number)
             };
             ready.push(schlange_core::model::Comment {
                 id: c.id,
@@ -846,7 +1065,7 @@ impl Worker {
                 version: c.version.clone(),
                 sender_permission: permission,
                 by_queue,
-                head_sha: self.forge.head_of(c.number),
+                head_sha,
             });
         }
         // A comment waits a bounded number of rounds for its pull request.
@@ -919,6 +1138,93 @@ impl Worker {
         }
     }
 
+    /// Reads the checks the rulesets require on the default branch and on every base with a
+    /// queue (`branch_protection_injection_mode`), and tells the engine when they changed. The
+    /// queue's own check is never taken over (it must not gate itself, W-05). A read that fails
+    /// changes nothing.
+    fn required_checks(&mut self) {
+        let mut bases: BTreeSet<String> = self.state.trains.keys().cloned().collect();
+        if let Ok(d) = self.forge.default_branch(Priority::Normal) {
+            bases.insert(d);
+        }
+        for base in bases {
+            match self.forge.api.branch_rules(&base, Priority::Normal) {
+                Ok(rules) => {
+                    let mut checks: Vec<String> = rules
+                        .iter()
+                        .flat_map(|r| r.required_checks())
+                        .filter(|c| *c != self.forge.opts.check_name)
+                        .collect();
+                    checks.sort();
+                    checks.dedup();
+                    let known = self
+                        .state
+                        .required_checks
+                        .get(&base)
+                        .cloned()
+                        .unwrap_or_default();
+                    if checks != known {
+                        self.forge.note(format!(
+                            "required checks on {base}: {}",
+                            if checks.is_empty() {
+                                "none".into()
+                            } else {
+                                checks.join(", ")
+                            }
+                        ));
+                        self.feed(Event::RequiredChecks { base, checks });
+                    }
+                }
+                Err(e) => self.forge.note(format!(
+                    "required checks of {base} not read (provisional): {e}"
+                )),
+            }
+        }
+    }
+
+    /// Applies an operator's control through the engine; answers with the resulting object.
+    fn control(&mut self, mut c: Control) -> Result<serde_json::Value, String> {
+        if self.rules.is_none() {
+            return Err("no valid configuration yet; the queue does not run".into());
+        }
+        match &mut c {
+            Control::Freeze { freeze } => {
+                let now = self.clock.now();
+                if freeze.start == 0 {
+                    freeze.start = now;
+                }
+                if freeze.end.is_some_and(|e| e <= now || e <= freeze.start) {
+                    return Err("the freeze ends in the past or before it starts".into());
+                }
+                freeze.id = self.state.freezes.keys().max().copied().unwrap_or(0) + 1;
+            }
+            Control::Unfreeze { id } if !self.state.freezes.contains_key(id) => {
+                return Err(format!("no freeze {id}"));
+            }
+            _ => {}
+        }
+        self.feed(Event::Control { control: c.clone() });
+        if self.dead {
+            return Err("the worker stopped".into());
+        }
+        self.publish();
+        let rules = self.rules.clone().unwrap_or_default();
+        let st = schlange_core::status::queue_status(&self.state, &rules);
+        Ok(match c {
+            Control::Pause { .. } | Control::Unpause => match st.pause {
+                Some(p) => serde_json::to_value(p).unwrap_or_default(),
+                None => serde_json::json!({ "paused": false }),
+            },
+            Control::Freeze { freeze } => st
+                .freezes
+                .iter()
+                .find(|f| f.id == freeze.id)
+                .and_then(|f| serde_json::to_value(f).ok())
+                .unwrap_or_default(),
+            Control::Unfreeze { id } => serde_json::json!({ "deleted": id }),
+        })
+    }
+
     fn publish(&self) {
         let mut state = serde_json::to_value(&self.state).unwrap_or_default();
         if let Some(o) = state.get_mut("outcomes").and_then(|o| o.as_object_mut()) {
@@ -965,6 +1271,14 @@ impl Worker {
                 .cloned()
                 .collect(),
             state,
+            queue: self
+                .rules
+                .as_ref()
+                .map(|r| {
+                    serde_json::to_value(schlange_core::status::queue_status(&self.state, r))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default(),
         };
         self.shared
             .statuses
@@ -976,6 +1290,19 @@ impl Worker {
 
 fn describe(d: &Decision) -> String {
     serde_json::to_string(d).unwrap_or_else(|_| format!("{d:?}"))
+}
+
+/// Whether a comment is a `queue` command (or its alias `requeue`): the commands that vouch
+/// for the commits of a pull request.
+fn is_queue_command(body: &str) -> bool {
+    use schlange_core::commands::{Name, Parsed, parse};
+    matches!(
+        parse(body),
+        Parsed::Command {
+            name: Name::Queue | Name::Requeue,
+            ..
+        }
+    )
 }
 
 #[cfg(test)]
