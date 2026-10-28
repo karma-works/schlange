@@ -17,6 +17,7 @@ Scenario format (JSON), steps in order:
    "ki_review": "gruen"|"rot", "as": "driver"|"human", "conflict": true, "title": "..."}
   {"prepare": "a", "conflict": true}                     create branch and commit without opening a PR
   {"open": "a", "prepared": true}                       open that exact prepared branch
+  {"assert_prepared_base": "a"}                         confirm old head and moved base
   {"push": "a", "flags": [...], "files": {...}}        new commit on the PR branch
   {"comment": "a", "text": "@mergifyio queue", "as": "human"}
   {"label": "a", "add": "halt"} / {"label": "a", "remove": "halt"}
@@ -356,6 +357,20 @@ class Run:
         self.prs[key] = {"number": pr["number"], "branch": branch, "commits": 1, "node_id": pr["node_id"]}
         log(f"PR {key} = #{pr['number']} ({s.get('as', 'driver')})")
 
+    def step_assert_prepared_base(self, s):
+        key = s["assert_prepared_base"]
+        prepared = next((c for c in reversed(self.checkpoints) if c.get("kind") == "prepared"
+                         and c.get("pr") == key), None)
+        moved = next((c for c in reversed(self.checkpoints) if c.get("kind") == "base_push_completed"), None)
+        pr = self.actors["human"].call("GET", f"{self.r}/pulls/{self.prs[key]['number']}")
+        if not prepared or not moved or not prepared.get("head_sha") or not prepared.get("base_sha") \
+           or not moved.get("sha") or prepared["base_sha"] == moved["sha"] \
+           or pr["head"]["sha"] != prepared["head_sha"] or pr["base"]["sha"] != moved["sha"]:
+            raise RuntimeError("prepared pull request head or moved base does not match the checkpoint")
+        self.checkpoints.append({"kind": "prepared_base_confirmed", "at": now_iso(), "pr": key,
+                                 "head_sha": prepared["head_sha"], "base_sha": moved["sha"]})
+        log(f"Prepared PR {key} retains its head and targets the moved base")
+
     def step_push(self, s):
         key = s["push"]
         p = self.prs[key]
@@ -560,7 +575,7 @@ class Run:
         for s in self.scenario["steps"]:
             kind = next(k for k in ("prepare", "open", "push", "comment", "label", "ready", "draft", "edit_body",
                                     "close", "main_commit", "sleep", "wait", "assert_unqueued",
-                                    "dispatch_workflow", "wait_check", "assert_check_pair") if k in s)
+                                    "dispatch_workflow", "wait_check", "assert_check_pair", "assert_prepared_base") if k in s)
             if kind == "sleep":
                 time.sleep(s["sleep"])
             else:

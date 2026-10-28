@@ -207,6 +207,24 @@ class CheckpointTests(unittest.TestCase):
         run.write_changes.assert_called_once()
         self.assertEqual(client.call.call_count, 3)
 
+    def test_preexisting_conflict_checkpoint_requires_head_and_base(self):
+        run = object.__new__(driver.Run)
+        run.prs = {'a': {'number': 42}}
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.checkpoints = [{'kind': 'prepared', 'pr': 'a', 'head_sha': 'old-head', 'base_sha': 'old-base'},
+                           {'kind': 'base_push_completed', 'sha': 'new-base'}]
+        client = unittest.mock.Mock()
+        client.call.return_value = {'head': {'sha': 'old-head'}, 'base': {'sha': 'new-base'}}
+        run.actors = {'human': client}
+        run.step_assert_prepared_base({'assert_prepared_base': 'a'})
+        client.call.return_value['head']['sha'] = 'changed-head'
+        with self.assertRaises(RuntimeError):
+            run.step_assert_prepared_base({'assert_prepared_base': 'a'})
+        client.call.return_value['head']['sha'] = 'old-head'
+        client.call.return_value['base']['sha'] = 'old-base'
+        with self.assertRaises(RuntimeError):
+            run.step_assert_prepared_base({'assert_prepared_base': 'a'})
+
     def test_wait_check_records_id_and_rejects_old_result(self):
         run = object.__new__(driver.Run)
         run.prs = {'a': {'number': 42}}
