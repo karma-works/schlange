@@ -41,8 +41,8 @@ compares that with what Mergify did, per pull request.
   before Schlange decided), `pending`. Stored in SQLite (`shadow` table), shown by
   `schlange shadow report [--json]` (exit 1 on a disagreement) and
   `GET /repos/{owner}/{repo}/shadow/report` behind the admin token.
-- `read-only-app`: built. A read-only app (metadata, contents, pull requests, checks,
-  statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for
+- `read-only-app`: built. A read-only app (metadata, contents, issues, pull requests,
+  checks, statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for
   read-only installation tokens, `schlange doctor --shadow` accepts the app and warns about any
   write permission, and skips the ruleset exception. Tests: `cargo test -p schlange-github-fake
   --test shadow a_read_only_app_is_enough_for_shadow_mode` (the fake GitHub refuses endpoints

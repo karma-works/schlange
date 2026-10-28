@@ -258,10 +258,11 @@ fn the_report_survives_a_restart_from_the_database() {
 }
 
 /// The shadow app's permissions: everything Schlange reads, nothing it could write with.
-const READ_ONLY: [(&str, &str); 5] = [
+const READ_ONLY: [(&str, &str); 6] = [
     ("metadata", "read"),
     ("contents", "read"),
     ("pull_requests", "read"),
+    ("issues", "read"),
     ("checks", "read"),
     ("statuses", "read"),
 ];
