@@ -399,9 +399,19 @@ impl Checker {
                 car.prefix[idx0 - 1].1.clone()
             };
             let expected_parent_tree = forge.repo.tree_id_of(&expected_parent);
-            let parent_ok = parent
-                .as_ref()
-                .is_some_and(|p| forge.repo.tree_id_of(p) == expected_parent_tree);
+            // A pull request tested in place and landed by fast-forward lands its own head. When
+            // a rule's `update` merged the base into that head, the head's first parent is
+            // the pull request's earlier commit, not the base; the base is its ancestor
+            // (second parent) and the landed tree is the tested head's tree (checked below
+            // against the car), so main moved from the tested base to the tested tree.
+            let in_place_ff_on_base = car.in_place
+                && idx0 == 0
+                && l.method == MergeMethod::FastForward
+                && forge.repo.is_ancestor(&car.base_sha, &l.commits[0].sha);
+            let parent_ok = in_place_ff_on_base
+                || parent
+                    .as_ref()
+                    .is_some_and(|p| forge.repo.tree_id_of(p) == expected_parent_tree);
             // The tree check of the engine (MQ-02): a landing whose real tree is not the tree
             // the queue branch had when it was landed justifies a halt.
             let tested_tip = if car.in_place {

@@ -390,6 +390,20 @@ pub fn dependents(train: &Train, i: usize) -> Vec<usize> {
     }
 }
 
+/// A car replaced by its retry or rebuild under a new id: the cars built on it (parallel mode:
+/// `deps`) are built on the same slot, so they keep waiting for it. Without this they would see
+/// no live dependency and land before it (and, for a method that lands the batch branch, with
+/// its content).
+fn rename_dep(train: &mut Train, old: u64, new: u64) {
+    for c in &mut train.cars {
+        for d in &mut c.deps {
+            if *d == old {
+                *d = new;
+            }
+        }
+    }
+}
+
 /// Removes the cars at `idx` (the first gets `first`, the others `behind`) and puts their own
 /// pull requests back to waiting.
 pub(crate) fn drop_cars(
@@ -1274,6 +1288,7 @@ fn abandon_car(state: &mut State, base: &str, id: u64, out: &mut Vec<Decision>) 
         };
         let train = state.trains.get_mut(base).expect("train");
         train.cars[i] = rebuilt;
+        rename_dep(train, car.id, id);
         if let Some(b) = train.bisection.as_mut()
             && b.land == Some(car.id)
         {
@@ -1465,6 +1480,7 @@ fn retry(
     };
     let train = state.trains.get_mut(base).expect("train");
     train.cars[i] = car;
+    rename_dep(train, old.id, id);
     if let Some(b) = train.bisection.as_mut()
         && b.land == Some(old.id)
     {

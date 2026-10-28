@@ -1012,3 +1012,92 @@ proptest! {
         prop_assert_eq!(&end, &report.end_state, "forge faults and crashes\n{}", log);
     }
 }
+
+/// Found by the long property run (2000 cases): a rule's `update` merges the base into a queued
+/// pull request tested in place; its head then has the pull request's commit as first parent.
+/// Landing it by fast-forward moves main from the tested base to the tested tree, which I0
+/// accepts (the base is an ancestor of the landed head).
+#[test]
+fn in_place_fast_forward_after_an_update_action_is_not_a_drift() {
+    let p = OraclePlan {
+        settings: Settings {
+            batch: (1, None),
+            max_parallel: 1,
+            limit: None,
+            timeout: false,
+            single_step: true,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(2, 10)],
+            method: "fast-forward",
+            mode: "serial",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![(0, 0), (0, 455), (0, 576), (0, 576)],
+        culprit: 0,
+        hang: false,
+        humans: vec![(455, Human::PushBase(1))],
+        faults: Faults::none(),
+    };
+    let s = oracle_scenario(&p);
+    let (v, _, log) = outcome_of(&s, Faults::none(), None, None);
+    assert!(v.is_empty(), "{}\n{log}", v.join("\n"));
+}
+
+/// Found by the long property run: in parallel mode a car retried (`max_checks_retries`) got a
+/// new id, the car built on it kept the old id as its dependency, saw no live dependency and
+/// landed first, with the retried pull request's content in a `merge-batch` commit.
+#[test]
+fn parallel_mode_dependents_wait_for_a_retried_car() {
+    let p = Plan {
+        settings: Settings {
+            batch: (1, None),
+            max_parallel: 2,
+            limit: None,
+            timeout: false,
+            single_step: false,
+            wip: false,
+            never: false,
+            retries: 2,
+            branch_edit: false,
+            auto: false,
+            actions: vec![],
+            method: "merge-batch",
+            mode: "parallel",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![
+            PrPlan {
+                path: 2,
+                marker: 0,
+                open_at: 1015,
+            },
+            PrPlan {
+                path: 3,
+                marker: 0,
+                open_at: 0,
+            },
+        ],
+        humans: vec![],
+        flake: true,
+        faults: Faults {
+            seed: 4218321181142253250,
+            drop: 0.0,
+            duplicate: 0.0,
+            delay: 0.0,
+            max_delay: 0,
+            reconcile_every: 30,
+        },
+    };
+    let v = violations(&scenario(&p), Faults::none());
+    assert!(v.is_empty(), "{v:?}");
+}
