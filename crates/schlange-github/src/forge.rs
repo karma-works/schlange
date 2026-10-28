@@ -969,10 +969,13 @@ impl GithubForge {
                 self.cosmetics.push_back(Cosmetic::Show(cosmetic.clone()));
                 vec![]
             }
-            Decision::Act { id, op, .. } => {
-                let result = self.rule_action(op);
-                vec![Event::ActionDone { id: *id, result }]
-            }
+            Decision::Act { id, op, .. } => match self.rule_action(op) {
+                Ok(result) => vec![Event::ActionDone { id: *id, result }],
+                Err(e) => vec![Event::Failed {
+                    decision: d.clone(),
+                    error: e.to_string(),
+                }],
+            },
         }
     }
 

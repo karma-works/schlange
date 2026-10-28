@@ -7,15 +7,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/actions/label",
-      "line": 24,
-      "column": 7,
-      "message": "`action:label` is not supported by Schlange yet (feature action-label, P2, missing: feature not built)",
-      "feature": "action-label"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/pull_request_rules/1/conditions",
       "line": 29,
       "column": 5,
@@ -79,33 +70,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/actions/label",
-      "line": 24,
-      "column": 7,
-      "message": "`config:pull_request_rules.actions.label` is not supported by Schlange yet (feature action-label, P2, missing: feature not built)",
-      "feature": "action-label"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/pull_request_rules/0/actions/label/add",
-      "line": 25,
-      "column": 9,
-      "message": "`config:pull_request_rules.actions.label.add` is not supported by Schlange yet (feature action-label, P2, missing: feature not built)",
-      "feature": "action-label"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/shared",
-      "line": 3,
-      "column": 1,
-      "message": "`config:shared` is not supported by Schlange yet (feature config-shared, P2, missing: feature not built)",
-      "feature": "config-shared"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "",
       "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
       "feature": "queue-branch-protection"
@@ -141,11 +105,8 @@
       "id": "action:label",
       "feature": "action-label",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/actions/label"
     },
     {
@@ -280,22 +241,16 @@
       "id": "config:pull_request_rules.actions.label",
       "feature": "action-label",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/actions/label"
     },
     {
       "id": "config:pull_request_rules.actions.label.add",
       "feature": "action-label",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/pull_request_rules/0/actions/label/add"
     },
     {
@@ -382,11 +337,8 @@
       "id": "config:shared",
       "feature": "config-shared",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/shared"
     },
     {

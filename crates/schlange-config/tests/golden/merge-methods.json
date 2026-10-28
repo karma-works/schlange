@@ -7,19 +7,10 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/defaults",
-      "line": 5,
-      "column": 1,
-      "message": "`config:defaults` is not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
-      "feature": "config-defaults"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/defaults/queue_rule",
       "line": 6,
       "column": 3,
-      "message": "`config:defaults.queue_rule` is not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "`config:defaults.queue_rule` is not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`config:defaults.queue_rule`))",
       "feature": "config-defaults"
     },
     {
@@ -28,56 +19,56 @@
       "pointer": "/defaults/queue_rule/merge_method",
       "line": 7,
       "column": 5,
-      "message": "`config:defaults.queue_rule.merge_method` is not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "`config:defaults.queue_rule.merge_method` is not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`config:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.allow_inplace_checks` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.allow_inplace_checks` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.batch_max_wait_time` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.batch_max_wait_time` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.batch_pull_request` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.batch_pull_request` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.batch_size` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.batch_size` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.checks_timeout` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.checks_timeout` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.queue_branch_prefix` is in effect but not supported by Schlange yet (feature config-defaults, P2, missing: feature not built)",
+      "message": "default `defaults.queue_rule.queue_branch_prefix` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
     {
@@ -111,21 +102,19 @@
       "id": "config:defaults",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/defaults"
     },
     {
       "id": "config:defaults.queue_rule",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "config:defaults.queue_rule"
       },
       "pointer": "/defaults/queue_rule"
     },
@@ -133,10 +122,11 @@
       "id": "config:defaults.queue_rule.merge_method",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "config:defaults.queue_rule.*"
       },
       "pointer": "/defaults/queue_rule/merge_method"
     },
@@ -271,70 +261,77 @@
       "id": "default:defaults.queue_rule.allow_inplace_checks",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.batch_max_wait_time",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.batch_pull_request",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.batch_size",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.branch_protection_injection_mode",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.checks_timeout",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {
       "id": "default:defaults.queue_rule.queue_branch_prefix",
       "feature": "config-defaults",
       "priority": "P2",
-      "status": "missing",
+      "status": "partial",
       "supported": false,
       "reason": {
-        "kind": "feature_missing"
+        "kind": "not_built",
+        "pattern": "default:defaults.queue_rule.*"
       }
     },
     {

@@ -45,14 +45,18 @@ fn marker_of(body: &str) -> Option<&str> {
 }
 
 impl GithubForge {
-    /// Carries out one rule action; API errors become `Refused` with the reason (the engine
-    /// keeps an edge request pending and sends it again after a timeout).
-    pub(crate) fn rule_action(&mut self, op: &Op) -> ActionResult {
+    /// Carries out one rule action. A refusal by GitHub (4xx) is the answer `Refused`; any
+    /// other error (5xx, network, rate limit) is `Err`: the engine keeps an edge request
+    /// pending and sends it again later, which the operations' idempotence makes safe.
+    pub(crate) fn rule_action(&mut self, op: &Op) -> Result<ActionResult, Error> {
         match self.try_rule_action(op) {
-            Ok(r) => r,
+            Ok(r) => Ok(r),
             Err(e) => {
                 self.note(format!("action failed: {}: {e}", op.describe()));
-                refused(e.to_string())
+                match e.status() {
+                    Some(s) if (400..500).contains(&s) && s != 429 => Ok(refused(e.to_string())),
+                    _ => Err(e),
+                }
             }
         }
     }

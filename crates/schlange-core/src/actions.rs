@@ -799,7 +799,7 @@ fn decide(
                 "COMMENT" => "COMMENTED",
                 _ => "APPROVED",
             };
-            let text = message.as_deref().map(|m| render(m)).unwrap_or_default();
+            let text = message.as_deref().map(&render).unwrap_or_default();
             let bot = &state.host.bot;
             let latest = pr.reviews.iter().rev().find(|r| &r.author == bot);
             let same = latest
@@ -851,7 +851,7 @@ fn decide(
                 reviews: ids,
                 message: message
                     .as_deref()
-                    .map(|m| render(m))
+                    .map(render)
                     .unwrap_or_else(|| "Dismissed after new commits.".into()),
             })
         }
@@ -1295,10 +1295,24 @@ fn resend_overdue(state: &mut State, out: &mut Vec<Decision>) {
             wake = Some(wake.map_or(at, |w: Time| w.min(at)));
         }
     }
-    // Give up on requests that never got an answer.
-    state.actions.pending.retain(|_, p| {
-        p.level.is_some() || p.attempts < ACTION_ATTEMPTS || now < p.sent + ACTION_TIMEOUT
-    });
+    // Give up on requests that never got an answer; a level request is decided again.
+    let stale: Vec<u64> = state
+        .actions
+        .pending
+        .iter()
+        .filter(|(_, p)| {
+            now >= p.sent.saturating_add(ACTION_TIMEOUT)
+                && (p.level.is_some() || p.attempts >= ACTION_ATTEMPTS)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for id in stale {
+        if let Some(p) = state.actions.pending.remove(&id)
+            && let Some(k) = p.level
+        {
+            state.actions.asked.remove(&k);
+        }
+    }
     if let Some(at) = wake {
         crate::queue::wake(state, at, out);
     }
