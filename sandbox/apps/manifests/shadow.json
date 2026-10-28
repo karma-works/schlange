@@ -5,6 +5,7 @@
   "default_permissions": {
     "metadata": "read",
     "contents": "read",
+    "issues": "read",
     "pull_requests": "read",
     "checks": "read",
     "statuses": "read"

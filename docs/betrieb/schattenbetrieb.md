@@ -12,7 +12,7 @@
 
 The shadow has its own app, "Schlange Schatten Arztagent"
 ([manifest](../../sandbox/apps/manifests/shadow.json)), which has **read permissions only**:
-metadata, contents, pull requests, checks and statuses, all `read`. With it, Schlange
+metadata, contents, issues, pull requests, checks and statuses, all `read`. With it, Schlange
 technically cannot merge, comment or create branches on Arztagent, even if the code has a bug
 or is started without `--shadow` by mistake.
 

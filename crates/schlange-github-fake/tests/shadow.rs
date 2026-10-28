@@ -258,10 +258,11 @@ fn the_report_survives_a_restart_from_the_database() {
 }
 
 /// The shadow app's permissions: everything Schlange reads, nothing it could write with.
-const READ_ONLY: [(&str, &str); 5] = [
+const READ_ONLY: [(&str, &str); 6] = [
     ("metadata", "read"),
     ("contents", "read"),
     ("pull_requests", "read"),
+    ("issues", "read"),
     ("checks", "read"),
     ("statuses", "read"),
 ];
@@ -304,5 +305,35 @@ fn a_read_only_app_is_enough_for_shadow_mode() {
         refused.join("\n")
     );
     assert_eq!(verdict(&report(&t), a), "agree");
+    t.shutdown();
+}
+
+/// A pull request Mergify merged while shadow mode was not watching (before its start, or
+/// while it was stopped) is not a disagreement: Schlange never saw it open and could not
+/// decide. It is `inconclusive`; one Schlange saw open stays comparable.
+#[test]
+fn pull_requests_merged_before_shadow_mode_saw_them_are_inconclusive() {
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let a = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(a).wait_queued();
+    t.stop_service();
+    // While nobody watches: a new pull request goes through Mergify and lands.
+    let b = green_pr(&t, "backend/b.py", "b = 1\n");
+    t.gh.mergify_queue(b);
+    let d = t.gh.mergify_embark(&[b]);
+    t.gh.mergify_land(d);
+    t.start_service();
+    t.advance("3m");
+    reconcile(&t);
+    let r = report(&t);
+    assert_eq!(verdict(&r, b), "inconclusive", "{r:#}");
+    assert_eq!(r["disagreements"], 0, "{r:#}");
+    // `a` was seen open and is still compared.
+    assert_ne!(verdict(&r, a), "absent", "{r:#}");
+    assert_ne!(verdict(&r, a), "inconclusive", "{r:#}");
+    assert_no_writes(&t);
     t.shutdown();
 }

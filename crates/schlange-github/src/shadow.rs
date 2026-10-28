@@ -431,6 +431,11 @@ impl Shadow {
             return ev;
         };
         for p in &pull_requests {
+            // Once per pull request, kept in the database: Schlange saw it open and could
+            // decide about it. The report does not compare pull requests it never saw.
+            if !p.closed && p.author != self.cfg.mergify_login && !Self::is_virtual(p.number) {
+                self.fact(SCHLANGE, p.number, "seen", now, json!({}), true);
+            }
             self.note_other(p, now);
         }
         let ids: Vec<u64> = self.cars.keys().copied().collect();
@@ -728,6 +733,10 @@ pub struct PrComparison {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dequeue_reason: Option<Compared<Option<String>>>,
     pub differences: Vec<String>,
+    /// It closed while shadow mode was not watching (before its start, or while it was
+    /// stopped): `inconclusive`, and left out of the text report unless `--all`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub before_watching: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -756,7 +765,12 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .iter()
             .find(|f| f.side == side && f.pr == pr && f.kind == kind)
     };
-    let prs: BTreeSet<u64> = facts.iter().map(|f| f.pr).collect();
+    // A pull request with nothing but "seen" has nothing to compare yet.
+    let prs: BTreeSet<u64> = facts
+        .iter()
+        .filter(|f| f.kind != "seen")
+        .map(|f| f.pr)
+        .collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
     let mut ours: Vec<(u64, u64)> = facts
         .iter()
@@ -873,6 +887,14 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
         if !differences.is_empty() && verdict == "agree" {
             verdict = "disagree";
         }
+        // Merged or closed before shadow mode watched (before its start, or while it was
+        // stopped): Schlange could not decide, so there is nothing to compare.
+        let before_watching = get(SCHLANGE, pr, "seen").is_none();
+        if before_watching {
+            verdict = "inconclusive";
+            differences =
+                vec!["not seen open: it closed while shadow mode was not watching".into()];
+        }
         out.push(PrComparison {
             number: pr,
             verdict: verdict.into(),
@@ -882,6 +904,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             batch,
             dequeue_reason,
             differences,
+            before_watching,
         });
     }
     let count = |v: &str| out.iter().filter(|p| p.verdict == v).count();
@@ -896,12 +919,41 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
 }
 
 impl ShadowReport {
+    /// The report as text, without the pull requests that closed before shadow mode watched
+    /// (their number is in the first line).
     pub fn to_text(&self) -> String {
-        let mut out = vec![format!(
+        self.text(false)
+    }
+
+    /// The report as text with every pull request.
+    pub fn to_text_all(&self) -> String {
+        self.text(true)
+    }
+
+    fn text(&self, all: bool) -> String {
+        let hidden = if all {
+            0
+        } else {
+            self.pull_requests
+                .iter()
+                .filter(|p| p.before_watching)
+                .count()
+        };
+        let mut head = format!(
             "shadow report for {}: {} agree, {} disagree, {} inconclusive, {} pending",
             self.repository, self.agreements, self.disagreements, self.inconclusive, self.pending
-        )];
-        for p in &self.pull_requests {
+        );
+        if hidden > 0 {
+            head.push_str(&format!(
+                "; {hidden} closed before shadow mode watched (--all lists them)"
+            ));
+        }
+        let mut out = vec![head];
+        for p in self
+            .pull_requests
+            .iter()
+            .filter(|p| all || !p.before_watching)
+        {
             let mut line = format!(
                 "#{} {}: queued {}/{}, landed {}/{}",
                 p.number,
@@ -973,6 +1025,42 @@ mod tests {
     }
 
     #[test]
+    fn the_text_report_hides_what_closed_before_shadow_mode_watched() {
+        let facts = vec![
+            // #1: seen open, both queued and landed it.
+            f(SCHLANGE, 1, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 1, "queued", 1, 2, json!({})),
+            f(MERGIFY, 1, "queued", 1, 3, json!({})),
+            f(SCHLANGE, 1, "landed", 5, 4, json!({ "batch": [1] })),
+            f(MERGIFY, 1, "landed", 6, 5, json!({ "batch": [1] })),
+            // #2, #3: Mergify landed them before shadow mode watched.
+            f(MERGIFY, 2, "landed", 0, 6, json!({ "batch": [2] })),
+            f(MERGIFY, 3, "landed", 0, 7, json!({ "batch": [3] })),
+        ];
+        let r = report("o/r", &facts);
+        let before: Vec<u64> = r
+            .pull_requests
+            .iter()
+            .filter(|p| p.before_watching)
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(before, vec![2, 3]);
+        let text = r.to_text();
+        assert!(text.contains("#1 agree"), "{text}");
+        assert!(!text.contains("#2 ") && !text.contains("#3 "), "{text}");
+        assert!(
+            text.contains("2 closed before shadow mode watched (--all lists them)"),
+            "{text}"
+        );
+        let all = r.to_text_all();
+        assert!(
+            all.contains("#2 inconclusive") && all.contains("#3 inconclusive"),
+            "{all}"
+        );
+        assert!(!all.contains("--all lists them"), "{all}");
+    }
+
+    #[test]
     fn report_agreements_and_each_kind_of_difference() {
         let facts = vec![
             // #1, #2: both queued and landed, same batch, same order.
@@ -1009,7 +1097,16 @@ mod tests {
             // #5: both queued, nothing finished.
             f(SCHLANGE, 5, "queued", 1, 15, json!({})),
             f(MERGIFY, 5, "queued", 1, 16, json!({})),
+            // #6: Mergify landed it while shadow mode was not watching.
+            f(MERGIFY, 6, "landed", 0, 17, json!({ "batch": [6] })),
+            // #7: seen open, nothing else yet: no row.
+            f(SCHLANGE, 7, "seen", 0, 18, json!({})),
         ];
+        // Schlange saw #1 to #5 open.
+        let mut facts = facts;
+        for pr in 1..=5 {
+            facts.push(f(SCHLANGE, pr, "seen", 0, 100 + pr, json!({})));
+        }
         let r = report("o/r", &facts);
         let v: Vec<(u64, &str)> = r
             .pull_requests
@@ -1023,10 +1120,14 @@ mod tests {
                 (2, "agree"),
                 (3, "disagree"),
                 (4, "disagree"),
-                (5, "pending")
+                (5, "pending"),
+                (6, "inconclusive")
             ]
         );
-        assert_eq!((r.agreements, r.disagreements, r.pending), (2, 2, 1));
+        assert_eq!(
+            (r.agreements, r.disagreements, r.pending, r.inconclusive),
+            (2, 2, 1, 1)
+        );
         assert!(
             r.to_text()
                 .contains("dequeue reason: Schlange CHECKS_FAILED, Mergify CHECKS_TIMEOUT")
