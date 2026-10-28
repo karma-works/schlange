@@ -221,6 +221,10 @@ enum ShadowCommand {
         /// Read the SQLite database in this data directory instead of calling `serve`.
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Also list the pull requests that closed before shadow mode watched (the text
+        /// report gives only their number; `--json` always has them).
+        #[arg(long)]
+        all: bool,
         #[command(flatten)]
         api: ApiArgs,
     },
@@ -1321,7 +1325,7 @@ fn audit_cli(pr: Option<u64>, data_dir: Option<&Path>, api: &ApiArgs) -> ExitCod
     ExitCode::SUCCESS
 }
 
-fn shadow_report_cli(data_dir: Option<&Path>, api: &ApiArgs) -> ExitCode {
+fn shadow_report_cli(data_dir: Option<&Path>, all: bool, api: &ApiArgs) -> ExitCode {
     let report: schlange_github::shadow::ShadowReport = match data_dir {
         Some(dir) => {
             if !api.repo.contains('/') {
@@ -1347,6 +1351,8 @@ fn shadow_report_cli(data_dir: Option<&Path>, api: &ApiArgs) -> ExitCode {
     };
     if api.json {
         print_json(&report);
+    } else if all {
+        print!("{}", report.to_text_all());
     } else {
         print!("{}", report.to_text());
     }
@@ -1443,8 +1449,8 @@ fn main() -> ExitCode {
         } => events_cli(pr, since.as_deref(), limit, data_dir.as_deref(), &api),
         Command::Audit { pr, data_dir, api } => audit_cli(pr, data_dir.as_deref(), &api),
         Command::Shadow {
-            command: ShadowCommand::Report { data_dir, api },
-        } => shadow_report_cli(data_dir.as_deref(), &api),
+            command: ShadowCommand::Report { data_dir, all, api },
+        } => shadow_report_cli(data_dir.as_deref(), all, &api),
         Command::Queue {
             command,
             url,

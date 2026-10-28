@@ -51,7 +51,9 @@ compares that with what Mergify did, per pull request.
 - `history`: built. The shadow layer records once per pull request, in the database, that it
   saw it open (`seen`). A pull request Mergify merged or closed while shadow mode was not
   watching (before its start, or while it was stopped) is `inconclusive` instead of a
-  disagreement; one with nothing but `seen` has no row. Found on the first real run next to
+  disagreement (`before_watching` in the JSON); one with nothing but `seen` has no row. The
+  text report gives only their number; `schlange shadow report --all` lists them
+  (`shadow::tests::the_text_report_hides_what_closed_before_shadow_mode_watched`). Found on the first real run next to
   Arztagent: 20 pull requests merged the day before showed up as disagreements. Tests:
   `--test shadow pull_requests_merged_before_shadow_mode_saw_them_are_inconclusive`,
   `shadow::tests::report_agreements_and_each_kind_of_difference`.

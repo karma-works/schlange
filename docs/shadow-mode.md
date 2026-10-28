@@ -244,7 +244,9 @@ docker exec schlange-shadow /usr/local/bin/schlange shadow report --repo <owner>
 docker run --rm -v /srv/schlange-shadow/data:/data schlange:shadow shadow report --repo <owner>/<repository> --data-dir /data
 ```
 
-Add `--json` for machines. Exit 0 without disagreements, 1 with.
+Add `--json` for machines. Exit 0 without disagreements, 1 with. Pull requests that closed
+before shadow mode watched appear only as a number in the first line; `--all` lists them
+(`--json` always has them, with `"before_watching": true`).
 
 Per pull request it compares: queued or not, landed or not, landing order (among the pull
 requests both landed), the batch it landed in, and the dequeue reason.
