@@ -23,6 +23,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | `scenarios/` | scenarios for `schlange sim run`; `scenarios/configs/` holds their configurations |
 | `docs/mq-coverage.md` | which MQ case has which test |
 | `.cargo/config.toml` | `LIBSQLITE3_FLAGS`: the bundled SQLite without FTS, R-tree, JSON, extension loading (binary and image size) |
+| `sandbox/` | GitHub sandbox: setup, app manifests, fixture repository, scenario driver, baselines, CI helpers (workflow `sandbox.yml`) |
 | `scripts/critic.sh` | independent critic (Codex CLI) |
 | `.critic/` | critic verdicts, checked in |
 
@@ -55,6 +56,13 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
    new entries, keep the coverage test green.
 7. **No real GitHub in tests.** GitHub behaviour is tested against `schlange-github-fake`;
    tests and agents never call api.github.com, register apps or use real tokens.
+   **One exception: the GitHub sandbox** (`sandbox/`, [docs/betrieb/sandbox.md](docs/betrieb/sandbox.md)).
+   Only the organisation `schlange-sandbox`, only through `sandbox/driver/sandbox.py`,
+   `sandbox/setup.sh` or the workflow `sandbox.yml`, and only with the sandbox credentials
+   (apps installed there, a token limited to that organisation). It confirms what the fake
+   cannot ("needs a sandbox" in the feature files) and records Mergify's behaviour as baselines
+   (`sandbox/baselines/`, our own format, no Mergify text). Never another repository, never
+   Arztagent; `cargo test` stays offline.
 8. **Core without side effects.** `schlange-core` does no I/O. Side effects go through a forge
    adapter (`sim` → `localgit` → `forgejo` → `github`).
 9. **Cosmetics never gate landing.** Labels, comments, reactions and reported checks are
