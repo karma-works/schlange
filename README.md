@@ -124,8 +124,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (301) | – | built 257, partial 8 | 36 |
-| Sub-features Arztagent uses (162) | – | built 149, partial 4 | 9 |
+| Sub-features (303) | – | built 259, partial 8 | 36 |
+| Sub-features Arztagent uses (164) | – | built 151, partial 4 | 9 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -155,12 +155,12 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Batches (`batch_size`, `batch_max_wait_time`)](.agents/skills/verify-schlange/features/queue-batch.md) | partial | 3 / 1 / 1 | yes |
 | [Bisection of red batches](.agents/skills/verify-schlange/features/queue-bisection.md) | partial | 6 / 0 / 0 | yes |
 | [Bot accounts for merge, draft and update](.agents/skills/verify-schlange/features/queue-bot-accounts.md) | partial | 1 / 0 / 0 | yes |
-| [Foreign pushes to queue branches](.agents/skills/verify-schlange/features/queue-branch-edit.md) | partial | 2 / 0 / 0 | yes |
+| [Foreign pushes to queue branches](.agents/skills/verify-schlange/features/queue-branch-edit.md) | partial | 3 / 0 / 0 | yes |
 | [Required checks from branch protection and rulesets](.agents/skills/verify-schlange/features/queue-branch-protection.md) | partial | 3 / 1 / 1 | yes |
 | [Check timeout and retries (defaults)](.agents/skills/verify-schlange/features/queue-checks-timeout.md) | partial | 7 / 0 / 0 | yes |
 | [Commit message on merge](.agents/skills/verify-schlange/features/queue-commit-message.md) | partial | 4 / 0 / 1 | yes |
 | [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 5 / 0 / 0 | yes |
-| [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 5 / 0 / 0 | yes |
+| [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 6 / 0 / 0 | yes |
 | [Queue pull requests as drafts on `mergify/merge-queue/`](.agents/skills/verify-schlange/features/queue-draft-pr.md) | partial | 4 / 0 / 1 | yes |
 | [Queue labels and status comments](.agents/skills/verify-schlange/features/queue-labels-comments.md) | partial | 4 / 0 / 0 | yes |
 | [Landing as compare-and-swap with evidence](.agents/skills/verify-schlange/features/queue-landing.md) | partial | 6 / 1 / 0 | yes |

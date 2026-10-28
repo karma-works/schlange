@@ -9,7 +9,6 @@ use schlange_core::actions::Op;
 use schlange_core::engine::{CarPr, Decision};
 use schlange_core::model::Conclusion;
 use schlange_forge::ci::CiScript;
-use schlange_forge::git::GitStore;
 use schlange_forge::invariants::Checker;
 use schlange_forge::sim::{Action, PrDef, SimForge};
 
