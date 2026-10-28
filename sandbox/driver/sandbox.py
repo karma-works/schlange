@@ -525,22 +525,28 @@ def cmd_run(a):
         Run(a.org, a.repo, scenario, out).execute()
     finally:
         record(out)
+        if not a.keep:
+            cleanup(a.org, a.repo, f"sbx/{out.name}/")
     write_outcome(out)
     if a.baseline:
         sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json"))
 
 
-def cmd_reset(a):
-    c = installation_client("driver", a.org)
+def cleanup(org, repo, prefix="sbx/"):
+    """Schließt offene Szenario-PRs und löscht ihre Branches (nach jedem Lauf, sonst sperrt das Repo)."""
     h = human_client()
-    r = f"/repos/{a.org}/{a.repo}"
-    for pr in c.paged(f"{r}/pulls?state=open"):
-        if pr["head"]["ref"].startswith("sbx/"):
-            c.call("PATCH", f"{r}/pulls/{pr['number']}", {"state": "closed"})
+    r = f"/repos/{org}/{repo}"
+    for pr in h.paged(f"{r}/pulls?state=open"):
+        if pr["head"]["ref"].startswith(prefix):
+            h.call("PATCH", f"{r}/pulls/{pr['number']}", {"state": "closed"})
             log(f"#{pr['number']} geschlossen")
-    for ref in h.paged(f"{r}/git/matching-refs/heads/sbx/"):
+    for ref in h.paged(f"{r}/git/matching-refs/heads/{prefix}"):
         h.call("DELETE", f"{r}/git/{ref['ref']}", ok404=True)
         log(f"{ref['ref']} gelöscht")
+
+
+def cmd_reset(a):
+    cleanup(a.org, a.repo)
 
 
 def cmd_doctor(a):
@@ -581,6 +587,7 @@ def main():
     r.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
     r.add_argument("--baseline", help="outcome.json als Sollwert; Exit 1 bei Abweichung")
     r.add_argument("--no-wait", action="store_true", help="nicht warten, bis das Repo frei ist")
+    r.add_argument("--keep", action="store_true", help="offene Szenario-PRs nach dem Lauf nicht schließen")
     r.add_argument("--idle-timeout", type=int, default=1800)
     sub.add_parser("record").add_argument("dir")
     sub.add_parser("outcome").add_argument("dir")
