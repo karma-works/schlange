@@ -268,6 +268,13 @@ fn settings() -> impl Strategy<Value = Settings> {
                 } else {
                     mode
                 };
+                // An accepted `allow_queue_branch_edit` (only with a method that lands the batch
+                // branch) is not modelled by the simulation's invariant checker: the engine
+                // lands the edited head, whose tree the car record does not know (the long
+                // run found the false alarm). The option is deprecated and Arztagent does not
+                // use it; with the other methods the engine refuses the edit, which stays
+                // generated (`queue-branch-edit`, `allow-true`).
+                let branch_edit = branch_edit && !matches!(method, "fast-forward" | "merge-batch");
                 Settings {
                     batch,
                     max_parallel,
@@ -1011,4 +1018,294 @@ proptest! {
         }
         prop_assert_eq!(&end, &report.end_state, "forge faults and crashes\n{}", log);
     }
+}
+
+/// Found by the long property run (2000 cases): a rule's `update` merges the base into a queued
+/// pull request tested in place; its head then has the pull request's commit as first parent.
+/// Landing it by fast-forward moves main from the tested base to the tested tree, which I0
+/// accepts (the base is an ancestor of the landed head).
+#[test]
+fn in_place_fast_forward_after_an_update_action_is_not_a_drift() {
+    let p = OraclePlan {
+        settings: Settings {
+            batch: (1, None),
+            max_parallel: 1,
+            limit: None,
+            timeout: false,
+            single_step: true,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(2, 10)],
+            method: "fast-forward",
+            mode: "serial",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![(0, 0), (0, 455), (0, 576), (0, 576)],
+        culprit: 0,
+        hang: false,
+        humans: vec![(455, Human::PushBase(1))],
+        faults: Faults::none(),
+    };
+    let s = oracle_scenario(&p);
+    let (v, _, log) = outcome_of(&s, Faults::none(), None, None);
+    assert!(v.is_empty(), "{}\n{log}", v.join("\n"));
+}
+
+/// Found by the long property run: in parallel mode a car retried (`max_checks_retries`) got a
+/// new id, the car built on it kept the old id as its dependency, saw no live dependency and
+/// landed first, with the retried pull request's content in a `merge-batch` commit.
+#[test]
+fn parallel_mode_dependents_wait_for_a_retried_car() {
+    let p = Plan {
+        settings: Settings {
+            batch: (1, None),
+            max_parallel: 2,
+            limit: None,
+            timeout: false,
+            single_step: false,
+            wip: false,
+            never: false,
+            retries: 2,
+            branch_edit: false,
+            auto: false,
+            actions: vec![],
+            method: "merge-batch",
+            mode: "parallel",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![
+            PrPlan {
+                path: 2,
+                marker: 0,
+                open_at: 1015,
+            },
+            PrPlan {
+                path: 3,
+                marker: 0,
+                open_at: 0,
+            },
+        ],
+        humans: vec![],
+        flake: true,
+        faults: Faults {
+            seed: 4218321181142253250,
+            drop: 0.0,
+            duplicate: 0.0,
+            delay: 0.0,
+            max_delay: 0,
+            reconcile_every: 30,
+        },
+    };
+    let v = violations(&scenario(&p), Faults::none());
+    assert!(v.is_empty(), "{v:?}");
+}
+
+/// Found by the long run: a rule's `edit: draft` was sent while the car waited for the read
+/// before landing; the answer predated it and the queue landed a draft pull request.
+#[test]
+fn a_rule_action_sent_during_verification_does_not_let_a_stale_read_land() {
+    let p = Plan {
+        settings: Settings {
+            batch: (2, None),
+            max_parallel: 1,
+            limit: None,
+            timeout: false,
+            single_step: true,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(2, 9)],
+            method: "squash",
+            mode: "serial",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![PrPlan {
+            path: 1,
+            marker: 0,
+            open_at: 34,
+        }],
+        humans: vec![],
+        flake: false,
+        faults: Faults {
+            seed: 6083834642072344141,
+            drop: 0.26358159686616495,
+            duplicate: 0.0,
+            delay: 0.21023628659233629,
+            max_delay: 1,
+            reconcile_every: 73,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 3373144939668552277,
+        reply_drop: 0.29744209769727414,
+        reply_duplicate: 0.0,
+        reply_delay: 0.31160418352121166,
+        max_reply_delay: 0,
+        error: 0.18356467492725312,
+        lie: 0.03023647013344635,
+        base_race: 0.022777088255586223,
+        stale_read: 0.37809624051119467,
+        max_lag: 14,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 3373144939668552277,
+            jitter: 0.12329789897821523,
+            max_create_delay: 35,
+            max_cancel_delay: 37,
+        },
+    };
+    let crash = CrashPlan::random(f.seed, 0.06383515102334626, 4);
+    let (v, _sim, log) = outcome_of(&scenario(&p), p.faults.clone(), Some(f), Some(crash));
+    assert!(v.is_empty(), "{}\n{}", v.join("\n"), log);
+}
+
+/// Found by the long run: a car landing its pull requests was dropped in the same step in which
+/// another car's red batch was split (outside serial mode every other car is rebuilt); the
+/// landing's reply then found no car and the pull requests counted as merged by hand.
+#[test]
+fn a_landing_car_survives_the_split_of_another_cars_red_batch() {
+    let p = CalmPlan {
+        settings: Settings {
+            batch: (2, None),
+            max_parallel: 3,
+            limit: None,
+            timeout: true,
+            single_step: false,
+            wip: true,
+            never: true,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![],
+            method: "squash",
+            mode: "isolated",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![
+            (844, 0, Toggle::WipUntil(161)),
+            (50, 0, Toggle::None),
+            (23, 1, Toggle::None),
+            (154, 0, Toggle::None),
+            (28, 0, Toggle::None),
+        ],
+        base_pushes: vec![240, 0],
+        faults: Faults {
+            seed: 12289776980116233633,
+            drop: 0.0,
+            duplicate: 0.16600787278929446,
+            delay: 0.2085287783140496,
+            max_delay: 62,
+            reconcile_every: 92,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 15561412287781781834,
+        reply_drop: 0.13045218571961958,
+        reply_duplicate: 0.06808144529838406,
+        reply_delay: 0.43592409159489687,
+        max_reply_delay: 104,
+        error: 0.08373824154159362,
+        lie: 0.10461906442591609,
+        base_race: 0.24630423764053505,
+        stale_read: 0.036193370034842465,
+        max_lag: 5,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 15561412287781781834,
+            jitter: 0.01563339753694231,
+            max_create_delay: 104,
+            max_cancel_delay: 45,
+        },
+    };
+    let s = calm_scenario(&p);
+    let report = schlange_forge::run(&s);
+    let crash = CrashPlan::random(f.seed, 0.03, 3);
+    let (v, sim, log) = outcome_of(&s, p.faults.clone(), Some(f), Some(crash));
+    assert!(v.is_empty(), "{}\n{log}", v.join("\n"));
+    let mut end = sim.end_state();
+    if sim.wire.stats.base_races > 0 {
+        end.base_trees = report.end_state.base_trees.clone();
+    }
+    assert_eq!(end, report.end_state, "{log}");
+}
+
+/// Found by the long run: in isolated mode a car landed while a bisection ran; the bisection
+/// did not list it as the car to land, so the read that resolves the landing was never acted
+/// on and the queue read the same pull requests every two minutes for good (I2).
+#[test]
+fn a_landing_in_flight_is_resolved_while_another_batch_is_split() {
+    let p = OraclePlan {
+        settings: Settings {
+            batch: (1, Some(2)),
+            max_parallel: 4,
+            limit: None,
+            timeout: true,
+            single_step: false,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(3, 4), (2, 0)],
+            method: "squash",
+            mode: "isolated",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![(0, 1034), (4, 1265), (0, 589), (1, 919), (3, 456), (3, 131)],
+        culprit: 3,
+        hang: true,
+        humans: vec![(3, Human::Close(2)), (127, Human::Pause(true))],
+        faults: Faults {
+            seed: 9244885228602600115,
+            drop: 0.20323216898165541,
+            duplicate: 0.013920226237772313,
+            delay: 0.029859950670247395,
+            max_delay: 45,
+            reconcile_every: 112,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 14192663961652535705,
+        reply_drop: 0.16026383713376263,
+        reply_duplicate: 0.16446916491749367,
+        reply_delay: 0.21332527854931718,
+        max_reply_delay: 120,
+        error: 0.11194550545989572,
+        lie: 0.04100933097810113,
+        base_race: 0.06111415734608262,
+        stale_read: 0.04523112524228328,
+        max_lag: 10,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 14192663961652535705,
+            jitter: 0.1250114944534913,
+            max_create_delay: 97,
+            max_cancel_delay: 48,
+        },
+    };
+    let crash = CrashPlan::random(f.seed, 0.02, 2);
+    let (v, _sim, log) = outcome_of(&oracle_scenario(&p), p.faults.clone(), Some(f), Some(crash));
+    assert!(
+        v.is_empty(),
+        "{}\n{}",
+        v.join("\n"),
+        &log[log.len().saturating_sub(3000)..]
+    );
 }

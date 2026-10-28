@@ -158,3 +158,15 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   stay in the runner. For the full recording, run the scenario locally.
 - **Security:** the workflow starts only through `workflow_dispatch` (write access needed) and
   `schedule`, never through PRs from forks. The secrets work only in `schlange-sandbox`.
+- **`schlange-e2e` in the runner:** the job builds the release binary and starts
+  `sandbox/ci/start-schlange.sh`: `schlange serve` with the queue app against
+  `schlange-sandbox/schlange-e2e`, webhooks through `vars.SANDBOX_SMEE_URL` (smee-client), and
+  reconciliation every 20 s as a fallback. A wait that times out fails the run on this repo
+  (`SANDBOX_FAIL_ON_TIMEOUT`). During the run a probe prints `/status` and `explain` into the
+  job log (step "Stop schlange serve").
+- **Mergify must not be installed on `schlange-e2e`.** If the Mergify app is installed on all
+  repositories of the organisation, it posts the check run `Rule: … (queue)` with the conclusion
+  `action_required` ("Merge Queue needs to be activated"). `#check-failure = 0` counts it as a
+  failure (as it does for Mergify itself), so nothing is queued and every `schlange-e2e`
+  scenario times out. Fix by hand: Mergify installation, "Only select repositories",
+  `queue-lab` only.

@@ -390,6 +390,20 @@ pub fn dependents(train: &Train, i: usize) -> Vec<usize> {
     }
 }
 
+/// A car replaced by its retry or rebuild under a new id: the cars built on it (parallel mode:
+/// `deps`) are built on the same slot, so they keep waiting for it. Without this they would see
+/// no live dependency and land before it (and, for a method that lands the batch branch, with
+/// its content).
+fn rename_dep(train: &mut Train, old: u64, new: u64) {
+    for c in &mut train.cars {
+        for d in &mut c.deps {
+            if *d == old {
+                *d = new;
+            }
+        }
+    }
+}
+
 /// Removes the cars at `idx` (the first gets `first`, the others `behind`) and puts their own
 /// pull requests back to waiting.
 pub(crate) fn drop_cars(
@@ -652,6 +666,13 @@ pub(crate) fn car_conflict(
     }
 }
 
+fn landing_in_flight_car(car: &Car) -> bool {
+    matches!(
+        car.status,
+        CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+    )
+}
+
 /// Whether a `Land` for the pull request is in flight (or its outcome is being read).
 pub(crate) fn landing_in_flight(state: &State, number: u64) -> bool {
     state.trains.values().any(|t| {
@@ -663,6 +684,19 @@ pub(crate) fn landing_in_flight(state: &State, number: u64) -> bool {
                 )
         })
     })
+}
+
+/// A car whose pull request is about to change (a rule action sent a request that alters what
+/// the conditions read) and that waits for the read before landing goes back to `Green`: the
+/// answer to that read may predate the change, so it is read again after it.
+pub(crate) fn invalidate_verification(state: &mut State, number: u64) {
+    for t in state.trains.values_mut() {
+        for c in &mut t.cars {
+            if c.own.contains(&number) && matches!(c.status, CarStatus::Verifying { .. }) {
+                c.status = CarStatus::Green;
+            }
+        }
+    }
 }
 
 /// A queued pull request merged by the queue: it leaves with outcome `merged`.
@@ -1274,6 +1308,7 @@ fn abandon_car(state: &mut State, base: &str, id: u64, out: &mut Vec<Decision>) 
         };
         let train = state.trains.get_mut(base).expect("train");
         train.cars[i] = rebuilt;
+        rename_dep(train, car.id, id);
         if let Some(b) = train.bisection.as_mut()
             && b.land == Some(car.id)
         {
@@ -1465,6 +1500,7 @@ fn retry(
     };
     let train = state.trains.get_mut(base).expect("train");
     train.cars[i] = car;
+    rename_dep(train, old.id, id);
     if let Some(b) = train.bisection.as_mut()
         && b.land == Some(old.id)
     {
@@ -1586,8 +1622,11 @@ fn deciding_car(
             }
             continue;
         }
+        // A landing in flight is resolved whatever a bisection plans: its reply (or the read
+        // after it) is the only thing that tells whether the base moved.
         if let Some(b) = &train.bisection
             && b.land != Some(c.id)
+            && !landing_in_flight_car(c)
         {
             if train.mode == Mode::Serial {
                 return None;
@@ -1623,6 +1662,7 @@ fn front(
     let car = train.cars[i].clone();
     if let Some(b) = &train.bisection
         && b.land != Some(car.id)
+        && !landing_in_flight_car(&car)
     {
         return false;
     }
@@ -1776,8 +1816,17 @@ fn front(
             if state.trains[base].mode != Mode::Serial && car.own.len() > 1 {
                 // The failed batch is split next; a bisection runs alone in the train (our
                 // simplification outside serial mode), so the other cars are rebuilt after it.
-                behind = (0..state.trains[base].cars.len())
-                    .filter(|k| *k != i)
+                // A car that is landing stays: its reply or the read after it decides, and
+                // dropping it would lose track of a landing in flight.
+                let train = &state.trains[base];
+                behind = (0..train.cars.len())
+                    .filter(|k| {
+                        *k != i
+                            && !matches!(
+                                train.cars[*k].status,
+                                CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+                            )
+                    })
                     .collect();
             }
             drop_cars(

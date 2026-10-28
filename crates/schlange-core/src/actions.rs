@@ -656,6 +656,20 @@ fn send(
     reply: Option<CommandReply>,
     report: Option<CopyReport>,
 ) {
+    // A request that changes what the queue's conditions read must not be overtaken by a landing
+    // decided on a read that was sent before it (I1): the car verifies again afterwards.
+    if matches!(
+        op,
+        Op::Labels { .. }
+            | Op::Assign { .. }
+            | Op::RequestReviews { .. }
+            | Op::Review { .. }
+            | Op::DismissReviews { .. }
+            | Op::Close { .. }
+            | Op::SetDraft { .. }
+    ) {
+        crate::queue::invalidate_verification(state, op.number());
+    }
     let id = state.next_id();
     let now = state.now;
     state.actions.pending.insert(
