@@ -309,14 +309,16 @@ pub struct Service {
 
 /// The token scope for one installation: these repositories, and of Schlange's permissions
 /// the ones the installation grants (asking for more fails).
-fn token_permissions(granted: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+/// The permissions to ask for in installation tokens: those of the mode's list the
+/// installation grants (a read-only shadow app gets read-only tokens that still read everything).
+fn token_permissions(granted: &BTreeMap<String, String>, shadow: bool) -> BTreeMap<String, String> {
     let rank = |l: &str| match l {
         "admin" => 3,
         "write" => 2,
         "read" => 1,
         _ => 0,
     };
-    crate::permissions::PERMISSIONS
+    crate::permissions::for_mode(shadow)
         .iter()
         .filter(|(name, level, _)| {
             granted
@@ -379,9 +381,12 @@ impl Service {
                     .repo_installation(repo)
                     .map_err(|e| format!("{}: no installation: {e}", repo.full()))?,
             };
-            let e = installs
-                .entry(inst.id)
-                .or_insert_with(|| (Vec::new(), token_permissions(&inst.permissions)));
+            let e = installs.entry(inst.id).or_insert_with(|| {
+                (
+                    Vec::new(),
+                    token_permissions(&inst.permissions, cfg.shadow.is_some()),
+                )
+            });
             e.0.push(repo.name.clone());
             repo_inst.push((repo.clone(), inst.id));
         }
@@ -1862,10 +1867,15 @@ mod tests {
         .into_iter()
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
-        let p = token_permissions(&granted);
+        let p = token_permissions(&granted, false);
         assert!(!p.contains_key("administration"));
         assert!(!p.contains_key("workflows"));
         assert_eq!(p.get("contents").map(String::as_str), Some("write"));
+        // Shadow mode asks for read access only, even from an app that could write.
+        let p = token_permissions(&granted, true);
+        assert_eq!(p.get("contents").map(String::as_str), Some("read"));
+        assert_eq!(p.get("pull_requests").map(String::as_str), Some("read"));
+        assert!(p.values().all(|l| l == "read"), "{p:?}");
         assert!(ct_eq(b"abc", b"abc") && !ct_eq(b"abc", b"abd") && !ct_eq(b"a", b"ab"));
     }
 }

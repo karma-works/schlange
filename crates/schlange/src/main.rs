@@ -129,6 +129,9 @@ enum Command {
         /// names in the working directory).
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Check for shadow mode: a read-only app is enough, no ruleset exception needed.
+        #[arg(long, env = "SCHLANGE_SHADOW")]
+        shadow: bool,
         #[command(flatten)]
         github: GithubArgs,
     },
@@ -612,6 +615,7 @@ fn doctor(
     schema_path: Option<&Path>,
     offline: bool,
     config: Option<&Path>,
+    shadow: bool,
     github: &GithubArgs,
 ) -> ExitCode {
     let mut checks = vec![Check {
@@ -714,12 +718,13 @@ fn doctor(
     } else {
         match github.client().and_then(|c| github.repos().map(|r| (c, r))) {
             Ok((client, repos)) => {
-                for c in schlange_github::doctor::github_checks(
+                for c in schlange_github::doctor::github_checks_for(
                     &client,
                     &repos,
                     github.installation_id,
                     24 * 3600,
                     config_check.as_ref(),
+                    shadow,
                 ) {
                     let c = Check {
                         name: c.name,
@@ -1453,8 +1458,16 @@ fn main() -> ExitCode {
             schema,
             offline,
             config,
+            shadow,
             github,
-        } => doctor(json, schema.as_deref(), offline, config.as_deref(), &github),
+        } => doctor(
+            json,
+            schema.as_deref(),
+            offline,
+            config.as_deref(),
+            shadow,
+            &github,
+        ),
         Command::Serve {
             github,
             webhook_secret,

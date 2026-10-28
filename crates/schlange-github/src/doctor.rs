@@ -44,6 +44,20 @@ pub fn github_checks(
     max_delivery_age: u64,
     config: Option<&ConfigCheck>,
 ) -> Vec<Check> {
+    github_checks_for(client, repos, installation, max_delivery_age, config, false)
+}
+
+/// [`github_checks`] for a mode. In shadow mode the app needs read access only
+/// ([`permissions::SHADOW_PERMISSIONS`]; a write permission is a warning, since a shadow app
+/// that can write is protected by code alone) and no ruleset exception (it never lands).
+pub fn github_checks_for(
+    client: &Client,
+    repos: &[RepoName],
+    installation: Option<u64>,
+    max_delivery_age: u64,
+    config: Option<&ConfigCheck>,
+    shadow: bool,
+) -> Vec<Check> {
     let mut out = Vec::new();
     let app = match client.app() {
         Ok(a) => {
@@ -79,11 +93,16 @@ pub fn github_checks(
     };
     match installation.and_then(|id| client.installation(id)) {
         Ok(inst) => {
-            let r = permissions::compare(&inst.permissions);
+            let r = permissions::compare_with(&inst.permissions, permissions::for_mode(shadow));
             let (status, mut detail) = if !r.missing.is_empty() {
                 ("FAIL", format!("missing: {}", r.missing.join(", ")))
             } else if !r.extra.is_empty() || !r.optional_missing.is_empty() {
                 ("WARN", String::from("required permissions present"))
+            } else if shadow {
+                (
+                    "OK",
+                    String::from("read-only: exactly what shadow mode needs"),
+                )
             } else {
                 ("OK", String::from("exactly the permissions Schlange needs"))
             };
@@ -100,7 +119,11 @@ pub fn github_checks(
                 ));
             }
             out.push(check("app-permissions", status, detail));
-            out.push(ruleset_check(client, repos, inst.id, app.id));
+            out.push(if shadow {
+                check("ruleset-exception", "SKIP", "shadow mode never lands")
+            } else {
+                ruleset_check(client, repos, inst.id, app.id)
+            });
             out.push(config_check(client, repos, inst.id, config));
             out.push(match client.rate_limit(inst.id) {
                 Ok(rl) => {

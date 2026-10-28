@@ -1,12 +1,11 @@
 {
-  "name": "Schlange Schatten Arztagent",
+  "name": "Schlange Shadow",
   "description": "Schlange in shadow mode: read-only permissions, decides without acting.",
   "public": false,
   "default_permissions": {
     "metadata": "read",
     "contents": "read",
     "pull_requests": "read",
-    "issues": "read",
     "checks": "read",
     "statuses": "read"
   },

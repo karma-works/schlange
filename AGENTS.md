@@ -126,7 +126,7 @@ decisions against the fake GitHub), then review the diff.
 | `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |
 | `--insecure-test-api` | `SCHLANGE_INSECURE_TEST_API` | off | allows `http://` API URLs; tests against the fake GitHub only |
-| `--shadow` | `SCHLANGE_SHADOW` | off | decide, never write; compare with Mergify (`--mergify-login`, `--mergify-app`); `schlange shadow report` |
+| `--shadow` | `SCHLANGE_SHADOW` | off | decide, never write; compare with Mergify (`--mergify-login`, `--mergify-app`); `schlange shadow report`. A read-only app is enough (`schlange doctor --shadow`); setup in another repository: [docs/shadow-mode.md](docs/shadow-mode.md) |
 | `--lease-ttl`, `--lease-holder`, `--no-lease` | `SCHLANGE_LEASE_TTL` … | 60 s, host/pid | one writer per repository (MQ-32): SQLite lease plus the fence `refs/schlange/lease` on GitHub, checked before every write |
 | `--reconcile-every`, `--config`, `--check-name`, `--installation-id` | … | | see `schlange serve --help` |
 

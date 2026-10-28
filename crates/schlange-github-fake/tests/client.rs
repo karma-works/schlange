@@ -646,3 +646,41 @@ fn link_headers_to_another_host_are_not_followed() {
     assert!(matches!(e, Error::Refused(_)), "{e:?}");
     srv.join().unwrap();
 }
+
+#[test]
+fn doctor_accepts_a_read_only_app_for_shadow_mode_only() {
+    let read_only = schlange_github::permissions::SHADOW_PERMISSIONS
+        .iter()
+        .map(|(a, b, _)| (a.to_string(), b.to_string()))
+        .collect();
+    let gh = FakeGithub::start(FakeConfig {
+        permissions: read_only,
+        ..FakeConfig::default()
+    });
+    let c = client(&gh, roomy());
+    let repo = RepoName::parse(&gh.config().full_name()).unwrap();
+    let find = |checks: &[doctor::Check], name: &str| {
+        checks
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| (c.status, c.detail.clone()))
+            .unwrap()
+    };
+    let cc = schlange_github_fake::tester::config_check();
+    let shadow = doctor::github_checks_for(
+        &c,
+        std::slice::from_ref(&repo),
+        None,
+        86_400,
+        Some(&cc),
+        true,
+    );
+    let (status, detail) = find(&shadow, "app-permissions");
+    assert_eq!(status, "OK", "{detail}");
+    assert_eq!(find(&shadow, "ruleset-exception").0, "SKIP");
+    // The same app cannot run the queue.
+    let acting = doctor::github_checks(&c, std::slice::from_ref(&repo), None, 86_400, Some(&cc));
+    let (status, detail) = find(&acting, "app-permissions");
+    assert_eq!(status, "FAIL");
+    assert!(detail.contains("contents: read → write"), "{detail}");
+}
