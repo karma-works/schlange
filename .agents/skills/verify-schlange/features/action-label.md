@@ -25,7 +25,7 @@ Adds, removes or toggles labels; the labels are real labels that conditions read
 
 - `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated. Someone removing a label the rule adds gets it back.
 - `options`: built: `add`, `remove`, `remove_all` (never removes the queue's own labels), `toggle` (added while the rule matches, removed otherwise). Label names are simple templates.
-- `loop guard`: within one evaluation the first rule that changes a label owns it; a later rule's opposite change is dropped (Mergify's ten-reversals-per-hour stop is not built).
+- `loop guard`: built. Within one evaluation the first rule that changes a label owns it; a later rule's opposite change is dropped. Across evaluations, on the tenth time within an hour that the actions reverse their own last change of a label on a pull request, they stop changing that label there until the configuration changes (Schlange also counts a rule that undoes itself; the failure report Mergify posts is not built, the stop shows in `State::actions.frozen_labels`).
 
 ## How to get to it (user POV)
 

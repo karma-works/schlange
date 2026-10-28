@@ -571,6 +571,8 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             // Attributes and evaluation errors were judged under the old rules.
             state.blocked_attrs.clear();
             state.reported_errors.clear();
+            state.actions.frozen_labels.clear();
+            state.actions.label_flips.clear();
         }
     }
     None

@@ -137,6 +137,33 @@ fn rules_do_not_fight_over_a_label_and_exclusive_actions_run_once() {
 }
 
 #[test]
+fn a_rule_that_undoes_itself_stops_after_ten_reversals() {
+    // The rule's condition reads the label its own toggle sets: it would flip forever.
+    let cfg = "pull_request_rules:\n  - name: flip\n    conditions:\n      - -label = x\n    actions:\n      label:\n        toggle: [x]\n";
+    let mut d = Driver::new(cfg);
+    let mut p = pr(1, "t");
+    let mut changes = 0;
+    for _ in 0..40 {
+        let o = ops(&d.read(vec![p.clone()]));
+        let Some(Op::Labels { add, remove, .. }) = o.first() else {
+            continue;
+        };
+        changes += 1;
+        for l in add {
+            p.labels.insert(l.clone());
+        }
+        for l in remove {
+            p.labels.remove(l);
+        }
+    }
+    assert!(changes <= 11, "{changes} changes");
+    assert!(d.state.actions.frozen_labels.contains("1/x"));
+    // A new configuration lifts the stop.
+    d.feed(Event::ConfigurationChanged);
+    assert!(d.state.actions.frozen_labels.is_empty());
+}
+
+#[test]
 fn defaults_fill_in_options() {
     let cfg = "defaults:\n  actions:\n    comment:\n      message: from defaults {{ title }}\npull_request_rules:\n  - name: c\n    conditions: []\n    actions:\n      comment:\n";
     let mut d = Driver::new(cfg);

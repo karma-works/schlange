@@ -415,6 +415,46 @@ pub struct ActionsState {
     /// removed by `remove_all` (cosmetics are never read back).
     #[serde(default)]
     pub own_labels: BTreeSet<String>,
+    /// Label changes by the actions per `n/label`: the last direction and when it reversed.
+    #[serde(default)]
+    pub label_flips: BTreeMap<String, LabelFlips>,
+    /// Labels the actions stopped changing on a pull request (`n/label`): rules undo each
+    /// other's change. Cleared when the configuration changes.
+    #[serde(default)]
+    pub frozen_labels: BTreeSet<String>,
+}
+
+/// How the actions last changed one label on one pull request.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LabelFlips {
+    /// `true`: added.
+    pub last: Option<bool>,
+    /// When the actions reversed their own last change, within the last hour.
+    pub reversals: Vec<Time>,
+}
+
+/// Reversals within an hour after which the actions stop changing a label (docs: label
+/// action, conflicting rules: on the tenth reversal within an hour).
+pub const LABEL_REVERSALS: usize = 10;
+
+/// Whether the actions may change label `l` on `n` in direction `add`; records reversals and
+/// freezes the label on the tenth within an hour.
+fn label_change_allowed(a: &mut ActionsState, n: u64, l: &str, add: bool, now: Time) -> bool {
+    let k = format!("{n}/{l}");
+    if a.frozen_labels.contains(&k) {
+        return false;
+    }
+    let f = a.label_flips.entry(k.clone()).or_default();
+    if f.last == Some(!add) {
+        f.reversals.retain(|t| now.saturating_sub(*t) < 3600);
+        f.reversals.push(now);
+        if f.reversals.len() >= LABEL_REVERSALS {
+            a.frozen_labels.insert(k);
+            return false;
+        }
+    }
+    f.last = Some(add);
+    true
 }
 
 /// Whether a pull request is behind its base: as the forge read it, or the base moved since
@@ -743,6 +783,9 @@ fn decide(
                     r.push(l);
                 }
             }
+            let now = state.now;
+            a.retain(|l| label_change_allowed(&mut state.actions, n, l, true, now));
+            r.retain(|l| label_change_allowed(&mut state.actions, n, l, false, now));
             (!a.is_empty() || !r.is_empty()).then_some(Op::Labels {
                 number: n,
                 add: a,

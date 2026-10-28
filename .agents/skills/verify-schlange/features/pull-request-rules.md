@@ -54,4 +54,4 @@ Preconditions:
 ## Gotchas
 
 - Some actions are edge-triggered, some level-triggered; `queue` is level-triggered.
-- Rules that add and remove the same label: within one evaluation the first rule wins; Mergify's stop after ten reversals per hour is not built.
+- Rules that add and remove the same label: within one evaluation the first rule wins; after ten reversals within an hour the actions stop changing the label (see action-label).
