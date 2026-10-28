@@ -86,6 +86,7 @@ jobs:
         if: ${{ always() && inputs.repo == 'schlange-e2e' }}
         run: |
           if [ -f "$RUNNER_TEMP/schlange.pids" ]; then xargs -r kill < "$RUNNER_TEMP/schlange.pids" || true; fi
+          echo "::group::diagnostic probe"; cat "$RUNNER_TEMP/probe.log" 2>/dev/null || true; echo "::endgroup::"
           echo "::group::schlange serve log (end)"; tail -n 80 "$RUNNER_TEMP/schlange-serve.log" || true; echo "::endgroup::"
       # Public repo: only our own format, free of text. trace.json and summary.json contain
       # Mergify texts (clean room) and stay in the runner.

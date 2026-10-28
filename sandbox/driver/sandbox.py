@@ -333,6 +333,7 @@ class Run:
                 return
             time.sleep(20)
         log(f"Timeout while waiting for {what}; recording anyway")
+        self.timed_out = True
 
     def execute(self):
         (self.out / "scenario.json").write_text(json.dumps(self.scenario, indent=2, ensure_ascii=False))
@@ -521,13 +522,19 @@ def cmd_run(a):
     out = RUNS / run_id
     out.mkdir(parents=True)
     log(f"Scenario {scenario['id']} – {scenario['title']} in {a.org}/{a.repo} ({out})")
+    run = Run(a.org, a.repo, scenario, out)
     try:
-        Run(a.org, a.repo, scenario, out).execute()
+        run.execute()
     finally:
         record(out)
         if not a.keep:
             cleanup(a.org, a.repo, f"sbx/{out.name}/")
     write_outcome(out)
+    # For schlange-e2e a timeout means the queue did not do its job; without a baseline there
+    # would be nothing else to fail the run (SANDBOX_FAIL_ON_TIMEOUT=1 from run-scenarios.sh).
+    if getattr(run, "timed_out", False) and os.environ.get("SANDBOX_FAIL_ON_TIMEOUT") == "1":
+        log("A wait timed out: failing the run")
+        sys.exit(1)
     if a.baseline:
         sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json"))
 

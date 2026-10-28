@@ -23,6 +23,8 @@ RECONCILE="${RECONCILE:-20}"
 
 app_id="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$CONFIG/apps/queue.json")"
 mkdir -p "$TMP/schlange-data"
+# Admin API for the diagnostic probe below (random, only in this runner).
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TMP/admin-token"
 
 nohup "$BIN" serve \
   --app-id "$app_id" \
@@ -34,6 +36,7 @@ nohup "$BIN" serve \
   --listen "127.0.0.1:$PORT" \
   --reconcile-every "$RECONCILE" \
   --no-lease \
+  --admin-token-file "$TMP/admin-token" \
   >"$TMP/schlange-serve.log" 2>&1 &
 echo "$!" > "$TMP/schlange.pids"
 
@@ -45,6 +48,25 @@ if [ -n "${SANDBOX_SMEE_URL:-}" ]; then
 else
   echo "::notice::no SANDBOX_SMEE_URL: Schlange polls (reconcile every ${RECONCILE}s)"
 fi
+
+# Diagnostics for a run that does not queue anything: what the queue and `explain` say a few
+# minutes into the scenario, for the pull requests that exist then. Printed by the stop step.
+(
+  for round in 1 2; do
+    sleep 240
+    {
+      echo "== probe $round: GET /status"
+      curl -fsS -H "Authorization: Bearer $(cat "$TMP/admin-token")" "http://127.0.0.1:$PORT/status" | head -c 4000
+      echo
+      for n in $(seq 1 40); do
+        out=$(curl -fsS -H "Authorization: Bearer $(cat "$TMP/admin-token")" \
+          "http://127.0.0.1:$PORT/repos/$REPO/pulls/$n/explain" 2>/dev/null) || continue
+        echo "-- explain #$n"; echo "$out" | head -c 1500; echo
+      done
+    } >> "$TMP/probe.log" 2>&1
+  done
+) >/dev/null 2>&1 &
+echo "$!" >> "$TMP/schlange.pids"
 
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
