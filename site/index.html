@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schlange – a self-hosted merge queue</title>
+<meta name="description" content="Schlange is an open-source, self-hosted merge queue that reads your existing .mergify.yml. One small binary, explainable decisions, invariants checked after every step.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #f6f8f5; --surface: #ffffff; --text: #14231c; --muted: #4d5f56;
+    --line: #dbe3dd; --brand: #0e3b2c; --accent: #2e9e5b; --accent-soft: #e3f4e9;
+    --code-bg: #eef2ef;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1511; --surface: #12211a; --text: #e6efe9; --muted: #9fb3a8;
+      --line: #213a2e; --brand: #7fd99a; --accent: #7fd99a; --accent-soft: #163626;
+      --code-bg: #0f1c16;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  header.hero { padding: 72px 0 48px; text-align: center; }
+  .hero img { width: 104px; height: 104px; }
+  h1 { font-size: clamp(2.2rem, 6vw, 3.2rem); margin: 16px 0 8px; letter-spacing: -0.02em; }
+  .tagline { font-size: 1.2rem; color: var(--muted); max-width: 640px; margin: 0 auto; }
+  .tagline code { font-size: 0.95em; }
+  .badge {
+    display: inline-block; margin-top: 18px; padding: 4px 12px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--text); font-size: 0.85rem; font-weight: 600;
+  }
+  .buttons { margin-top: 28px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 10px 20px; border-radius: 10px; font-weight: 600;
+    text-decoration: none; border: 1px solid var(--line); color: var(--text); background: var(--surface);
+  }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--bg); }
+  section { padding: 40px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 1.6rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .lead { color: var(--muted); margin: 0 0 24px; max-width: 720px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+  ol.steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; gap: 12px; }
+  ol.steps li {
+    counter-increment: step; position: relative; padding: 16px 16px 16px 60px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  }
+  ol.steps li::before {
+    content: counter(step); position: absolute; left: 16px; top: 14px; width: 30px; height: 30px;
+    border-radius: 50%; background: var(--accent-soft); color: var(--text); font-weight: 700;
+    display: grid; place-items: center;
+  }
+  ol.steps b { display: block; }
+  ol.steps span { color: var(--muted); font-size: 0.97rem; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    overflow-x: auto; font-size: 0.88rem; line-height: 1.5;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  footer { padding: 32px 0 56px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); }
+  @media (max-width: 520px) { header.hero { padding-top: 48px; } body { font-size: 16px; } }
+</style>
+</head>
+<body>
+<header class="hero wrap">
+  <img src="logo.svg" alt="Schlange logo: a snake whose segmented body is a queue of pull requests">
+  <h1>Schlange</h1>
+  <p class="tagline">An open-source, self-hosted merge queue that reads your existing <code>.mergify.yml</code>, so <code>main</code> stays green.</p>
+  <span class="badge">Early development · not production ready</span>
+  <div class="buttons">
+    <a class="btn primary" href="https://github.com/karma-works/schlange">Source on GitHub</a>
+    <a class="btn" href="https://github.com/karma-works/schlange#implementation-status">Implementation status</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>Why a merge queue</h2>
+    <p class="lead">Two pull requests can each pass CI and still break <code>main</code> together. A merge queue tests every change on top of the current <code>main</code> and the changes ahead of it, and lands it only if that exact combination is green.</p>
+    <p class="lead">Schlange (German for <i>snake</i> and for <i>queue</i>) does this as a drop-in for Mergify's merge queue, built first for one real project whose configuration must keep working unchanged.</p>
+  </section>
+
+  <section>
+    <h2>What it aims for</h2>
+    <div class="grid">
+      <div class="card"><h3>Your configuration, unchanged</h3><p>Reads <code>.mergify.yml</code>: queue rules, two-step CI, batches, bisection, commands and their restrictions.</p></div>
+      <div class="card"><h3>Runs where you run</h3><p>One static binary in a <code>FROM scratch</code> image of about 10 MB. Read-only, no shell, no git, SQLite on one volume.</p></div>
+      <div class="card"><h3>Explains itself</h3><p><code>schlange explain</code> shows why a pull request waits, condition by condition. Every merge leaves an audit record.</p></div>
+      <div class="card"><h3>Made for agents</h3><p>Every function is a CLI command with <code>--json</code> and stable exit codes. Shadow mode compares its decisions with Mergify's before it acts.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How a pull request lands</h2>
+    <ol class="steps">
+      <li><b>Queued</b><span>The rules in <code>.mergify.yml</code> match, or someone allowed to says <code>@mergifyio queue</code>.</span></li>
+      <li><b>Tested together</b><span>A draft pull request on a queue branch combines <code>main</code>, the changes ahead and up to a batch of new ones; your full CI runs on it.</span></li>
+      <li><b>Landed, then checked</b><span>Each change lands with its expected head; afterwards the landed tree is compared with the tested one.</span></li>
+      <li><b>Red? Split, not stuck</b><span>A failing batch is bisected; the culprit leaves the queue with a reason, the rest lands.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Built to be trusted</h2>
+    <p class="lead">A merge queue is critical infrastructure. Schlange's core is a state machine without side effects, and every claim needs evidence.</p>
+    <div class="grid">
+      <div class="card"><h3>Invariants</h3><p>After every simulated step: only tested trees reach <code>main</code>, no pull request is lost, no stale head lands.</p></div>
+      <div class="card"><h3>Faults on purpose</h3><p>Lost, duplicated and reordered webhooks, API errors, crashes at every side effect, an attacker with write access.</p></div>
+      <div class="card"><h3>Real GitHub, side by side</h3><p>A sandbox runs the same scenarios through Mergify and Schlange and compares what each one did.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Try it</h2>
+<pre><code>git clone https://github.com/karma-works/schlange && cd schlange
+tools/fetch-mergify-sources
+cargo build --release -p schlange
+target/release/schlange config validate .mergify.yml
+target/release/schlange sim run scenarios/p1-bisection.yaml</code></pre>
+  </section>
+</main>
+
+<footer class="wrap">
+  Schlange is not affiliated with Mergify. Its behaviour is rebuilt from public documentation, the published schema and observed behaviour; no Mergify code or text is included. "Mergify" is a trademark of its owner.
+</footer>
+</body>
+</html>

@@ -57,6 +57,15 @@ jobs:
       - name: Doctor in the container (health check)
         run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges schlange:ci doctor
 
+  readme-status:
+    name: README feature status
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Status section matches the feature map
+        run: python3 -I scripts/feature-status.py --check
+
   mergify-drift:
     name: Mergify schema diff
     runs-on: ubuntu-latest
