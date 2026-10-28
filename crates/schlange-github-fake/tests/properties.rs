@@ -208,12 +208,27 @@ const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztage
 #[derive(Clone, Debug)]
 enum AOp {
     /// 0 plain, 1 breaks the suite, 2 flaky (fails once on the draft), 3 draft, 4 constitution path.
-    Open { kind: u8, f: u8 },
-    Push { i: u8, f: u8 },
-    Halt { i: u8, add: bool },
-    BasePush { f: u8 },
-    Advance { minutes: u8 },
-    Fault { kind: u8 },
+    Open {
+        kind: u8,
+        f: u8,
+    },
+    Push {
+        i: u8,
+        f: u8,
+    },
+    Halt {
+        i: u8,
+        add: bool,
+    },
+    BasePush {
+        f: u8,
+    },
+    Advance {
+        minutes: u8,
+    },
+    Fault {
+        kind: u8,
+    },
     Restart,
 }
 
@@ -253,7 +268,10 @@ fn arztagent_tester(drop: f64, duplicate: f64, delay_ms: u64, seed: u64) -> Test
         }),
     };
     Tester::new(ARZTAGENT)
-        .ci(CiRule::success("Risk class and data protection", CiOn::Both))
+        .ci(CiRule::success(
+            "Risk class and data protection",
+            CiOn::Both,
+        ))
         .ci(CiRule::success("ci-ok", CiOn::PullRequest))
         .ci(full_suite)
         .ci(CiRule::success("KI-Review", CiOn::PullRequest))
@@ -272,9 +290,15 @@ fn apply_a(t: &mut Running, prs: &mut Vec<u64>, op: &AOp, n: usize) {
     match op {
         AOp::Open { kind, f } => {
             let (path, content) = match kind {
-                1 => (format!("backend/f{f}-{n}.py"), format!("v{n} BREAKS_FULL_SUITE\n")),
+                1 => (
+                    format!("backend/f{f}-{n}.py"),
+                    format!("v{n} BREAKS_FULL_SUITE\n"),
+                ),
                 2 => (format!("backend/f{f}-{n}.py"), format!("FLAKY_ONCE{n}\n")),
-                4 => (format!(".github/workflows/w{n}.yml"), format!("on: [push] # {n}\n")),
+                4 => (
+                    format!(".github/workflows/w{n}.yml"),
+                    format!("on: [push] # {n}\n"),
+                ),
                 _ => (format!("backend/f{f}-{n}.py"), format!("v{n}\n")),
             };
             let author = ["arztagent-bot", "karma-works", "julianhaegele-create"][n % 3];
@@ -347,7 +371,15 @@ fn arztagent_stress_scenario_lands_the_good_pull_requests() {
     let mut prs = Vec::new();
     let kinds = [0u8, 0, 1, 0, 2, 0, 0];
     for (n, kind) in kinds.iter().enumerate() {
-        apply_a(&mut t, &mut prs, &AOp::Open { kind: *kind, f: n as u8 }, n);
+        apply_a(
+            &mut t,
+            &mut prs,
+            &AOp::Open {
+                kind: *kind,
+                f: n as u8,
+            },
+            n,
+        );
     }
     t.advance("6m");
     apply_a(&mut t, &mut prs, &AOp::Restart, 99);
@@ -361,7 +393,10 @@ fn arztagent_stress_scenario_lands_the_good_pull_requests() {
         if *kind == 1 {
             assert!(!landed.contains(&n), "the broken #{n} landed");
         } else if i != 6 {
-            assert!(landed.contains(&n), "#{n} (kind {kind}) did not land: {landed:?}");
+            assert!(
+                landed.contains(&n),
+                "#{n} (kind {kind}) did not land: {landed:?}"
+            );
         }
     }
 }
