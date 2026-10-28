@@ -1,0 +1,47 @@
+name: KI-Review
+
+# Nachbau von arzt-agent/.github/workflows/ai-review.yml: eigener Check-Run `KI-Review` auf
+# dem PR-Head, über pull_request_target (Workflow von main, nichts aus dem PR läuft).
+# Statt eines Modells entscheidet die PR-Beschreibung: „KI-Review: rot“ → failure.
+# Nie für Entwürfe, Queue-PRs und Dependabot (wie im Original: dann gibt es keinen Check).
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review
+    if: >-
+      !github.event.pull_request.draft
+      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && (github.event.action != 'edited' || github.event.changes.body != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name=KI-Review -f head_sha="$SHA" \
+            -f status=in_progress -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .id)
+          sleep "${KI_REVIEW_DELAY:-20}"
+          if printf '%s' "$BODY" | grep -qiE 'KI-Review:[[:space:]]*rot'; then
+            conclusion=failure; summary="Befund (vom Szenario verlangt)."
+          else
+            conclusion=success; summary="Keine Befunde."
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" -f status=completed \
+            -f conclusion="$conclusion" -f "output[title]=KI-Review" -f "output[summary]=$summary" >/dev/null
+          echo "KI-Review: $conclusion"

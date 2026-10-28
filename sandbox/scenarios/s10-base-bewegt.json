@@ -1,0 +1,34 @@
+{
+  "id": "S10",
+  "title": "main bewegt sich außerhalb der Queue, Textkonflikt mit main",
+  "refs": [
+    "MQ-06",
+    "MQ-27",
+    "MQ-47"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "sleep-full 240"
+      ]
+    },
+    {
+      "open": "b",
+      "conflict": true
+    },
+    {
+      "sleep": 60
+    },
+    {
+      "main_commit": {
+        "shared/conflict.txt": "Gemeinsame Datei für Textkonflikte zwischen Szenario-PRs.\nzeile: main ({run})\n"
+      }
+    },
+    {
+      "wait": "quiet",
+      "seconds": 600,
+      "timeout": 3600
+    }
+  ]
+}

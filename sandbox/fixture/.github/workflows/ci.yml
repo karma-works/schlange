@@ -1,0 +1,52 @@
+name: CI
+
+# Nachbau von arzt-agent/.github/workflows/ci.yml: ein Pflichtergebnis `ci-ok`.
+# PR: schnelle Prüfung (light). Queue-PR (Head mergify/merge-queue/*): volle Suite (full).
+# Was die Suite tut, steuern Flag-Dateien unter ci/flags/, die der PR selbst ändert
+# (siehe ci/run.sh). Flags auf main wirken nicht mehr.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  suite:
+    name: Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Mode and flags
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ] && [[ "$HEAD_REF" != mergify/merge-queue/* ]]; then mode=light; else mode=full; fi
+          echo "Modus: $mode"
+          bash ci/run.sh "$mode" "${BASE:-}" "${HEAD:-}"
+
+  # Rot bei jedem Fehler oder Abbruch; nicht gemeldet, wenn der ganze Lauf abgebrochen wurde.
+  ci-ok:
+    name: ci-ok
+    if: ${{ !cancelled() }}
+    needs: [suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULT: ${{ needs.suite.result }}
+        run: |
+          echo "suite: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::Nicht grün: suite"; exit 1; }

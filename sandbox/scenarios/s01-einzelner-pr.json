@@ -1,0 +1,21 @@
+{
+  "id": "S01",
+  "title": "Ein PR, alles grün: einreihen, Queue-PR, Squash-Merge",
+  "refs": [
+    "MQ-18",
+    "MQ-20",
+    "MQ-42"
+  ],
+  "steps": [
+    {
+      "open": "a"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 1800
+    }
+  ]
+}

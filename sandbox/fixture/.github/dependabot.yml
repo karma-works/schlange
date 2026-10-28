@@ -1,0 +1,14 @@
+# Erzeugt echte Dependabot-PRs: ms (Patch), semver (Minor), is-number (Major),
+# actions/checkout in Workflows (Verfassungspfad .github/, wird nicht automatisch eingereiht).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

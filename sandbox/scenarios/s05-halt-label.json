@@ -1,0 +1,40 @@
+{
+  "id": "S05",
+  "title": "Label halt während der Queue: austragen mit Grund, nach Entfernen wieder einreihen",
+  "refs": [
+    "MQ-11",
+    "MQ-12",
+    "MQ-45"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "sleep-full 240"
+      ]
+    },
+    {
+      "sleep": 90
+    },
+    {
+      "label": "a",
+      "add": "halt",
+      "as": "human"
+    },
+    {
+      "sleep": 120
+    },
+    {
+      "label": "a",
+      "remove": "halt",
+      "as": "human"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 2400
+    }
+  ]
+}

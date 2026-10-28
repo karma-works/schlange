@@ -1,0 +1,23 @@
+{
+  "id": "S02",
+  "title": "Drei PRs kurz nacheinander landen als ein Bündel",
+  "refs": [
+    "MQ-26",
+    "MQ-20"
+  ],
+  "steps": [
+    {
+      "open": "a"
+    },
+    {
+      "open": "b"
+    },
+    {
+      "open": "c"
+    },
+    {
+      "wait": "done",
+      "timeout": 2400
+    }
+  ]
+}

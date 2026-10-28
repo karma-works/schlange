@@ -4,3 +4,7 @@
 # Build output and evidence
 /target/
 /evidence/
+
+# Aufzeichnungen der Sandbox-Szenarien (enthalten Mergify-Texte). Nur lokal.
+.sandbox-runs/
+__pycache__/

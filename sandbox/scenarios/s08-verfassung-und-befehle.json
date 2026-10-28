@@ -1,0 +1,43 @@
+{
+  "id": "S08",
+  "title": "Verfassungspfad wird nicht automatisch eingereiht; @mergifyio queue nur vom erlaubten Sender",
+  "refs": [
+    "MQ-50",
+    "MQ-52"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "files": {
+        "governance/regel.txt": "Verfassungsänderung im Szenario\n"
+      }
+    },
+    {
+      "wait": "quiet",
+      "seconds": 300,
+      "timeout": 1800
+    },
+    {
+      "comment": "a",
+      "text": "@mergifyio queue",
+      "as": "driver"
+    },
+    {
+      "wait": "quiet",
+      "seconds": 180,
+      "timeout": 1200
+    },
+    {
+      "comment": "a",
+      "text": "@mergifyio queue",
+      "as": "human"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 2400
+    }
+  ]
+}

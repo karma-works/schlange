@@ -1,0 +1,29 @@
+{
+  "id": "S09",
+  "title": "PR mit roter Schnellprüfung, ohne Datenschutz-Abschnitt, mit rotem KI-Review: nie eingereiht",
+  "refs": [
+    "MQ-16",
+    "MQ-37"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "fail-light"
+      ]
+    },
+    {
+      "open": "b",
+      "datenschutz": false
+    },
+    {
+      "open": "c",
+      "ki_review": "rot"
+    },
+    {
+      "wait": "quiet",
+      "seconds": 300,
+      "timeout": 1800
+    }
+  ]
+}

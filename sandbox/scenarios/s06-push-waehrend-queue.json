@@ -1,0 +1,29 @@
+{
+  "id": "S06",
+  "title": "Neuer Push auf den PR, während er in der Queue ist",
+  "refs": [
+    "MQ-07",
+    "MQ-14"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "sleep-full 240"
+      ]
+    },
+    {
+      "sleep": 120
+    },
+    {
+      "push": "a"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 2400
+    }
+  ]
+}

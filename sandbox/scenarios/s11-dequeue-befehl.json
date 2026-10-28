@@ -1,0 +1,40 @@
+{
+  "id": "S11",
+  "title": "@mergifyio dequeue während des Laufs, danach wieder queue",
+  "refs": [
+    "MQ-45",
+    "MQ-50"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "sleep-full 240"
+      ],
+      "as": "human"
+    },
+    {
+      "sleep": 90
+    },
+    {
+      "comment": "a",
+      "text": "@mergifyio dequeue",
+      "as": "human"
+    },
+    {
+      "sleep": 120
+    },
+    {
+      "comment": "a",
+      "text": "@mergifyio queue",
+      "as": "human"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 2400
+    }
+  ]
+}

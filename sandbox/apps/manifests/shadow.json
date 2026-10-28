@@ -1,0 +1,23 @@
+{
+  "name": "Schlange Schatten Arztagent",
+  "description": "Schlange im Schattenbetrieb: nur Leserechte, entscheidet ohne zu handeln.",
+  "public": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "read",
+    "pull_requests": "read",
+    "issues": "read",
+    "checks": "read",
+    "statuses": "read"
+  },
+  "default_events": [
+    "check_run",
+    "check_suite",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "push",
+    "status"
+  ],
+  "webhook": true
+}

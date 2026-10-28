@@ -1,0 +1,24 @@
+{
+  "id": "S04",
+  "title": "a und b einzeln grün, zusammen rot",
+  "refs": [
+    "MQ-01",
+    "MQ-21"
+  ],
+  "steps": [
+    {
+      "open": "a"
+    },
+    {
+      "open": "b",
+      "flags": [
+        "conflicts-with a"
+      ]
+    },
+    {
+      "wait": "quiet",
+      "seconds": 600,
+      "timeout": 3600
+    }
+  ]
+}

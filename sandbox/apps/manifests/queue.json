@@ -1,0 +1,24 @@
+{
+  "name": "Schlange Sandbox Queue",
+  "description": "Schlange als Merge-Queue in der Sandbox-Organisation (E2E-Tests).",
+  "public": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "write",
+    "statuses": "read",
+    "workflows": "write"
+  },
+  "default_events": [
+    "check_run",
+    "check_suite",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "push",
+    "status"
+  ],
+  "webhook": true
+}

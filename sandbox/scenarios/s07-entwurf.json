@@ -1,0 +1,40 @@
+{
+  "id": "S07",
+  "title": "Entwurf wird nicht eingereiht; nach ready schon; zurück zum Entwurf trägt aus",
+  "refs": [
+    "MQ-09"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "draft": true
+    },
+    {
+      "sleep": 180
+    },
+    {
+      "ready": "a"
+    },
+    {
+      "sleep": 60
+    },
+    {
+      "draft": "a"
+    },
+    {
+      "wait": "quiet",
+      "seconds": 300,
+      "timeout": 1800
+    },
+    {
+      "ready": "a"
+    },
+    {
+      "wait": "done",
+      "prs": [
+        "a"
+      ],
+      "timeout": 2400
+    }
+  ]
+}

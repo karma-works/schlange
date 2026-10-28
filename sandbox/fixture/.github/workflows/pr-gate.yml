@@ -1,0 +1,41 @@
+name: PR gate
+
+# Nachbau von arzt-agent/.github/workflows/pr-gate.yml: Pflicht-Check
+# `Risk class and data protection`. Queue-PRs des Queue-Bots melden sofort grün.
+# Der Bot-Login kommt aus der Repo-Variablen QUEUE_BOT_LOGIN (queue-lab: mergify[bot],
+# schlange-e2e: der Bot der Schlange-App). Genau diese Zeile ändert sich beim Umstieg.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Risk class and data protection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      QUEUE: ${{ startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == (vars.QUEUE_BOT_LOGIN || 'mergify[bot]') }}
+    steps:
+      - if: env.QUEUE == 'true'
+        run: echo "Queue-PR des Queue-Bots; die enthaltenen PRs haben diese Prüfung bestanden."
+      - name: Data protection section
+        if: env.QUEUE != 'true'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if printf '%s' "$BODY" | grep -qiE '^#{1,6}[[:space:]]*Datenschutz'; then
+            echo "Abschnitt Datenschutz vorhanden."
+          elif [ "$AUTHOR" = 'dependabot[bot]' ]; then
+            echo "Dependabot-PR; kein Abschnitt Datenschutz nötig."
+          else
+            echo "::error::PRs brauchen einen Abschnitt Datenschutz in der Beschreibung."
+            exit 1
+          fi

@@ -1,0 +1,71 @@
+# Sandbox-Kopie von arzt-agent/.mergify.yml. Abweichungen: nur die Logins.
+#   arztagent-bot          -> @DRIVER_LOGIN@ (Test-Akteur)
+#   karma-works            -> @HUMAN_LOGIN@
+#   julianhaegele-create   -> entfernt (zweiter Mensch fehlt in der Sandbox)
+# setup.sh ersetzt die Platzhalter. Alles andere bleibt Byte für Byte gleich.
+
+# Merge-Queue (PLAN-MERGIFY.md, 6.2). Mergify liest diese Datei nur von main.
+# Klasse "verfassung": nur Menschen ändern sie (governance/risk-paths.yaml, CODEOWNERS).
+#
+# Ablauf: Ein fertiger PR (kein Entwurf) mit grüner Schnellprüfung, Risiko/Datenschutz und
+# KI-Review kommt in die Queue. Mergify testet ihn im Queue-PR (mergify/merge-queue/*) zusammen
+# mit dem aktuellen main und bis zu vier anderen PRs einmal voll (ci.yml, ci-ok) und merged dann.
+# Verfassungsänderungen reiht ein Mensch mit dem Kommentar "@mergifyio queue" ein.
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 5
+    batch_max_wait_time: 5 minutes
+    # Einreihen: Prüfungen auf dem PR selbst.
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - "#check-failure = 0"
+      - check-success = ci-ok
+      - check-success = Risk class and data protection
+      # Dependabot bekommt im KI-Review keine Secrets; Major-Updates reiht ein Mensch ein.
+      - or:
+          - check-success = KI-Review
+          - author = dependabot[bot]
+    # Mergen: volle Suite auf dem Queue-PR.
+    merge_conditions:
+      - check-success = ci-ok
+
+pull_request_rules:
+  - name: Agenten- und Menschen-PRs automatisch einreihen
+    conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - or:
+          - author = @DRIVER_LOGIN@
+          - author = @HUMAN_LOGIN@
+      # Verfassungspfade aus governance/risk-paths.yaml, erzeugt mit
+      # governance/mergify_config.py; governance/tests/test_mergify.py prüft den Gleichlauf.
+      - -files ~= ^(?!(?:aa\-kalender\-backend/quality/test_owners\.json|aa\-kalender\-backend/quality/w0\-wire\-baseline\.json|aa\-kalender\-backend/quality/stand/.*|\.agents/skills/verify\-arztagent/journeys/.*|\.agents/skills/verify\-arztagent/scripts/.*|\.agents/skills/verify\-arztagent/SKILL\.md|\.agents/skills/verify\-arztagent/features/.*|\.agents/skills/verify\-telefonassistent/journeys/.*|\.agents/skills/verify\-telefonassistent/features/.*|\.agents/skills/verify\-telefonassistent/scenarios/.*)$)(?:\.github/.*|\.claude/.*|\.githooks/.*|governance/.*|AGENTS\.md|\.agents/skills/.*|[^/]*/quality/.*|aa\-migration/[^/]*/quality/.*|(?:.*/)?biome\.json|scripts/policy\.ts|scripts/check\-policy\.ts|scripts/agent\-[^/]*|\.gitleaks\.toml|\.gitleaksignore|\.mergify\.yml)$
+    actions:
+      queue:
+
+  # Patch- und Minor-Updates ohne Menschen; Major-Updates reiht ein Mensch ein.
+  # Workflow-Updates sind Verfassung.
+  - name: Dependabot Patch und Minor einreihen
+    conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - author = dependabot[bot]
+      - or:
+          - dependabot-update-type = version-update:semver-patch
+          - dependabot-update-type = version-update:semver-minor
+      - -files ~= ^(?!(?:aa\-kalender\-backend/quality/test_owners\.json|aa\-kalender\-backend/quality/w0\-wire\-baseline\.json|aa\-kalender\-backend/quality/stand/.*|\.agents/skills/verify\-arztagent/journeys/.*|\.agents/skills/verify\-arztagent/scripts/.*|\.agents/skills/verify\-arztagent/SKILL\.md|\.agents/skills/verify\-arztagent/features/.*|\.agents/skills/verify\-telefonassistent/journeys/.*|\.agents/skills/verify\-telefonassistent/features/.*|\.agents/skills/verify\-telefonassistent/scenarios/.*)$)(?:\.github/.*|\.claude/.*|\.githooks/.*|governance/.*|AGENTS\.md|\.agents/skills/.*|[^/]*/quality/.*|aa\-migration/[^/]*/quality/.*|(?:.*/)?biome\.json|scripts/policy\.ts|scripts/check\-policy\.ts|scripts/agent\-[^/]*|\.gitleaks\.toml|\.gitleaksignore|\.mergify\.yml)$
+    actions:
+      queue:
+
+commands_restrictions:
+  # Per Kommentar einreihen dürfen nur die Menschen aus governance/agent-first.json.
+  queue:
+    conditions:
+      - or:
+          - sender = @HUMAN_LOGIN@

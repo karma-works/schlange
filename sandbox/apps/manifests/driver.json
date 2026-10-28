@@ -1,0 +1,14 @@
+{
+  "name": "Schlange Sandbox Driver",
+  "description": "Test-Akteur der Sandbox: oeffnet PRs, pusht und kommentiert nach Szenario.",
+  "public": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "workflows": "write"
+  },
+  "default_events": [],
+  "webhook": false
+}
