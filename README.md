@@ -124,7 +124,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (300) | – | built 256, partial 8 | 36 |
+| Sub-features (301) | – | built 257, partial 8 | 36 |
 | Sub-features Arztagent uses (162) | – | built 149, partial 4 | 9 |
 
 <details>
@@ -136,7 +136,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Complete CLI with `--json`](.agents/skills/verify-schlange/features/S-CLI.md) | partial | 4 / 1 / 0 |  |
 | [`schlange doctor`](.agents/skills/verify-schlange/features/S-DOCTOR.md) | partial | 10 / 0 / 0 |  |
 | [`schlange explain`](.agents/skills/verify-schlange/features/S-EXPLAIN.md) | partial | 6 / 0 / 2 |  |
-| [Shadow mode](.agents/skills/verify-schlange/features/S-SHADOW.md) | partial | 5 / 0 / 1 |  |
+| [Shadow mode](.agents/skills/verify-schlange/features/S-SHADOW.md) | partial | 6 / 0 / 1 |  |
 | [Scenarios in the simulated forge](.agents/skills/verify-schlange/features/S-SIM.md) | partial | 7 / 0 / 0 |  |
 | [Action `queue`](.agents/skills/verify-schlange/features/action-queue.md) | partial | 4 / 0 / 0 | yes |
 | [Commands `queue`, `dequeue`, `refresh`](.agents/skills/verify-schlange/features/commands.md) | partial | 9 / 0 / 0 | yes |

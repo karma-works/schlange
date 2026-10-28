@@ -48,6 +48,13 @@ compares that with what Mergify did, per pull request.
   --test shadow a_read_only_app_is_enough_for_shadow_mode` (the fake GitHub refuses endpoints
   without the permission GitHub asks for), `--test client
   doctor_accepts_a_read_only_app_for_shadow_mode_only`. Setup guide: `docs/shadow-mode.md`.
+- `history`: built. The shadow layer records once per pull request, in the database, that it
+  saw it open (`seen`). A pull request Mergify merged or closed while shadow mode was not
+  watching (before its start, or while it was stopped) is `inconclusive` instead of a
+  disagreement; one with nothing but `seen` has no row. Found on the first real run next to
+  Arztagent: 20 pull requests merged the day before showed up as disagreements. Tests:
+  `--test shadow pull_requests_merged_before_shadow_mode_saw_them_are_inconclusive`,
+  `shadow::tests::report_agreements_and_each_kind_of_difference`.
 - `acceptance-run`: missing. Two weeks on Arztagent next to the real Mergify (KONZEPT.md,
   section 11) have not happened; only the fake GitHub's scripted other queue was compared.
   W-01/W-02 latency is not measured against Mergify yet.
