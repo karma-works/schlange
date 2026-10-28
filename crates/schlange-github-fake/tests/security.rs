@@ -89,8 +89,22 @@ fn halt_during_transient(status: u16, message: &str) {
     let merged = t.gh.pr(a).unwrap().merged;
     let v = t.gh.invariant_violations(true);
     assert!(!merged && v.is_empty(), "merged={merged} violations={v:?}");
-    // Not stuck either: without the label it lands.
+    // Not stuck either. Removing the label alone does not queue it again (sticky dequeue,
+    // Mergify's observed behaviour: it waits for a new head, with a reason); a new push does
+    // and it lands.
     t.pr(a).unlabel("halt");
+    t.advance("5m");
+    t.settle();
+    assert!(!t.gh.pr(a).unwrap().merged);
+    let held = t
+        .status()
+        .map(|s| s.state["holds"][a.to_string()].to_string())
+        .unwrap_or_default();
+    assert!(held.contains("dequeued-waits-for-new-head"), "{held}");
+    t.pr(a).push("backend/a.py", "a = 2\n");
+    for check in ["ci-ok", "Risk class and data protection", "KI-Review"] {
+        t.pr(a).check(check).succeed();
+    }
     for _ in 0..10 {
         if t.gh.pr(a).unwrap().merged {
             break;
