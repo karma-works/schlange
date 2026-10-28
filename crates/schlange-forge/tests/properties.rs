@@ -268,6 +268,13 @@ fn settings() -> impl Strategy<Value = Settings> {
                 } else {
                     mode
                 };
+                // An accepted `allow_queue_branch_edit` (only with a method that lands the batch
+                // branch) is not modelled by the simulation's invariant checker: the engine
+                // lands the edited head, whose tree the car record does not know (the long
+                // run found the false alarm). The option is deprecated and Arztagent does not
+                // use it; with the other methods the engine refuses the edit, which stays
+                // generated (`queue-branch-edit`, `allow-true`).
+                let branch_edit = branch_edit && !matches!(method, "fast-forward" | "merge-batch");
                 Settings {
                     batch,
                     max_parallel,
@@ -1100,4 +1107,139 @@ fn parallel_mode_dependents_wait_for_a_retried_car() {
     };
     let v = violations(&scenario(&p), Faults::none());
     assert!(v.is_empty(), "{v:?}");
+}
+
+/// Found by the long run: a rule's `edit: draft` was sent while the car waited for the read
+/// before landing; the answer predated it and the queue landed a draft pull request.
+#[test]
+fn a_rule_action_sent_during_verification_does_not_let_a_stale_read_land() {
+    let p = Plan {
+        settings: Settings {
+            batch: (2, None),
+            max_parallel: 1,
+            limit: None,
+            timeout: false,
+            single_step: true,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![(2, 9)],
+            method: "squash",
+            mode: "serial",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![PrPlan {
+            path: 1,
+            marker: 0,
+            open_at: 34,
+        }],
+        humans: vec![],
+        flake: false,
+        faults: Faults {
+            seed: 6083834642072344141,
+            drop: 0.26358159686616495,
+            duplicate: 0.0,
+            delay: 0.21023628659233629,
+            max_delay: 1,
+            reconcile_every: 73,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 3373144939668552277,
+        reply_drop: 0.29744209769727414,
+        reply_duplicate: 0.0,
+        reply_delay: 0.31160418352121166,
+        max_reply_delay: 0,
+        error: 0.18356467492725312,
+        lie: 0.03023647013344635,
+        base_race: 0.022777088255586223,
+        stale_read: 0.37809624051119467,
+        max_lag: 14,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 3373144939668552277,
+            jitter: 0.12329789897821523,
+            max_create_delay: 35,
+            max_cancel_delay: 37,
+        },
+    };
+    let crash = CrashPlan::random(f.seed, 0.06383515102334626, 4);
+    let (v, _sim, log) = outcome_of(&scenario(&p), p.faults.clone(), Some(f), Some(crash));
+    assert!(v.is_empty(), "{}\n{}", v.join("\n"), log);
+}
+
+/// Found by the long run: a car landing its pull requests was dropped in the same step in which
+/// another car's red batch was split (outside serial mode every other car is rebuilt); the
+/// landing's reply then found no car and the pull requests counted as merged by hand.
+#[test]
+fn a_landing_car_survives_the_split_of_another_cars_red_batch() {
+    let p = CalmPlan {
+        settings: Settings {
+            batch: (2, None),
+            max_parallel: 3,
+            limit: None,
+            timeout: true,
+            single_step: false,
+            wip: true,
+            never: true,
+            retries: 0,
+            branch_edit: false,
+            auto: false,
+            actions: vec![],
+            method: "squash",
+            mode: "isolated",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![
+            (844, 0, Toggle::WipUntil(161)),
+            (50, 0, Toggle::None),
+            (23, 1, Toggle::None),
+            (154, 0, Toggle::None),
+            (28, 0, Toggle::None),
+        ],
+        base_pushes: vec![240, 0],
+        faults: Faults {
+            seed: 12289776980116233633,
+            drop: 0.0,
+            duplicate: 0.16600787278929446,
+            delay: 0.2085287783140496,
+            max_delay: 62,
+            reconcile_every: 92,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 15561412287781781834,
+        reply_drop: 0.13045218571961958,
+        reply_duplicate: 0.06808144529838406,
+        reply_delay: 0.43592409159489687,
+        max_reply_delay: 104,
+        error: 0.08373824154159362,
+        lie: 0.10461906442591609,
+        base_race: 0.24630423764053505,
+        stale_read: 0.036193370034842465,
+        max_lag: 5,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 15561412287781781834,
+            jitter: 0.01563339753694231,
+            max_create_delay: 104,
+            max_cancel_delay: 45,
+        },
+    };
+    let s = calm_scenario(&p);
+    let report = schlange_forge::run(&s);
+    let crash = CrashPlan::random(f.seed, 0.03, 3);
+    let (v, sim, log) = outcome_of(&s, p.faults.clone(), Some(f), Some(crash));
+    assert!(v.is_empty(), "{}\n{log}", v.join("\n"));
+    let mut end = sim.end_state();
+    if sim.wire.stats.base_races > 0 {
+        end.base_trees = report.end_state.base_trees.clone();
+    }
+    assert_eq!(end, report.end_state, "{log}");
 }

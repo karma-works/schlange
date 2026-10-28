@@ -679,6 +679,19 @@ pub(crate) fn landing_in_flight(state: &State, number: u64) -> bool {
     })
 }
 
+/// A car whose pull request is about to change (a rule action sent a request that alters what
+/// the conditions read) and that waits for the read before landing goes back to `Green`: the
+/// answer to that read may predate the change, so it is read again after it.
+pub(crate) fn invalidate_verification(state: &mut State, number: u64) {
+    for t in state.trains.values_mut() {
+        for c in &mut t.cars {
+            if c.own.contains(&number) && matches!(c.status, CarStatus::Verifying { .. }) {
+                c.status = CarStatus::Green;
+            }
+        }
+    }
+}
+
 /// A queued pull request merged by the queue: it leaves with outcome `merged`.
 pub(crate) fn record_merge(state: &mut State, number: u64, sha: &str, out: &mut Vec<Decision>) {
     state.unconfirmed_land.remove(&number);
@@ -1792,8 +1805,17 @@ fn front(
             if state.trains[base].mode != Mode::Serial && car.own.len() > 1 {
                 // The failed batch is split next; a bisection runs alone in the train (our
                 // simplification outside serial mode), so the other cars are rebuilt after it.
-                behind = (0..state.trains[base].cars.len())
-                    .filter(|k| *k != i)
+                // A car that is landing stays: its reply or the read after it decides, and
+                // dropping it would lose track of a landing in flight.
+                let train = &state.trains[base];
+                behind = (0..train.cars.len())
+                    .filter(|k| {
+                        *k != i
+                            && !matches!(
+                                train.cars[*k].status,
+                                CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+                            )
+                    })
                     .collect();
             }
             drop_cars(
