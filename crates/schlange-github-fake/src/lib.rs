@@ -1256,6 +1256,20 @@ impl FakeGithub {
         })
     }
 
+    /// The head of pull request `n` right before `at` on the comment clock (a comment's
+    /// `created_at`), from the activity log: the head a commenter at that moment saw. For
+    /// test oracles.
+    pub fn head_at(&self, n: u64, at: u64) -> Option<Sha> {
+        self.with(|s| {
+            let branch = s.prs.get(&n)?.head_ref.clone();
+            s.activity
+                .iter()
+                .rev()
+                .find(|a| a.branch == branch && a.at < at)
+                .map(|a| a.after.clone())
+        })
+    }
+
     /// Sets how many files `GET /pulls/{n}/files` lists at most (GitHub: 3000), so a test can
     /// reach the cap with a few files.
     pub fn set_files_cap(&self, cap: usize) {

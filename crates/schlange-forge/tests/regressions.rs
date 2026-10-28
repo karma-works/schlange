@@ -411,7 +411,8 @@ fn checks_timeout_auto_with_history_times_out() {
         .find(|l| l.text.contains("CHECKS_TIMEOUT"))
         .expect("timeout");
     assert!(
-        line.text.contains("gave the checks 900s, a limit it estimates"),
+        line.text
+            .contains("gave the checks 900s, a limit it estimates"),
         "{}",
         line.text
     );

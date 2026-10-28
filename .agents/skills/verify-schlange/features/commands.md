@@ -35,13 +35,21 @@ a command with a reaction and, where the documentation says so, a reply.
   queue it is in (`PR_MANUALLY_DEQUEUED`, code assumed). Re-queues a dequeued pull request and
   resets what kept it out (manual dequeue, a failed head, attributes that failed the merge
   conditions). `requeue` is the deprecated alias (restriction `requeue`).
-- `pending-push`: built. A push by anyone but the queue while the command waits cancels it, with
-  a reply naming the pusher (GitHub: the login of the head commit's author; the simulation:
-  who pushed). The queue's own updates do not cancel it (`head_by_queue`; Schlange does not
-  update pull requests yet, so this path is not reachable). After entering the queue a push
-  dequeues instead (`PULL_REQUEST_UPDATED`). The command is bound to the head when it was
-  written (simulation) or when Schlange read the comment (GitHub, whose API does not tie a
-  comment to a head).
+- `pending-push`: built. Any new head while the command waits cancels it, whoever pushed it:
+  Schlange never pushes to pull requests, and a commit's author (or the login GitHub links to
+  its email) is free text the pusher writes, so nothing about a commit can exempt it (critic
+  e8a0022 N2; `head_by_queue` is gone). The reply names the pusher only where the forge knows
+  it for certain (the simulation); on GitHub it says "someone". After entering the queue a
+  push dequeues instead (`PULL_REQUEST_UPDATED`).
+- `head-binding`: built. A `queue` command (and a ticked checkbox) vouches for one head. In the
+  simulation it is the head when the comment was written. On GitHub, whose comment API names
+  no head, it is the head GitHub's activity log (`GET /repos/{o}/{r}/activity`, the record of
+  when and by whom a branch moved, which the pusher cannot fake) shows strictly before the
+  comment's `created_at` (a tick: its `updated_at`); a push in the same second counts as after
+  the comment. Without an answer from the log (a fork's branch lives in another repository's
+  log; more than 100 newer moves) it is the head Schlange knew before the comment arrived,
+  never one read after it. A head pushed after the comment therefore cancels the command,
+  however late Schlange handles it (webhook delay, lost webhook, restart).
 - `dequeue`: built. Takes a queued pull request out (`PR_MANUALLY_DEQUEUED`) or cancels a pending
   command (reply); otherwise replies that nothing is queued. Either way after a real dequeue no
   rule queues it again until a new `queue` command (hold `manually-dequeued`).
@@ -50,9 +58,17 @@ a command with a reaction and, where the documentation says so, a reply.
 - `reply`: built. 👍 reaction on every command; replies for refusals, errors, a pull request
   left out of the queue, `refresh` and the commands Schlange lacks. A `queue` or `dequeue` that
   takes effect reports in the status comment (docs: commands), not in a reply.
-- `once`: built. Every comment is handled once (id and edit version); edits of a command do
-  not run it again. On GitHub, reconciliation finds commands among the 100 newest comments that
-  the app has not acknowledged with its reaction (lost webhooks, restarts).
+- `once`: built. Every comment is handled once (id and edit version). An edited comment never
+  runs as a command, on any path: the webhook `issue_comment.edited` is only read as a ticked
+  checkbox in the queue's own comment, by its sender; reconciliation skips every comment whose
+  `updated_at` differs from its `created_at`, because GitHub's REST API does not say who
+  edited it and anyone with write access may edit anyone's comment (critic e8a0022 N1). A
+  command edited before its webhook was handled is lost; its author comments again.
+- `recovery`: built. On GitHub, reconciliation reads every page of each open pull request's
+  comments (up to the client's limit of 30 pages of 100 per pull request) and runs the unedited
+  commands the app has not acknowledged with its reaction (lost webhooks, restarts). A ticked
+  checkbox whose webhook was lost is not recovered: the tick is an edit, and only its webhook
+  says who made it (fail closed; tick again).
 
 ## How to get to it (user POV)
 
@@ -71,6 +87,10 @@ Preconditions:
 - **Arztagent's flow.** `target/release/schlange sim run scenarios/p1-arztagent-constitution.yaml`.
 - **Engine.** `cargo test -p schlange-core --test commands`.
 - **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands queue_dequeue_refresh_and_unsupported_commands a_lost_command_webhook_is_recovered_by_reconciliation arztagent_constitution_pull_request_waits_for_a_listed_human`.
+- **Attacks.** `cargo test -p schlange-github-fake --test security` (edited comments over webhook,
+  reconciliation and a restart; a forged bot author; pushes racing a command; commands behind
+  many comments) and `SCHLANGE_GH_ATTACK_CASES=50 cargo test -p schlange-github-fake --test
+  attacker` (the property test with an agent as attacker).
 
 ## Gotchas
 
@@ -78,3 +98,8 @@ Preconditions:
 - Whether Mergify matches command names case-insensitively and how it answers an unknown word
   is not documented; observe it before claiming conformance.
 - The texts of replies and the status comment are Schlange's own.
+- A comment cannot prove which commits its author looked at. Binding to the head before the
+  comment's time is the best GitHub offers: a human who comments within the same second as a
+  push sees the command cancelled and comments again. Whether GitHub's activity log lists
+  every move of a pull request's branch promptly (and needs no permission beyond `contents:
+  read`) is to be confirmed in a sandbox.

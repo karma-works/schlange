@@ -80,6 +80,8 @@ SCHLANGE_LOCALGIT_PBT_CASES=50 cargo test --release -p schlange-forge --test loc
 cargo run -q -p schlange --features localgit -- sim run --forge localgit scenarios/p1-bisection.yaml
 cargo test -p schlange-github-fake                                      # schlange serve against the fake GitHub over HTTP
 SCHLANGE_GH_PBT_CASES=50 cargo test -p schlange-github-fake --test properties   # long property run on the fake GitHub
+SCHLANGE_GH_ATTACK_CASES=50 cargo test -p schlange-github-fake --test attacker  # an agent with write access as attacker
+cargo test -p schlange-github-fake --test security                      # critic reproductions: edits, forged authors, races, 405/409
 cargo test -p schlange-github-fake --test e2e_commands                  # commands, checkboxes, labels, protections, commit messages
 cargo test -p schlange-core --test commands --test command_parser       # engine-level commands and the fuzzed parser
 docker build -t schlange:dev . && scripts/image-size.sh
@@ -118,6 +120,16 @@ Security notes:
   `crates/schlange-github/src/api.rs` for the guards and the trade-off.
 - Tests never use real tokens; the fake GitHub's test key is in
   `crates/schlange-github-fake/fixtures/`.
+- Threat model (Arztagent): an agent with write access may push, comment, label and edit
+  anyone's comments. So an edited comment never runs as a command (only its webhook names the
+  editor, and it counts only as a ticked checkbox by that sender); a commit's author never
+  vouches for anything (any new head cancels a waiting command); a command vouches for the
+  head GitHub's activity log shows before the comment, never one read later; landing is
+  decided by the engine alone (a transient 405/409 goes back to it, never retried in the
+  adapter); a truncated file list fails every `files` condition. Tests:
+  `cargo test -p schlange-github-fake --test security --test attacker`
+  (`SCHLANGE_GH_ATTACK_CASES=50` for a long run). Residuals: `commands.md` (`head-binding`,
+  Gotchas).
 
 Scenarios can comment (`comment: {pr, by, body}`), tick the queue's checkboxes
 (`tick: {pr, by, checkbox: queue|requeue}`), push as someone else (`push: {pr, by}`), edit the

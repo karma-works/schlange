@@ -484,14 +484,6 @@ impl RepoApi {
         self.list(&format!("/issues/{n}/comments"), prio, None)
     }
 
-    /// The 100 most recently updated comments of the repository (one page, for reconciliation).
-    pub fn recent_comments(&self, prio: Priority) -> Result<Vec<IssueComment>, Error> {
-        self.get(
-            "/issues/comments?sort=updated&direction=desc&per_page=100",
-            prio,
-        )
-    }
-
     /// The 100 newest moves of a branch of this repository, newest first.
     pub fn branch_activity(&self, branch: &str, prio: Priority) -> Result<Vec<Activity>, Error> {
         let r = format!("refs/heads/{branch}");
