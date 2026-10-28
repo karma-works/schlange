@@ -301,8 +301,20 @@ fn apply_a(t: &mut Running, prs: &mut Vec<u64>, op: &AOp, n: usize) {
                 ),
                 _ => (format!("backend/f{f}-{n}.py"), format!("v{n}\n")),
             };
-            let author = ["arztagent-bot", "karma-works", "julianhaegele-create"][n % 3];
+            let author = [
+                "arztagent-bot",
+                "karma-works",
+                "julianhaegele-create",
+                "dependabot[bot]",
+            ][n % 4];
             let mut b = t.open_pr(author).file(&path, &content);
+            if author == "dependabot[bot]" {
+                // Patch and minor updates are queued by their rule, major ones are not.
+                let ty = ["patch", "minor", "major"][*f as usize % 3];
+                b = b.title(&format!(
+                    "Bump a dependency\n\nupdate-type: version-update:semver-{ty}\n..."
+                ));
+            }
             if *kind == 3 {
                 b = b.draft();
             }
