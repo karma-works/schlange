@@ -424,6 +424,8 @@ class Run:
                 return
             time.sleep(20)
         if what == "queued":
+            self.timed_out = True
+            self.save_state()
             raise RuntimeError("timeout before queue checkpoint; subsequent steps were not run")
         log(f"Timeout while waiting for {what}; recording anyway")
         self.timed_out = True
@@ -678,8 +680,7 @@ def cmd_run(a):
         if not a.keep:
             cleanup(a.org, a.repo, f"sbx/{out.name}/")
     write_outcome(out)
-    # For schlange-e2e a timeout means the queue did not do its job; without a baseline there
-    # would be nothing else to fail the run (SANDBOX_FAIL_ON_TIMEOUT=1 from run-scenarios.sh).
+    # Timed-out observations cannot prove a baseline or compatibility.
     if getattr(run, "timed_out", False) and os.environ.get("SANDBOX_FAIL_ON_TIMEOUT") == "1":
         log("A wait timed out: failing the run")
         sys.exit(1)

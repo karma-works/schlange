@@ -81,6 +81,8 @@ class CheckpointTests(unittest.TestCase):
         run = object.__new__(driver.Run)
         run.prs = {'a': {'number': 42}}
         run.checkpoints = []
+        run.timed_out = False
+        run.save_state = unittest.mock.Mock()
         run.pr_state = lambda _: ('open', '')
         run.queue_events = lambda: [{'pull_request': 42, 'type': 'action.queue.enter', 'received_at': '2026-01-01T00:00:00Z'}]
         run.step_wait({'wait': 'queued', 'prs': ['a'], 'timeout': 1})
@@ -94,6 +96,22 @@ class CheckpointTests(unittest.TestCase):
             {'pull_request': 42, 'type': 'action.queue.enter'}], 42))
         with self.assertRaises(RuntimeError):
             run.step_wait({'wait': 'queued', 'prs': ['a'], 'timeout': 0})
+        self.assertTrue(run.timed_out)
+        run.save_state.assert_called_once_with()
+
+    def test_reference_driver_exits_nonzero_after_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / 'scenario.json'
+            scenario.write_text(json.dumps({'id': 'S99', 'title': 'test', 'steps': []}))
+            args = unittest.mock.Mock(scenario=str(scenario), no_wait=True, org='schlange-sandbox',
+                                      repo='queue-lab', keep=True, baseline=None)
+            run = unittest.mock.Mock(timed_out=True)
+            with patch.object(driver, 'RUNS', Path(directory)), patch.object(driver, 'Run', return_value=run), \
+                 patch.object(driver, 'record'), patch.object(driver, 'write_outcome'), \
+                 patch.dict(driver.os.environ, {'SANDBOX_FAIL_ON_TIMEOUT': '1'}):
+                with self.assertRaises(SystemExit) as caught:
+                    driver.cmd_run(args)
+            self.assertEqual(caught.exception.code, 1)
 
     def test_incomplete_event_log_fails_closed(self):
         class Client:
