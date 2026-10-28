@@ -192,11 +192,12 @@ pub struct Simulation<G: GitStore = Repo> {
     intent_seq: u64,
 }
 
-pub const LIMITATIONS: [&str; 6] = [
-    "merge methods other than squash, queue modes parallel/isolated, priorities, scopes: not built",
-    "skip_intermediate_results, direct merge behind the base (scopes), batch_pull_request: not built",
-    "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
-    "in place: only for an up-to-date pull request; Mergify would update it first",
+pub const LIMITATIONS: [&str; 7] = [
+    "scopes: file patterns only (no manual scopes, no capacities); parallel and isolated mode: a batch failure that needs a split rebuilds every other car",
+    "skip_intermediate_results: serial mode with squash, merge or rebase only; direct merge behind the base (scopes), batch_pull_request: not built",
+    "allow_queue_branch_edit: the edit is accepted; merge-batch and fast-forward land it, squash, merge and rebase halt on the tree check",
+    "in place: only for an up-to-date pull request; Mergify would update it first (update_method not built)",
+    "priorities: re-evaluated while a pull request waits; a running bisection is never interrupted",
     "commands backport, copy, rebase, squash, update: recognised and answered, actions not built",
     "commit_message_template (deprecated): not rendered; IANA time zones in Merge-After: not supported",
 ];

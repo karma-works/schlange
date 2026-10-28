@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use schlange_config::rules::Rules;
+use schlange_config::rules::{MergeMethod, Rules};
 use schlange_core::engine::{
     CarPr, CommitMessage, Cosmetic as EngineCosmetic, LandError, LandedCommit, short,
 };
@@ -798,9 +798,18 @@ impl GithubForge {
                 base_sha,
                 prs,
                 own,
+                stack_on,
                 ..
             } => self
-                .build_car(*car, base_branch, branch, base_sha, prs, own)
+                .build_car(
+                    *car,
+                    base_branch,
+                    branch,
+                    base_sha,
+                    prs,
+                    own,
+                    stack_on.as_deref(),
+                )
                 .map(|e| vec![e]),
             // The engine keeps the car's slot until the close is confirmed (I4). The draft's CI
             // stops through the repository's own `cancel-in-progress` setup; the adapter
@@ -822,17 +831,33 @@ impl GithubForge {
                 prs,
                 expected_tree,
                 messages,
+                method,
+                head,
+                draft,
                 ..
-            } => self
-                .land(
+            } => if method.lands_branch() {
+                self.land_branch(
+                    *car,
+                    base_branch,
+                    expected_base_sha,
+                    prs,
+                    expected_tree,
+                    *method,
+                    head.as_deref().unwrap_or_default(),
+                    *draft,
+                )
+            } else {
+                self.land(
                     *car,
                     base_branch,
                     expected_base_sha,
                     prs,
                     expected_tree,
                     messages,
+                    *method,
                 )
-                .map(|e| vec![e]),
+            }
+            .map(|e| vec![e]),
             _ => Ok(vec![]),
         }
     }
@@ -966,6 +991,7 @@ impl GithubForge {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_car(
         &mut self,
         car: u64,
@@ -974,8 +1000,12 @@ impl GithubForge {
         base_sha: &str,
         prs: &[CarPr],
         own: &[u64],
+        stack_on: Option<&str>,
     ) -> Result<Event, Error> {
         let prio = Priority::Normal;
+        // `fast-forward`, `merge-batch`: the branch starts at the car ahead's head and only
+        // this car's own pull requests are merged into it.
+        let start = stack_on.unwrap_or(base_sha);
         // A branch left by an earlier attempt is rebuilt from scratch.
         match self.api.branch_sha(branch, prio) {
             Ok(_) => {
@@ -987,20 +1017,23 @@ impl GithubForge {
             Err(Error::NotFound { .. }) => {}
             Err(e) => return Err(e),
         }
-        match self.api.create_ref(branch, base_sha, prio) {
+        match self.api.create_ref(branch, start, prio) {
             Ok(()) => {}
             Err(e @ (Error::Ambiguous { .. } | Error::Status { status: 422, .. })) => {
-                // Did it happen? Use it when it points at the base.
-                if self.api.branch_sha(branch, prio).ok().as_deref() != Some(base_sha) {
+                // Did it happen? Use it when it points at the start.
+                if self.api.branch_sha(branch, prio).ok().as_deref() != Some(start) {
                     return Err(e);
                 }
             }
             Err(e) => return Err(e),
         }
-        let mut cur = base_sha.to_string();
-        let mut tree = self.api.git_commit(base_sha, prio)?.tree.sha;
+        let mut cur = start.to_string();
+        let mut tree = self.api.git_commit(start, prio)?.tree.sha;
         let mut prefix = Vec::new();
         for (i, p) in prs.iter().enumerate() {
+            if stack_on.is_some() && !own.contains(&p.number) {
+                continue; // carried by the branch it is stacked on
+            }
             let msg = format!("Merge #{} into {branch}", p.number);
             let outcome = match self.api.merge_into(branch, &p.head_sha, &msg, prio) {
                 Ok(o) => o,
@@ -1184,6 +1217,163 @@ impl GithubForge {
     /// of the pull request (open, at the tested head) and of the base (exactly the expected
     /// commit); a pull request that is already merged onto the expected base counts as landed,
     /// so nothing lands twice. Errors are returned, never retried here.
+    /// The commits after `from` up to `to` on `to`'s first-parent line, oldest first (`to`
+    /// included); `None` when `from` is not reached within `limit` commits.
+    fn chain(
+        &self,
+        from: &str,
+        to: &str,
+        limit: usize,
+        prio: Priority,
+    ) -> Result<Option<Vec<String>>, Error> {
+        let mut out = vec![];
+        let mut cur = to.to_string();
+        for _ in 0..limit {
+            if cur == from {
+                out.reverse();
+                return Ok(Some(out));
+            }
+            let c = self.api.git_commit(&cur, prio)?;
+            out.push(cur);
+            match c.parents.first() {
+                Some(p) => cur = p.sha.clone(),
+                None => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Lands a car that merges its batch branch itself: `fast-forward` moves the base onto the
+    /// tested head (`PATCH /git/refs`, never forced), `merge-batch` merges the draft pull
+    /// request with a merge commit. Fresh reads first: every pull request is open at its tested
+    /// head and the base is exactly the expected commit. GitHub marks a pull request merged
+    /// once its head is reachable from the base (MQ-05); the adapter reports each one with the
+    /// commit that carries it.
+    #[allow(clippy::too_many_arguments)]
+    fn land_branch(
+        &mut self,
+        car: u64,
+        base_branch: &str,
+        expected: &str,
+        prs: &[CarPr],
+        expected_tree: &str,
+        method: MergeMethod,
+        head: &str,
+        draft: Option<u64>,
+    ) -> Result<Event, Error> {
+        let prio = Priority::Landing;
+        let landed = |commits, error| {
+            Ok(Event::Landed {
+                car,
+                commits,
+                error,
+            })
+        };
+        for p in prs {
+            let pull = self.pull(p.number, prio)?;
+            if pull.state == "closed" || pull.head.sha != p.head_sha {
+                return landed(vec![], Some(LandError::HeadChanged { number: p.number }));
+            }
+        }
+        let tip = self.branch_tip(base_branch, prio)?;
+        if tip != expected {
+            return landed(vec![], Some(LandError::BaseMoved { actual: tip }));
+        }
+        let first = prs.first().map_or(0, |p| p.number);
+        let new = match (method, draft) {
+            (MergeMethod::MergeBatch, Some(d)) => {
+                let title = format!(
+                    "Merged {}",
+                    prs.iter()
+                        .map(|p| format!("#{}", p.number))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                match self.api.merge_pull(
+                    d,
+                    head,
+                    "merge",
+                    Some(&title),
+                    Some("Merged by the Schlange merge queue"),
+                    prio,
+                )? {
+                    PullMergeOutcome::Merged { sha } => sha,
+                    PullMergeOutcome::HeadMoved => {
+                        return landed(vec![], Some(LandError::HeadChanged { number: first }));
+                    }
+                    PullMergeOutcome::NotMergeable(m) => {
+                        return landed(
+                            vec![],
+                            Some(LandError::Refused {
+                                number: first,
+                                message: refusal_text(405, &m),
+                            }),
+                        );
+                    }
+                }
+            }
+            _ => match self.api.update_ref_cas(base_branch, expected, head, prio) {
+                Ok(()) => head.to_string(),
+                Err(crate::api::CasError::Stale { actual }) => {
+                    return landed(vec![], Some(LandError::BaseMoved { actual }));
+                }
+                Err(crate::api::CasError::NotFastForward) => {
+                    return landed(
+                        vec![],
+                        Some(LandError::Refused {
+                            number: first,
+                            message: "GitHub refused the update: not a fast forward".into(),
+                        }),
+                    );
+                }
+                Err(crate::api::CasError::Api(e)) => return Err(e),
+            },
+        };
+        self.moved(base_branch, expected);
+        let c = self.api.git_commit(&new, prio)?;
+        if c.tree.sha != expected_tree {
+            self.note(format!(
+                "car {car}: landed tree {} differs from the tested tree {}",
+                short(&c.tree.sha),
+                short(expected_tree)
+            ));
+        }
+        // The commits on the base's first-parent line: one per pull request for a
+        // fast-forwarded batch branch, the pull request's own commits in place, one merge
+        // commit for `merge-batch`.
+        let line = if method == MergeMethod::MergeBatch {
+            vec![new.clone()]
+        } else {
+            self.chain(expected, &new, 256, prio)?
+                .unwrap_or_else(|| vec![new.clone()])
+        };
+        let mut commits = Vec::new();
+        for (k, p) in prs.iter().enumerate() {
+            let (sha, extra) = if line.len() == prs.len() {
+                (line[k].clone(), vec![])
+            } else if prs.len() == 1 {
+                let mut l = line.clone();
+                let last = l.pop().unwrap_or_else(|| new.clone());
+                (last, l)
+            } else {
+                (new.clone(), vec![])
+            };
+            let tree = self.api.git_commit(&sha, prio)?.tree.sha;
+            self.known_merged.insert(p.number, sha.clone());
+            commits.push(LandedCommit {
+                number: p.number,
+                sha,
+                tree,
+                extra,
+            });
+        }
+        if let Some(d) = draft {
+            self.known_closed.insert(d);
+        }
+        landed(commits, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn land(
         &mut self,
         car: u64,
@@ -1192,8 +1382,10 @@ impl GithubForge {
         prs: &[CarPr],
         expected_tree: &str,
         messages: &[CommitMessage],
+        method: MergeMethod,
     ) -> Result<Event, Error> {
         let prio = Priority::Landing;
+        let rebase = method == MergeMethod::Rebase;
         let prefix = self.prefix_of(car);
         let mut expected = expected_base.to_string();
         let mut commits = Vec::new();
@@ -1213,7 +1405,12 @@ impl GithubForge {
                     // hand. Ours only when it sits right on the expected base.
                     let sha = pull.merge_commit_sha.clone().unwrap_or_default();
                     let c = self.api.git_commit(&sha, prio)?;
-                    if c.parents.first().map(|x| x.sha.as_str()) != Some(expected.as_str()) {
+                    let on_expected = if rebase {
+                        self.chain(&expected, &sha, 256, prio)?.is_some()
+                    } else {
+                        c.parents.first().map(|x| x.sha.as_str()) == Some(expected.as_str())
+                    };
+                    if !on_expected {
                         error = Some(LandError::HeadChanged { number: p.number });
                         break 'prs;
                     }
@@ -1241,6 +1438,9 @@ impl GithubForge {
                 // `inherit` leaves title and body to GitHub's squash settings; with trailers
                 // on an inherited body the adapter writes that body itself, as GitHub would.
                 let (title, message) = match messages.iter().find(|m| m.number == p.number) {
+                    // `commit_message_format` is for squash commits; merge and rebase keep
+                    // GitHub's own messages.
+                    _ if method != MergeMethod::Squash => (None, None),
                     None => (None, None),
                     Some(m) => {
                         let inherited = if m.body.is_none() && !m.trailers.is_empty() {
@@ -1256,9 +1456,10 @@ impl GithubForge {
                         (m.title.clone(), body)
                     }
                 };
-                match self.api.squash_pull(
+                match self.api.merge_pull(
                     p.number,
                     &p.head_sha,
+                    method.as_str(),
                     title.as_deref(),
                     message.as_deref(),
                     prio,
@@ -1345,7 +1546,25 @@ impl GithubForge {
                 }
             };
             let c = self.api.git_commit(&landed_sha, prio)?;
-            let parent = c.parents.first().map(|x| x.sha.clone()).unwrap_or_default();
+            // A rebase puts the pull request's commits on the base, `landed_sha` last.
+            let mut extra = if rebase {
+                self.chain(&expected, &landed_sha, 256, prio)?
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            extra.pop();
+            let entry = extra.first().cloned().unwrap_or_else(|| landed_sha.clone());
+            let parent = if entry == landed_sha {
+                c.parents.first().map(|x| x.sha.clone()).unwrap_or_default()
+            } else {
+                self.api
+                    .git_commit(&entry, prio)?
+                    .parents
+                    .first()
+                    .map(|x| x.sha.clone())
+                    .unwrap_or_default()
+            };
             if parent != expected {
                 note = format!(
                     "landed on {} instead of the expected base {} (a push raced the merge call)",
@@ -1371,7 +1590,7 @@ impl GithubForge {
                 number: p.number,
                 sha: landed_sha.clone(),
                 tree: c.tree.sha.clone(),
-                extra: vec![],
+                extra,
             });
             expected = landed_sha;
             match tested_tree {

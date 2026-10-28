@@ -156,6 +156,10 @@ pub struct Squash {
     pub head_tested: bool,
     /// What the merge guard said at landing time (`None`: the conditions held).
     pub guard: Option<String>,
+    /// A commit the landing put on the base before the pull request's last one (a `rebase`
+    /// replaying its commits, a fast-forward in place over its own commits): its tree is not
+    /// tested on its own, the landing's last commit is.
+    pub intermediate: bool,
 }
 
 /// Decides whether a pull request may land right now (I1 at landing time): `Some(why)` when
@@ -371,6 +375,8 @@ pub(crate) struct St {
     /// Former repository names (renames answer with redirects).
     pub old_names: Vec<String>,
     pub rulesets: Vec<Value>,
+    /// Checks a ruleset on the default branch requires (`GET /rules/branches/…`).
+    pub required_checks: Vec<String>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
 }
@@ -394,6 +400,84 @@ impl St {
     }
 
     /// A push to a branch: pull requests on it get `mergeable: null` for a while.
+    /// GitHub marks an open pull request merged once its head is reachable from its base
+    /// branch (a fast-forward, a merged batch pull request; MQ-05).
+    pub fn mark_reachable(&mut self, branch: &str, tip: &str) {
+        let now: Vec<u64> = self
+            .prs
+            .values()
+            .filter(|p| p.open && !p.merged && p.base == branch)
+            .filter(|p| self.repo.is_ancestor(&p.head_sha, tip))
+            .map(|p| p.number)
+            .collect();
+        for n in now {
+            let p = self.prs.get_mut(&n).expect("pr");
+            p.merged = true;
+            p.open = false;
+            p.merge_commit_sha = Some(tip.to_string());
+            self.emit_pr("closed", n, json!({}));
+        }
+    }
+
+    /// Records a fast-forward of the default branch from `old` to `new` as landings: every
+    /// commit on the new first-parent line is a queue branch commit (`Merge #n`, tested as a
+    /// prefix of a green draft) or, checked in place, the pull request's own commits whose tip
+    /// is the tested head.
+    pub fn record_fast_forward(&mut self, old: &str, new: &str) {
+        let mut line: Vec<Sha> = self
+            .repo
+            .first_parent_history(new)
+            .into_iter()
+            .take_while(|c| c != old)
+            .collect();
+        line.reverse();
+        let bot = self.bot();
+        let in_place = self
+            .prs
+            .values()
+            .find(|p| p.open && p.user != bot && p.head_sha == new)
+            .map(|p| p.number);
+        let mut parent = old.to_string();
+        for (k, c) in line.iter().enumerate() {
+            let commit = self.repo.get(c).clone();
+            let (pr, head) = match in_place {
+                Some(n) => (n, new.to_string()),
+                None => {
+                    let n = commit
+                        .message
+                        .strip_prefix("Merge #")
+                        .and_then(|r| r.split_whitespace().next())
+                        .and_then(|x| x.parse().ok())
+                        .unwrap_or(0);
+                    let head = commit.parents.get(1).cloned().unwrap_or_default();
+                    (n, head)
+                }
+            };
+            let last = k + 1 == line.len();
+            let tree = commit.tree_id.clone();
+            let tested_green = self.tree_tested_green(&tree);
+            let head_tested = self.head_tested(&head) || self.checked_in_place(&head, old);
+            let guard = match (self.merge_guard.clone(), self.prs.get(&pr).cloned()) {
+                (Some(g), Some(p)) => g(&p),
+                _ => None,
+            };
+            self.squashes.push(Squash {
+                pr,
+                sha: c.clone(),
+                parent: parent.clone(),
+                tree,
+                tested_green,
+                head,
+                head_tested,
+                guard,
+                message: commit.message.clone(),
+                merged_by: bot.clone(),
+                intermediate: in_place.is_some() && !last,
+            });
+            parent = c.clone();
+        }
+    }
+
     pub fn touched(&mut self, branch: &str) {
         if self.mergeable_lag == 0 {
             return;
@@ -879,6 +963,7 @@ impl FakeGithub {
             stale: BTreeMap::new(),
             old_names: Vec::new(),
             rulesets: Vec::new(),
+            required_checks: Vec::new(),
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
             comment_clock: 1_800_000_000,
@@ -992,6 +1077,11 @@ impl FakeGithub {
 
     pub fn set_permissions(&self, p: BTreeMap<String, String>) {
         self.with(|s| s.cfg.permissions = p);
+    }
+
+    /// A ruleset on the default branch that requires these checks.
+    pub fn set_required_checks(&self, checks: &[&str]) {
+        self.with(|s| s.required_checks = checks.iter().map(|c| c.to_string()).collect());
     }
 
     pub fn add_ruleset(&self, ruleset: Value) {
@@ -1315,6 +1405,11 @@ impl FakeGithub {
         self.with(|s| s.repo.tree_id_of(sha))
     }
 
+    /// Whether `ancestor` is reachable from `of`.
+    pub fn is_ancestor(&self, ancestor: &str, of: &str) -> bool {
+        self.with(|s| s.repo.is_ancestor(ancestor, of))
+    }
+
     pub fn parents_of(&self, sha: &str) -> Vec<Sha> {
         self.with(|s| s.repo.get(sha).parents.clone())
     }
@@ -1380,7 +1475,7 @@ impl FakeGithub {
     pub fn invariant_violations(&self, quiescent: bool) -> Vec<String> {
         self.with(|s| {
             let mut v = s.violations.clone();
-            for q in &s.squashes {
+            for q in s.squashes.iter().filter(|q| !q.intermediate) {
                 if !q.head_tested {
                     v.push(format!(
                         "I1: #{} landed at head {} that no open queue draft tested",
@@ -1403,13 +1498,15 @@ impl FakeGithub {
                 match s.squashes.iter().find(|q| q.sha == c) {
                     None => v.push(format!("I0: {c} on the base was not made by a landing")),
                     Some(q) => {
-                        if !q.tested_green {
+                        if !q.tested_green && !q.intermediate {
                             v.push(format!(
                                 "I0: #{} landed as {c} with a tree the queue never saw green",
                                 q.pr
                             ));
                         }
-                        *seen_prs.entry(q.pr).or_insert(0) += 1;
+                        if !q.intermediate {
+                            *seen_prs.entry(q.pr).or_insert(0) += 1;
+                        }
                     }
                 }
             }
@@ -1419,7 +1516,7 @@ impl FakeGithub {
                 }
             }
             let mut per_pr: BTreeMap<u64, u32> = BTreeMap::new();
-            for q in &s.squashes {
+            for q in s.squashes.iter().filter(|q| !q.intermediate) {
                 *per_pr.entry(q.pr).or_default() += 1;
             }
             for (pr, k) in per_pr {

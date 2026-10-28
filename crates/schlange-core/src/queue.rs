@@ -494,7 +494,17 @@ pub(crate) fn discard_containing(
 /// Discards every car and a bisection; every pull request waits again.
 pub(crate) fn reset(state: &mut State, base: &str, reason: DequeueReason, out: &mut Vec<Decision>) {
     bisect::abort(state, base, Some(reason.clone()), &[], out);
-    drop_cars_from(state, base, 0, Some(reason.clone()), Some(reason), &[], out);
+    // Every car, also those that do not depend on the first (parallel and isolated mode).
+    let all: Vec<usize> = (0..state.trains.get(base).map_or(0, |t| t.cars.len())).collect();
+    drop_cars(
+        state,
+        base,
+        &all,
+        Some(reason.clone()),
+        Some(reason),
+        &[],
+        out,
+    );
 }
 
 fn find_car(state: &State, car: u64) -> Option<(String, usize)> {

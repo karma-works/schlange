@@ -14,6 +14,7 @@ pub mod model;
 pub mod protections;
 pub mod queue;
 pub mod reasons;
+pub mod status;
 pub mod time;
 
 pub use engine::{Decision, Event, State, step};

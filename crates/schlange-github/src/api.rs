@@ -303,6 +303,27 @@ pub struct BranchRule {
     pub kind: String,
     #[serde(default)]
     pub ruleset_id: Option<u64>,
+    /// The rule's parameters (`required_status_checks` lists the required contexts).
+    #[serde(default)]
+    pub parameters: Option<Value>,
+}
+
+impl BranchRule {
+    /// The check contexts a `required_status_checks` rule requires.
+    pub fn required_checks(&self) -> Vec<String> {
+        if self.kind != "required_status_checks" {
+            return vec![];
+        }
+        self.parameters
+            .as_ref()
+            .and_then(|p| p["required_status_checks"].as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|c| c["context"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -719,7 +740,20 @@ impl RepoApi {
         message: Option<&str>,
         prio: Priority,
     ) -> Result<PullMergeOutcome, Error> {
-        let mut body = json!({ "merge_method": "squash", "sha": sha });
+        self.merge_pull(n, sha, "squash", title, message, prio)
+    }
+
+    /// `PUT /pulls/{n}/merge` with a merge method (`squash`, `merge`, `rebase`) at head `sha`.
+    pub fn merge_pull(
+        &self,
+        n: u64,
+        sha: &str,
+        method: &str,
+        title: Option<&str>,
+        message: Option<&str>,
+        prio: Priority,
+    ) -> Result<PullMergeOutcome, Error> {
+        let mut body = json!({ "merge_method": method, "sha": sha });
         if let Some(t) = title {
             body["commit_title"] = json!(t);
         }

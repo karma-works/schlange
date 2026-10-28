@@ -38,7 +38,7 @@
 +0:11:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as bba8845.
 +0:11:10  ci        #1001 check `full` completed on eb2818c: success
 +0:11:10  webhook   #1001 check `full` completed on eb2818c: success
-+0:11:10  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1001. — It may not merge yet: frozen by `release 2.0` (until engine time 2400).
++0:11:10  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1001. — It may not merge yet: frozen by `release 2.0` (until 2026-01-01T00:40:00Z).
 +0:11:20  ci        #1002 check `full` completed on a0e491e: success
 +0:40:00  webhook   timer
 +0:40:00  decision  read #1 #1001 main mergify/merge-queue/34fd968ed0 before acting

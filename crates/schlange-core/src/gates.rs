@@ -162,7 +162,12 @@ pub fn landing_hold(
         if f.holds(pr, &ctx, now) {
             let until = f
                 .end
-                .map(|e| format!("until engine time {e}"))
+                .map(|e| {
+                    format!(
+                        "until {}",
+                        crate::time::format_utc(state.host.epoch as i64 + e as i64)
+                    )
+                })
                 .unwrap_or_else(|| "until it is removed".into());
             return Some((format!("frozen by `{}` ({until})", f.reason), f.end));
         }
