@@ -59,7 +59,8 @@ The app must have exactly these permissions and events. More is a warning in
 |---|---|---|
 | Metadata | Read | mandatory; rulesets |
 | Contents | Read | `.mergify.yml`, commits, compare, branches |
-| Pull requests | Read | pull requests, files, comments (commands), labels, reviews |
+| Pull requests | Read | pull requests, files, comments, labels, reviews |
+| Issues | Read | GitHub sends `issue_comment` webhooks (the `@mergifyio` commands) only with it |
 | Checks | Read | check runs, including Mergify's |
 | Commit statuses | Read | statuses used as conditions |
 
@@ -107,13 +108,25 @@ Copy the image (or build it on the host) and create, on the host:
 ```
 
 ```bash
-sudo install -d -o 65532 -g 65532 /srv/schlange-shadow/data
+sudo mkdir -p /srv/schlange-shadow/data /srv/schlange-shadow/secrets
+# copy app.pem and webhook-secret into secrets/ first, then:
 openssl rand -hex 32 | sudo tee /srv/schlange-shadow/secrets/admin-token >/dev/null
-sudo chown -R 65532:65532 /srv/schlange-shadow/secrets && sudo chmod 0400 /srv/schlange-shadow/secrets/*
+# uid 65532 has no name on the host: chown takes the number, `install -o` does not.
+# The glob runs inside sudo: after chmod 0750 your own user cannot list secrets/.
+sudo sh -c 'chown -R 65532:65532 /srv/schlange-shadow/data /srv/schlange-shadow/secrets &&
+  chmod 0750 /srv/schlange-shadow/data /srv/schlange-shadow/secrets &&
+  chmod 0400 /srv/schlange-shadow/secrets/*'
 ```
 
 `serve` does not start without the schema: it validates the configuration like
 `config validate` and never applies an invalid one.
+
+**Docker from a snap** (Ubuntu's `snap install docker`) cannot mount paths like `/srv`: put
+data, secrets and the schema into named volumes instead and mount those
+(`-v schlange-shadow-secrets:/run/secrets:ro`, `-v schlange-shadow-config:/config:ro` with
+`SCHLANGE_SCHEMA=/config/schema.json`, `-v schlange-shadow-data:/data`). Fill a volume through a
+throw-away container, for example
+`sudo tar -C secrets -cf - . | docker run --rm -i -v schlange-shadow-secrets:/dst alpine sh -c 'tar -xf - -C /dst && chown -R 65532:65532 /dst && chmod 0400 /dst/*'`.
 
 ## 5. Check, then start
 
@@ -123,11 +136,11 @@ The same environment serves `doctor` and `serve`:
 cat > /srv/schlange-shadow/env <<EOF
 SCHLANGE_GITHUB_APP_ID=<app id>
 SCHLANGE_GITHUB_PRIVATE_KEY=/run/secrets/app.pem
-SCHLANGE_REPOS=<owner>/<repository>
+SCHLANGE_REPOS=<owner>/<repository>          # several: comma-separated, one app installed on all
 SCHLANGE_WEBHOOK_SECRET_FILE=/run/secrets/webhook-secret
 SCHLANGE_ADMIN_TOKEN_FILE=/run/secrets/admin-token
 SCHLANGE_SCHEMA=/schema.json
-SCHLANGE_SHADOW=1
+SCHLANGE_SHADOW=true
 SCHLANGE_MERGIFY_LOGIN=mergify[bot]
 SCHLANGE_MERGIFY_APP=mergify
 EOF
@@ -167,6 +180,12 @@ docker run -d --name schlange-shadow --restart unless-stopped \
 docker logs -f schlange-shadow      # start-up reconciliation, then one line per decision
 ```
 
+On some hosts (snap Docker with AppArmor) `--security-opt no-new-privileges` makes every
+`exec` fail with "operation not permitted"; leave it out there, the rest of the hardening stays.
+`SCHLANGE_SHADOW` must be `true` (not `1`). The environment is fixed when the container is
+created: after changing the env file, remove and run the container again, a restart is not
+enough.
+
 The port is bound to localhost on purpose: a TLS terminator in front of it (section 6) is
 the only way in.
 
@@ -186,6 +205,18 @@ the webhook secret and ignores the rest.
 
   Expose only `/webhook`. Keep the admin API (`/status`, `/repos/…`) on localhost or behind
   another authentication.
+- **Tailscale Funnel** if the host is in a tailnet with Funnel allowed: a public HTTPS URL
+  `https://<machine>.<tailnet>.ts.net:8443` without a domain or an open port; TLS ends on the
+  host. Publish only the webhook path:
+
+  ```bash
+  sudo tailscale funnel --bg --https=8443 --set-path=/webhook http://127.0.0.1:8080/webhook
+  ```
+
+  For the first minute or two after starting Funnel, GitHub's deliveries can fail with `EOF`
+  while Tailscale's ingress learns the host. Redeliver one from the app's "Advanced" page (or
+  `POST /app/hook/deliveries/{id}/attempts`) to confirm a `202`; `doctor`'s `webhooks` line
+  stays WARN until enough new deliveries succeeded.
 - **A relay** such as smee.io forwards deliveries through a public channel. Only for public
   repositories: anyone who knows the channel URL can read the payloads.
 - **Without webhooks** Schlange still reconciles every 300 seconds (`--reconcile-every`), so it
@@ -213,7 +244,9 @@ docker exec schlange-shadow /usr/local/bin/schlange shadow report --repo <owner>
 docker run --rm -v /srv/schlange-shadow/data:/data schlange:shadow shadow report --repo <owner>/<repository> --data-dir /data
 ```
 
-Add `--json` for machines. Exit 0 without disagreements, 1 with.
+Add `--json` for machines. Exit 0 without disagreements, 1 with. Pull requests that closed
+before shadow mode watched appear only as a number in the first line; `--all` lists them
+(`--json` always has them, with `"before_watching": true`).
 
 Per pull request it compares: queued or not, landed or not, landing order (among the pull
 requests both landed), the batch it landed in, and the dequeue reason.
@@ -222,7 +255,7 @@ requests both landed), the batch it landed in, and the dequeue reason.
 |---|---|
 | `agree` | same outcome |
 | `disagree` | different outcome; the report names the field |
-| `inconclusive` | Mergify merged before Schlange decided (usually right after a restart) |
+| `inconclusive` | Schlange could not decide: Mergify merged it before Schlange decided, or while shadow mode was not watching (before its start, while it was stopped) |
 | `pending` | not finished yet |
 
 ## 9. Work the differences

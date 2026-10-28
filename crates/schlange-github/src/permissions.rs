@@ -6,6 +6,7 @@
 //! | `metadata` | read | mandatory for every app; also rulesets (`/rules/branches`) |
 //! | `contents` | write | queue branches (`POST /git/refs`), merges into them (`POST /merges`), squash landing, reading `.mergify.yml` |
 //! | `pull_requests` | write | reading pull requests and files, the queue's draft pull requests, merging, labels and comments on pull requests |
+//! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
@@ -16,7 +17,7 @@
 //! as a warning.
 //!
 //! **Shadow mode** ([`SHADOW_PERMISSIONS`]) needs only read access: `metadata`, `contents`,
-//! `pull_requests`, `checks` and `statuses`, all `read`. A shadow app with nothing more cannot
+//! `issues`, `pull_requests`, `checks` and `statuses`, all `read`. A shadow app with nothing more cannot
 //! write to GitHub whatever the code does; `schlange doctor --shadow` warns about any write
 //! permission, and `serve --shadow` asks for read-only installation tokens.
 
@@ -25,6 +26,7 @@ pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("metadata", "read", true),
     ("contents", "write", true),
     ("pull_requests", "write", true),
+    ("issues", "read", true),
     ("checks", "write", true),
     ("statuses", "read", true),
     ("workflows", "write", false),
@@ -35,6 +37,7 @@ pub const SHADOW_PERMISSIONS: &[(&str, &str, bool)] = &[
     ("metadata", "read", true),
     ("contents", "read", true),
     ("pull_requests", "read", true),
+    ("issues", "read", true),
     ("checks", "read", true),
     ("statuses", "read", true),
 ];
@@ -129,7 +132,10 @@ mod tests {
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         let r = compare(&granted);
-        assert_eq!(r.missing, vec!["contents: read → write"]);
+        assert_eq!(
+            r.missing,
+            vec!["contents: read → write", "issues: none → read"]
+        );
         assert_eq!(r.optional_missing, vec!["workflows: none → write"]);
         assert_eq!(r.extra, vec!["administration: read"]);
     }
