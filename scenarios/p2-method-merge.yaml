@@ -1,0 +1,37 @@
+# `merge_method: merge` (queue-merge-methods-other, MQ-03, MQ-05). Five pull requests in batches
+# of two with two parallel checks; #2 has two commits. Every landing must keep I0 for this
+# method: the commits on main are the tested trees of the queue branch (see invariants.rs).
+name: p2-method-merge
+description: Batches land with merge_method merge and keep the tested trees.
+config: configs/method-merge.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+  - { number: 4, author: bot, files: { d.txt: "d\n" } }
+  - { number: 5, author: bot, files: { e.txt: "e\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 10s, push: { pr: 2, files: { b2.txt: "second commit\n" } } }
+  - { at: 20s, open: 3 }
+  - { at: 20s, open: 4 }
+  - { at: 30s, open: 5 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+  - { pr: 5, state: merged }
+expect_base: { a.txt: "a\n", b2.txt: "second commit\n", e.txt: "e\n" }

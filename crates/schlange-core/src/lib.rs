@@ -7,12 +7,14 @@ pub mod control;
 pub mod cosmetics;
 pub mod engine;
 pub mod eval;
+pub mod gates;
 pub mod journal;
 pub mod message;
 pub mod model;
 pub mod protections;
 pub mod queue;
 pub mod reasons;
+pub mod status;
 pub mod time;
 
 pub use engine::{Decision, Event, State, step};

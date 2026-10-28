@@ -14,6 +14,7 @@ pub mod conditions;
 pub mod config_file;
 pub mod features;
 pub mod glob;
+pub mod queue_extras;
 pub mod rules;
 pub mod schema;
 pub mod semantics;

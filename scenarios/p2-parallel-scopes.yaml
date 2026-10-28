@@ -1,0 +1,43 @@
+# Parallel mode with scopes (queue-modes `parallel`, scopes, MQ-48). #1 and #3 touch `api`,
+# #2 touches `web`: #1 and #3 share a batch (same scopes), #2 gets its own batch tested on main
+# alone, in parallel (not on top of the `api` batch); each lands when its own checks pass. #4
+# touches `api` and `web`: it is tested on top of
+# both batches and lands after them. #5 changes the Makefile (a barrier): it waits until every
+# batch ahead is done and runs alone.
+name: p2-parallel-scopes
+description: Disjoint scopes are tested and land in parallel; overlapping ones stack; a barrier runs alone.
+config: configs/parallel-scopes.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { api/a.rs: "a\n" } }
+  - { number: 2, author: bot, files: { web/b.ts: "b\n" } }
+  - { number: 3, author: bot, files: { api/c.rs: "c\n" } }
+  - { number: 4, author: bot, files: { api/d.rs: "d\n", web/d.ts: "d\n" } }
+  - { number: 5, author: bot, files: { Makefile: "all:\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 3 }
+  - { at: 2m, open: 2 }
+  - { at: 3m, open: 4 }
+  - { at: 4m, open: 5 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }
+  - { pr: 5, state: merged }
+expect_merged_order: [1, 3, 2, 4, 5]
+expect_log:
+  - "(checks #1 #3)"
+  - "(checks #2)"
+  - "+ #1 #3 #2 #4 (checks #4)"

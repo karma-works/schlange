@@ -1,0 +1,17 @@
+# `fast-forward` checked in place: one parallel check, serial, batch size 1, single-step CI.
+merge_queue:
+  max_parallel_checks: 1
+
+queue_rules:
+  - name: default
+    merge_method: fast-forward
+    queue_conditions:
+      - base = main
+      - check-success = ci
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

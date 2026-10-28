@@ -126,6 +126,57 @@ pub struct Car {
     /// confirms that attempt's close, the retry is not built, and the two share one slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<u64>,
+    /// The cars this car was built on top of (`parallel` mode: the last car ahead in each of
+    /// its scopes; `isolated`: none). In `serial` mode every car depends on all cars ahead and
+    /// the list is not used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps: Vec<u64>,
+    /// `fast-forward`, `merge-batch`: the head of the car ahead that this car's branch was
+    /// built on (only its own pull requests were merged on top).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacked_on: Option<String>,
+    /// The scopes of the car's own pull requests (`scopes`), and whether one is a barrier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub barrier: bool,
+}
+
+/// `merge_queue.mode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Serial,
+    Parallel,
+    Isolated,
+}
+
+pub fn mode(rules: &Rules) -> Mode {
+    match rules.merge_queue.mode.as_str() {
+        "parallel" => Mode::Parallel,
+        "isolated" => Mode::Isolated,
+        _ => Mode::Serial,
+    }
+}
+
+/// Whether car `i` waits for cars it was built on (they have not landed yet).
+pub fn has_live_deps(train: &Train, i: usize) -> bool {
+    match train.mode {
+        Mode::Serial => i > 0,
+        Mode::Isolated => false,
+        Mode::Parallel => train.cars[i]
+            .deps
+            .iter()
+            .any(|d| train.cars.iter().any(|c| c.id == *d)),
+    }
+}
+
+/// The scopes of a pull request and whether it is a barrier.
+pub fn pr_scopes(rules: &Rules, pr: Option<&PullRequest>) -> (Vec<String>, bool) {
+    match (&rules.scopes, pr) {
+        (Some(s), Some(p)) => s.of(&p.files),
+        _ => (vec![], false),
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -141,6 +192,9 @@ pub struct Train {
     /// Earlier base tips, newest last: a read that shows one of them is stale (MQ-33).
     #[serde(default)]
     pub history: Vec<String>,
+    /// `merge_queue.mode`, set from the rules on every step.
+    #[serde(skip)]
+    pub mode: Mode,
 }
 
 impl Train {
@@ -167,6 +221,16 @@ impl Train {
             }
         }
     }
+}
+
+/// `reset_on_external_merge: never`, unless a queue lands its batch branch itself
+/// (`fast-forward`, `merge-batch`): a base that moved outside the queue can never be
+/// fast-forwarded onto a tested branch, and a stacked branch was built on the car ahead, not on
+/// the base, so there is no tested change to carry over. Such a queue resets (our choice; the
+/// docs do not say).
+fn never_reset(rules: &Rules) -> bool {
+    rules.merge_queue.reset_on_external_merge == "never"
+        && !rules.queue_rules.iter().any(|q| q.method().lands_branch())
 }
 
 pub(crate) fn rule<'a>(rules: &'a Rules, name: &str) -> Option<&'a QueueRule> {
@@ -290,14 +354,71 @@ pub(crate) fn drop_cars_from(
     skip: &[u64],
     out: &mut Vec<Decision>,
 ) {
-    let Some(train) = state.trains.get_mut(base) else {
+    let Some(train) = state.trains.get(base) else {
         return;
     };
     if from >= train.cars.len() {
         return;
     }
-    let removed: Vec<Car> = train.cars.drain(from..).collect();
-    for (i, car) in removed.iter().enumerate() {
+    let mut idx = vec![from];
+    idx.extend(dependents_of(state, base, from));
+    drop_cars(state, base, &idx, first, behind, skip, out);
+}
+
+/// The dependents of car `i` of `base` under the configured mode (stored with the train).
+pub(crate) fn dependents_of(state: &State, base: &str, i: usize) -> Vec<usize> {
+    dependents(&state.trains[base], i)
+}
+
+/// Indices of the cars that depend on car `i`, directly or through others, in order. Serial:
+/// every car behind it; isolated: none; parallel: the cars whose dependency chain reaches it.
+pub fn dependents(train: &Train, i: usize) -> Vec<usize> {
+    match train.mode {
+        Mode::Serial => (i + 1..train.cars.len()).collect(),
+        Mode::Isolated => vec![],
+        Mode::Parallel => {
+            let mut ids = vec![train.cars[i].id];
+            let mut out = Vec::new();
+            for (k, c) in train.cars.iter().enumerate().skip(i + 1) {
+                if c.deps.iter().any(|d| ids.contains(d)) {
+                    ids.push(c.id);
+                    out.push(k);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Removes the cars at `idx` (the first gets `first`, the others `behind`) and puts their own
+/// pull requests back to waiting.
+pub(crate) fn drop_cars(
+    state: &mut State,
+    base: &str,
+    idx: &[usize],
+    first: Option<DequeueReason>,
+    behind: Option<DequeueReason>,
+    skip: &[u64],
+    out: &mut Vec<Decision>,
+) {
+    let Some(train) = state.trains.get_mut(base) else {
+        return;
+    };
+    let mut sorted: Vec<usize> = idx
+        .iter()
+        .copied()
+        .filter(|i| *i < train.cars.len())
+        .collect();
+    sorted.sort();
+    sorted.dedup();
+    let lead = idx.first().copied();
+    let mut removed: Vec<(bool, Car)> = Vec::new();
+    for &i in sorted.iter().rev() {
+        removed.push((Some(i) == lead, train.cars.remove(i)));
+    }
+    removed.reverse();
+    for (is_first, car) in removed.iter() {
+        let i = if *is_first { 0 } else { 1 };
         close(state, Some(base), car, out);
         let reason = if i == 0 { &first } else { &behind };
         for &n in &car.own {
@@ -373,7 +494,17 @@ pub(crate) fn discard_containing(
 /// Discards every car and a bisection; every pull request waits again.
 pub(crate) fn reset(state: &mut State, base: &str, reason: DequeueReason, out: &mut Vec<Decision>) {
     bisect::abort(state, base, Some(reason.clone()), &[], out);
-    drop_cars_from(state, base, 0, Some(reason.clone()), Some(reason), &[], out);
+    // Every car, also those that do not depend on the first (parallel and isolated mode).
+    let all: Vec<usize> = (0..state.trains.get(base).map_or(0, |t| t.cars.len())).collect();
+    drop_cars(
+        state,
+        base,
+        &all,
+        Some(reason.clone()),
+        Some(reason),
+        &[],
+        out,
+    );
 }
 
 fn find_car(state: &State, car: u64) -> Option<(String, usize)> {
@@ -579,7 +710,7 @@ pub(crate) fn landed(
         }
         return;
     };
-    let never = rules.merge_queue.reset_on_external_merge == "never";
+    let never = never_reset(rules);
     if never
         && commits.is_empty()
         && let Some(LandError::BaseMoved { actual }) = error
@@ -608,8 +739,29 @@ pub(crate) fn landed(
         state.branches.insert(base.clone(), actual);
         return;
     }
+    let independent: Vec<u64> = {
+        let t = &state.trains[&base];
+        let deps = dependents(t, i);
+        t.cars
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k != i && !deps.contains(k))
+            .map(|(_, c)| c.id)
+            .collect()
+    };
     let train = state.trains.get_mut(&base).expect("found");
     let c = train.cars.remove(i);
+    if !commits.is_empty() {
+        // Parallel and isolated mode: a car that does not depend on the one that landed was
+        // tested on a base without it; it lands as its tested change on the new base.
+        for o in train
+            .cars
+            .iter_mut()
+            .filter(|o| independent.contains(&o.id))
+        {
+            o.drifted = true;
+        }
+    }
     for commit in commits {
         if !commit.sha.is_empty() {
             train.set_base(commit.sha.clone());
@@ -753,15 +905,6 @@ pub(crate) enum Verdict {
     Attributes(Vec<(u64, String)>),
 }
 
-/// Merge conditions of a queue rule; without `merge_conditions` the queue conditions apply.
-fn merge_conditions(rule: &QueueRule) -> &[Condition] {
-    if rule.merge_conditions.is_empty() {
-        &rule.queue_conditions
-    } else {
-        &rule.merge_conditions
-    }
-}
-
 /// Whether a condition depends on check runs (the queue draft's CI).
 fn uses_checks(c: &Condition) -> bool {
     c.atoms().iter().any(|a| a.attribute.starts_with("check"))
@@ -847,7 +990,7 @@ pub(crate) fn verdict(state: &State, rules: &Rules, car: &Car, base: &str, now: 
     if car.head_sha.is_none() || car.tree.is_none() {
         return Verdict::Pending;
     }
-    let conds = merge_conditions(rule);
+    let conds = crate::gates::merge_conditions(state, rule, base);
     let check_conds: Vec<Condition> = conds.iter().filter(|c| uses_checks(c)).cloned().collect();
     let mut checks_ok = true;
     let mut attr_fail = Vec::new();
@@ -1327,6 +1470,23 @@ fn retry(
     {
         b.land = Some(id);
     }
+    if rule(rules, &old.queue).is_some_and(|r| r.method().lands_branch()) {
+        // The cars behind were built on the old attempt's branch, which will never land.
+        let behind = dependents_of(state, base, i);
+        let reason = DequeueReason::new(
+            code::BATCH_AHEAD_REBUILT,
+            "the batch ahead is checked again on a new branch",
+        );
+        drop_cars(
+            state,
+            base,
+            &behind,
+            Some(reason.clone()),
+            Some(reason),
+            &[],
+            out,
+        );
+    }
     for &n in &old.own {
         if let Some(e) = state.queued.get_mut(&n) {
             if e.status == (EntryStatus::InCar { car: old.id }) {
@@ -1370,7 +1530,84 @@ fn retry_split_tests(
     changed
 }
 
-/// Handles the front car; returns whether the train changed.
+/// Whether a landing of `base` is in flight (being verified, sent, or resolved).
+fn landing_busy(train: &Train, except: u64) -> bool {
+    train.cars.iter().any(|c| {
+        c.id != except
+            && matches!(
+                c.status,
+                CarStatus::Verifying { .. }
+                    | CarStatus::Landing { .. }
+                    | CarStatus::LandCheck { .. }
+            )
+    })
+}
+
+/// Why car `car` may not land now (the pause, a freeze, a merge protection), recorded per pull
+/// request for status output; wakes the engine when the hold can end by itself.
+fn car_hold(
+    state: &mut State,
+    rules: &Rules,
+    car: &Car,
+    now: Time,
+    out: &mut Vec<Decision>,
+) -> bool {
+    let mut held = false;
+    for &n in &car.own {
+        let Some(pr) = state.pull_requests.get(&n).cloned() else {
+            continue;
+        };
+        if let Some((text, wake_at)) = crate::gates::landing_hold(state, rules, &pr, now) {
+            held = true;
+            state.landing_holds.insert(n, text);
+            if let Some(at) = wake_at {
+                wake(state, at, out);
+            }
+        }
+    }
+    held
+}
+
+/// The car that decides next: serial mode, the front car; otherwise the first car that waits
+/// for no car it was built on and has something to decide. Only one landing is in flight per
+/// base. During a bisection only its landing test lands.
+fn deciding_car(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    now: Time,
+    out: &mut Vec<Decision>,
+) -> Option<usize> {
+    let train = state.trains[base].clone();
+    for (i, c) in train.cars.iter().enumerate() {
+        if has_live_deps(&train, i) {
+            if train.mode == Mode::Serial {
+                return None;
+            }
+            continue;
+        }
+        if let Some(b) = &train.bisection
+            && b.land != Some(c.id)
+        {
+            if train.mode == Mode::Serial {
+                return None;
+            }
+            continue;
+        }
+        let decides = match c.status {
+            CarStatus::Green => !landing_busy(&train, c.id) && !car_hold(state, rules, c, now, out),
+            CarStatus::Verifying { .. } | CarStatus::LandCheck { .. } => true,
+            CarStatus::Failed { .. } => c.test.is_none(),
+            _ => false,
+        };
+        if decides || train.mode == Mode::Serial {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Handles the deciding car; returns whether the train changed.
 fn front(
     state: &mut State,
     rules: &Rules,
@@ -1379,21 +1616,29 @@ fn front(
     token: Option<u64>,
     out: &mut Vec<Decision>,
 ) -> bool {
-    let train = &state.trains[base];
-    let Some(car) = train.cars.first().cloned() else {
+    let Some(i) = deciding_car(state, rules, base, now, out) else {
         return false;
     };
+    let train = &state.trains[base];
+    let car = train.cars[i].clone();
     if let Some(b) = &train.bisection
         && b.land != Some(car.id)
     {
         return false;
     }
+    let paused = state.pause.is_some();
     match &car.status {
+        CarStatus::Green if paused || landing_busy(train, car.id) => false,
+        CarStatus::Green if car_hold(state, rules, &car, now, out) => false,
+        CarStatus::Verifying { .. } if paused => {
+            state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Green;
+            false
+        }
         CarStatus::Green => {
             let mut branches = vec![base.to_string()];
             branches.extend(car.branch.clone());
             let t = refresh(state, &car, branches, out);
-            state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Verifying {
+            state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Verifying {
                 token: t,
                 since: now,
             };
@@ -1406,7 +1651,7 @@ fn front(
             let mut branches = vec![base.to_string()];
             branches.extend(car.branch.clone());
             let t = refresh(state, &car, branches, out);
-            state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Verifying {
+            state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Verifying {
                 token: t,
                 since: now,
             };
@@ -1415,9 +1660,14 @@ fn front(
         CarStatus::Verifying { token: t, .. } if token == Some(*t) => {
             let v = verdict(state, rules, &car, base, now);
             let expected = state.trains[base].base_sha.clone();
+            let held = matches!(v, Verdict::Green) && car_hold(state, rules, &car, now, out);
             match (v, expected, car.tree.clone()) {
+                (Verdict::Green, _, _) if held => {
+                    state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Green;
+                    false
+                }
                 (Verdict::Green, Some(expected), Some(tree)) => {
-                    state.trains.get_mut(base).expect("train").cars[0].status =
+                    state.trains.get_mut(base).expect("train").cars[i].status =
                         CarStatus::Landing { since: now };
                     wake(state, now + REPLY_TIMEOUT, out);
                     let format =
@@ -1449,6 +1699,11 @@ fn front(
                             .collect(),
                         expected_tree: tree,
                         messages,
+                        method: rule(rules, &car.queue)
+                            .map(|r| r.method())
+                            .unwrap_or_default(),
+                        head: car.head_sha.clone(),
+                        draft: car.draft.filter(|_| !car.in_place),
                     });
                     false
                 }
@@ -1458,7 +1713,7 @@ fn front(
                     true
                 }
                 _ => {
-                    state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Running;
+                    state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Running;
                     true
                 }
             }
@@ -1477,6 +1732,7 @@ fn front(
                         number: n,
                         sha: pr.merge_commit_sha.clone().unwrap_or_default(),
                         tree: String::new(),
+                        extra: vec![],
                     }),
                     _ => break,
                 }
@@ -1499,20 +1755,35 @@ fn front(
                 // Nothing landed (as far as this read shows): verify and land again. The
                 // compare-and-swap on the base and the forge's refusal to merge a closed pull
                 // request keep this from landing twice.
-                state.trains.get_mut(base).expect("train").cars[0].status = CarStatus::Green;
+                state.trains.get_mut(base).expect("train").cars[i].status = CarStatus::Green;
             }
             true
+        }
+        CarStatus::Failed { .. }
+            if car.test.is_none() && skip_may_stand_in(state, rules, base, i) =>
+        {
+            // `skip_intermediate_results`: a car behind that carries this one may still pass
+            // and stand in for it; its failure is handled once no such car is left running.
+            false
         }
         CarStatus::Failed { code, text } if car.test.is_none() => {
             let (code, text) = (*code, text.clone());
             if rule(rules, &car.queue).is_some_and(|r| car.attempt < r.max_checks_retries) {
-                retry(state, rules, base, 0, &text, out);
+                retry(state, rules, base, i, &text, out);
                 return true;
             }
-            drop_cars_from(
+            let mut behind = dependents_of(state, base, i);
+            if state.trains[base].mode != Mode::Serial && car.own.len() > 1 {
+                // The failed batch is split next; a bisection runs alone in the train (our
+                // simplification outside serial mode), so the other cars are rebuilt after it.
+                behind = (0..state.trains[base].cars.len())
+                    .filter(|k| *k != i)
+                    .collect();
+            }
+            drop_cars(
                 state,
                 base,
-                1,
+                &behind,
                 Some(DequeueReason::new(
                     code::BATCH_AHEAD_FAILED,
                     format!("the batch ahead failed: {text}"),
@@ -1525,7 +1796,10 @@ fn front(
                 out,
             );
             let train = state.trains.get_mut(base).expect("train");
-            let failed = train.cars.remove(0);
+            let Some(i) = train.cars.iter().position(|c| c.id == car.id) else {
+                return true;
+            };
+            let failed = train.cars.remove(i);
             close(state, Some(base), &failed, out);
             bisect::batch_failed(state, rules, base, &failed, code, &text, out);
             true
@@ -1552,7 +1826,7 @@ fn release_held(state: &mut State, base: &str) {
 fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &mut Vec<Decision>) {
     let known = state.branches.get(base).cloned();
     let now = state.now;
-    let never = rules.merge_queue.reset_on_external_merge == "never";
+    let never = never_reset(rules);
     let train = &state.trains[base];
     // While a car lands, a new tip is most likely the landing itself, seen before its reply:
     // the landing's outcome (its reply, or the read that resolves it) decides; a push from
@@ -1829,8 +2103,10 @@ pub fn process_trains(
 ) {
     collect_garbage(state, rules, out);
     closing_timeouts(state, out);
+    state.landing_holds.clear();
     let bases: Vec<String> = state.trains.keys().cloned().collect();
     for base in bases {
+        state.trains.get_mut(&base).expect("train").mode = mode(rules);
         base_and_foreign_pushes(state, rules, &base, out);
         closed_drafts(state, &base, out);
         if state.trains[&base].halted.is_some() {
@@ -1838,20 +2114,250 @@ pub fn process_trains(
         }
         release_held(state, &base);
         timeouts(state, &base, out);
+        if state.pause.is_some() {
+            pause_train(state, &base, out);
+        }
         for _ in 0..64 {
             let mut changed = evaluate_cars(state, rules, &base, now, token, out);
             changed |= retry_split_tests(state, rules, &base, out);
             changed |= bisect::resolve(state, rules, &base, out);
+            changed |= skip_intermediate(state, rules, &base, out);
             changed |= front(state, rules, &base, now, token, out);
             if !changed {
                 break;
             }
         }
+        preempt(state, rules, &base, out);
         fill(state, rules, &base, now, out);
     }
 }
 
-fn waiting_order(state: &State, rules: &Rules, base: &str) -> Vec<u64> {
+/// The merge queue is paused: running queue checks are cancelled (docs: merge-queue/pause). A
+/// car whose landing is in flight finishes first; a check in place cannot be cancelled and
+/// keeps running (it does not land while the pause lasts).
+fn pause_train(state: &mut State, base: &str, out: &mut Vec<Decision>) {
+    let train = &state.trains[base];
+    if train.cars.iter().any(|c| {
+        matches!(
+            c.status,
+            CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+        )
+    }) {
+        return;
+    }
+    let reason = DequeueReason::new(
+        code::PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE,
+        format!(
+            "the merge queue is paused: {}",
+            state
+                .pause
+                .as_ref()
+                .map(|p| p.reason.as_str())
+                .unwrap_or("")
+        ),
+    );
+    if train.bisection.is_some() {
+        bisect::abort(state, base, Some(reason.clone()), &[], out);
+    }
+    let idx: Vec<usize> = state.trains[base]
+        .cars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.in_place)
+        .map(|(i, _)| i)
+        .collect();
+    if !idx.is_empty() {
+        drop_cars(
+            state,
+            base,
+            &idx,
+            Some(reason.clone()),
+            Some(reason),
+            &[],
+            out,
+        );
+    }
+}
+
+/// `allow_checks_interruption` (docs: priority): when the next pull request to embark has a
+/// higher priority than the pull requests of a running car and its priority rule allows it,
+/// that car (and the cars built on it) is discarded so the urgent one is tested first. The
+/// discarded pull requests stay queued with `PR_WITH_HIGHER_PRIORITY_QUEUED`. Without the
+/// option the urgent pull request goes right after the cars that run. A landing in flight,
+/// a bisection and checks in place are never interrupted.
+fn preempt(state: &mut State, rules: &Rules, base: &str, out: &mut Vec<Decision>) {
+    let train = &state.trains[base];
+    if state.pause.is_some() || train.bisection.is_some() {
+        return;
+    }
+    let order = waiting_order(state, rules, base);
+    let Some(&first) = order.first() else {
+        return;
+    };
+    let e = &state.queued[&first];
+    if !e.interrupt {
+        return;
+    }
+    let p = e.priority;
+    let lower = |c: &Car| {
+        c.own
+            .iter()
+            .all(|n| state.queued.get(n).is_some_and(|o| o.priority < p))
+    };
+    let Some(i) = train.cars.iter().position(|c| {
+        !c.in_place
+            && c.test.is_none()
+            && lower(c)
+            && matches!(
+                c.status,
+                CarStatus::Running
+                    | CarStatus::Confirming { .. }
+                    | CarStatus::Green
+                    | CarStatus::Retry
+            )
+    }) else {
+        return;
+    };
+    let busy = |c: &Car| {
+        matches!(
+            c.status,
+            CarStatus::Building { .. }
+                | CarStatus::Verifying { .. }
+                | CarStatus::Landing { .. }
+                | CarStatus::LandCheck { .. }
+        )
+    };
+    let mut idx = vec![i];
+    idx.extend(dependents(train, i));
+    if idx.iter().any(|k| busy(&train.cars[*k])) {
+        return;
+    }
+    let reason = DequeueReason::new(
+        code::PR_WITH_HIGHER_PRIORITY_QUEUED,
+        format!("#{first} with a higher priority interrupted these checks"),
+    );
+    drop_cars(
+        state,
+        base,
+        &idx,
+        Some(reason.clone()),
+        Some(reason),
+        &[],
+        out,
+    );
+}
+
+/// Whether a car behind car `i` (serial mode, same queue, not landing the branch itself) is still
+/// running and could stand in for it with `skip_intermediate_results`.
+fn skip_may_stand_in(state: &State, rules: &Rules, base: &str, i: usize) -> bool {
+    let train = &state.trains[base];
+    let car = &train.cars[i];
+    rules.merge_queue.skip_intermediate_results
+        && train.mode == Mode::Serial
+        && train.bisection.is_none()
+        && !car.in_place
+        && rule(rules, &car.queue).is_some_and(|r| !r.method().lands_branch())
+        && train.cars[i + 1..]
+            .iter()
+            .take_while(|c| c.queue == car.queue && c.test.is_none() && !c.in_place)
+            .any(|c| {
+                matches!(
+                    c.status,
+                    CarStatus::Building { .. }
+                        | CarStatus::Running
+                        | CarStatus::Confirming { .. }
+                        | CarStatus::Green
+                )
+            })
+}
+
+/// `skip_intermediate_results` (docs: batches, "Skip intermediate results"): when a car
+/// further back is green, the cars ahead of it that it was built on merge with it without
+/// waiting for their own checks, even a red one. Built for serial mode with `squash`, `merge`
+/// and `rebase`: the absorbed cars' drafts are closed and their pull requests land with the
+/// green car (its branch carries them; the commits are the tested prefixes of that branch).
+fn skip_intermediate(
+    state: &mut State,
+    rules: &Rules,
+    base: &str,
+    out: &mut Vec<Decision>,
+) -> bool {
+    if !rules.merge_queue.skip_intermediate_results {
+        return false;
+    }
+    let train = &state.trains[base];
+    if train.mode != Mode::Serial || train.bisection.is_some() || train.cars.len() < 2 {
+        return false;
+    }
+    let front = &train.cars[0];
+    if !matches!(
+        front.status,
+        CarStatus::Running
+            | CarStatus::Confirming { .. }
+            | CarStatus::Failed { .. }
+            | CarStatus::Retry
+    ) || front.test.is_some()
+        || front.in_place
+    {
+        return false;
+    }
+    let queue = front.queue.clone();
+    if rule(rules, &queue).is_none_or(|r| r.method().lands_branch()) {
+        return false;
+    }
+    let mut j = None;
+    for (k, c) in train.cars.iter().enumerate().skip(1) {
+        if c.queue != queue || c.test.is_some() || c.in_place {
+            break;
+        }
+        if c.status == CarStatus::Green {
+            j = Some(k);
+            break;
+        }
+        if matches!(
+            c.status,
+            CarStatus::Verifying { .. } | CarStatus::Landing { .. } | CarStatus::LandCheck { .. }
+        ) {
+            break;
+        }
+    }
+    let Some(j) = j else {
+        return false;
+    };
+    let absorbed: Vec<Car> = train.cars[..j].to_vec();
+    let mut own: Vec<u64> = absorbed.iter().flat_map(|c| c.own.clone()).collect();
+    own.extend(train.cars[j].own.clone());
+    let green_id = train.cars[j].id;
+    let t = state.trains.get_mut(base).expect("train");
+    t.cars.drain(..j);
+    t.cars[0].own = own;
+    t.cars[0].deps.clear();
+    for c in &absorbed {
+        close(state, Some(base), c, out);
+        for &n in &c.own {
+            if let Some(e) = state.queued.get_mut(&n) {
+                e.status = EntryStatus::InCar { car: green_id };
+                out.push(Decision::ChecksEnded {
+                    number: n,
+                    queue: e.queue.clone(),
+                    reason: DequeueReason::new(
+                        code::INTERMEDIATE_RESULTS_SKIPPED,
+                        format!(
+                            "car {green_id} behind it is green and carries it; it lands with \
+                             that car"
+                        ),
+                    ),
+                });
+            }
+        }
+    }
+    true
+}
+
+/// The waiting pull requests of `base` in queue order: higher priority first, then the order
+/// of the queue rules in the configuration, then arrival (our reading of the docs: priority
+/// is "always the first criterion"; the order of queue rules among equal priorities is ours).
+pub fn waiting_order(state: &State, rules: &Rules, base: &str) -> Vec<u64> {
     let rank = |q: &str| {
         rules
             .queue_rules
@@ -1859,14 +2365,14 @@ fn waiting_order(state: &State, rules: &Rules, base: &str) -> Vec<u64> {
             .position(|r| r.name == q)
             .unwrap_or(usize::MAX)
     };
-    let mut w: Vec<(usize, u64, u64)> = state
+    let mut w: Vec<(std::cmp::Reverse<u32>, usize, u64, u64)> = state
         .queued
         .iter()
         .filter(|(_, e)| e.base == base && e.status == EntryStatus::Waiting)
-        .map(|(n, e)| (rank(&e.queue), e.seq, *n))
+        .map(|(n, e)| (std::cmp::Reverse(e.priority), rank(&e.queue), e.seq, *n))
         .collect();
     w.sort();
-    w.into_iter().map(|(_, _, n)| n).collect()
+    w.into_iter().map(|(_, _, _, n)| n).collect()
 }
 
 /// Whether Mergify's rule for checking in place holds for this queue rule.
@@ -1898,20 +2404,49 @@ fn changed_dirs(pr: Option<&PullRequest>) -> std::collections::BTreeSet<String> 
     .unwrap_or_default()
 }
 
+/// Jaccard share of two sets: common items out of all items either side names (0 when both
+/// are empty).
+fn share<T: Ord>(a: &std::collections::BTreeSet<T>, b: &std::collections::BTreeSet<T>) -> f64 {
+    let union = a.union(b).count();
+    if union == 0 {
+        0.0
+    } else {
+        a.intersection(b).count() as f64 / union as f64
+    }
+}
+
 /// Picks the next batch of at most `size` from the waiting pull requests (queue order). The
-/// batch is seeded with the first one; the free places go to the most similar candidates among
-/// the first `window`, one at a time (docs: batches, "Filling the batch by similarity"). Without
-/// scopes (not built) every candidate ties on scopes, so the changed directories decide: the
-/// share of directories a candidate has in common with the batch, out of all directories either
-/// side changes; ties go to the one queued first. The window (batch size plus
-/// `max_parallel_checks`) and the measure are our reading of the docs, which name neither
-/// exactly. The batch keeps queue order.
+/// batch is seeded with the first one; the free places go one at a time to the best candidates
+/// among the first `window` (docs: batches, "How Pull Requests Are Grouped Into a Batch"):
+/// higher priority first (similarity never pulls a lower priority ahead), then the share of
+/// scopes in common with the batch, then the share of changed directories, then queue order.
+/// The window (batch size plus `max_parallel_checks`) and the measures are our reading of the
+/// docs, which name neither exactly. The batch keeps queue order.
 pub fn group_by_similarity(state: &State, order: &[u64], size: usize, window: usize) -> Vec<u64> {
+    group_with_scopes(state, &Rules::default(), order, size, window)
+}
+
+/// [`group_by_similarity`] with the configuration's scopes.
+pub fn group_with_scopes(
+    state: &State,
+    rules: &Rules,
+    order: &[u64],
+    size: usize,
+    window: usize,
+) -> Vec<u64> {
     let Some(&seed) = order.first() else {
         return vec![];
     };
+    let prio = |n: u64| state.queued.get(&n).map_or(0, |e| e.priority);
+    let scopes = |n: u64| -> std::collections::BTreeSet<String> {
+        pr_scopes(rules, state.pull_requests.get(&n))
+            .0
+            .into_iter()
+            .collect()
+    };
     let mut batch = vec![seed];
     let mut dirs = changed_dirs(state.pull_requests.get(&seed));
+    let mut sc = scopes(seed);
     let mut candidates: Vec<(usize, u64)> = order
         .iter()
         .copied()
@@ -1920,29 +2455,28 @@ pub fn group_by_similarity(state: &State, order: &[u64], size: usize, window: us
         .take(window.saturating_sub(1))
         .collect();
     while batch.len() < size && !candidates.is_empty() {
-        let score = |n: u64| {
-            let d = changed_dirs(state.pull_requests.get(&n));
-            let union = d.union(&dirs).count();
-            let common = d.intersection(&dirs).count();
-            if union == 0 {
-                0.0
-            } else {
-                common as f64 / union as f64
-            }
+        let key = |n: u64| {
+            (
+                prio(n),
+                share(&scopes(n), &sc),
+                share(&changed_dirs(state.pull_requests.get(&n)), &dirs),
+            )
         };
         let best = candidates
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| {
-                score(a.1)
-                    .partial_cmp(&score(b.1))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let (ka, kb) = (key(a.1), key(b.1));
+                ka.0.cmp(&kb.0)
+                    .then(ka.1.partial_cmp(&kb.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .then(ka.2.partial_cmp(&kb.2).unwrap_or(std::cmp::Ordering::Equal))
                     .then(b.0.cmp(&a.0))
             })
             .map(|(k, _)| k)
             .expect("non-empty");
         let (_, n) = candidates.remove(best);
         dirs.extend(changed_dirs(state.pull_requests.get(&n)));
+        sc.extend(scopes(n));
         batch.push(n);
     }
     batch.sort_by_key(|n| order.iter().position(|o| o == n));
@@ -1973,6 +2507,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
             c.base_sha = base_sha.clone();
             c.status = CarStatus::Building { since: now };
             c.replaces = None;
+            c.stacked_on = None;
             wake(state, now + REPLY_TIMEOUT, out);
             out.push(Decision::BuildCar {
                 car: car.id,
@@ -1982,11 +2517,13 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
                 base_sha,
                 prs,
                 own: car.own.clone(),
+                stack_on: None,
             });
         }
         return;
     }
-    if busy >= slots
+    if state.pause.is_some()
+        || busy >= slots
         || train.cars.iter().any(|c| {
             matches!(
                 c.status,
@@ -2003,6 +2540,12 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         bisect::fill(state, rules, base, &base_sha, out);
         return;
     }
+    let mode = train.mode;
+    // A barrier runs alone: nothing starts while one is in the train (serial and parallel
+    // mode; an isolated queue builds no dependencies, docs: queue modes).
+    if mode != Mode::Isolated && train.cars.iter().any(|c| c.barrier) {
+        return;
+    }
     let order = waiting_order(state, rules, base);
     let Some(&first) = order.first() else {
         return;
@@ -2011,9 +2554,20 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     let Some(rule) = rule(rules, &queue) else {
         return;
     };
+    let (seed_scopes, seed_barrier) = pr_scopes(rules, state.pull_requests.get(&first));
+    if seed_barrier && mode != Mode::Isolated && !train.cars.is_empty() {
+        return; // the barrier waits until every batch ahead of it completed
+    }
+    // A batch never mixes queue rules; it looks ahead for pull requests of the same rule (docs:
+    // priority). A barrier shares a batch only with barriers; in parallel mode only pull
+    // requests with exactly the seed's scopes share a batch (docs: scopes).
     let group: Vec<u64> = order
         .into_iter()
-        .take_while(|n| state.queued[n].queue == queue)
+        .filter(|n| state.queued[n].queue == queue)
+        .filter(|n| {
+            let (sc, barrier) = pr_scopes(rules, state.pull_requests.get(n));
+            barrier == seed_barrier && (mode != Mode::Parallel || sc == seed_scopes)
+        })
         .collect();
     let total = group.len() as u32;
     let size = batch_size(rule.batch_size, total, (slots - busy) as u32);
@@ -2030,24 +2584,61 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         }
     }
     let window = size.max(1) as usize + slots;
-    let batch = group_by_similarity(state, &group, size.max(1) as usize, window);
+    let batch = group_with_scopes(state, rules, &group, size.max(1) as usize, window);
     let train = &state.trains[base];
-    // The pull requests ahead: those of the last car that are still queued (landed ones are
-    // part of the base now).
-    let mut prs: Vec<CarPr> = train
-        .cars
-        .last()
-        .map(|c| c.prs.clone())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| state.queued.contains_key(&p.number))
+    let mut scopes: Vec<String> = batch
+        .iter()
+        .flat_map(|n| pr_scopes(rules, state.pull_requests.get(n)).0)
         .collect();
+    scopes.sort();
+    scopes.dedup();
+    let barrier = seed_barrier;
+    // The cars this one is built on: serial, the last car (which carries everything ahead);
+    // isolated, none; parallel, the last car ahead in each of the batch's scopes.
+    let deps: Vec<u64> = match mode {
+        Mode::Serial => train.cars.last().map(|c| vec![c.id]).unwrap_or_default(),
+        Mode::Isolated => vec![],
+        Mode::Parallel => {
+            let mut d: Vec<u64> = scopes
+                .iter()
+                .filter_map(|s| {
+                    train
+                        .cars
+                        .iter()
+                        .rev()
+                        .find(|c| c.barrier || c.scopes.contains(s))
+                        .map(|c| c.id)
+                })
+                .collect();
+            if barrier {
+                d = train.cars.iter().map(|c| c.id).collect();
+            }
+            d.sort();
+            d.dedup();
+            d
+        }
+    };
+    // The pull requests ahead: those of the cars it depends on that are still queued (landed
+    // ones are part of the base now), each once, in their order.
+    let mut prs: Vec<CarPr> = Vec::new();
+    for c in train.cars.iter().filter(|c| deps.contains(&c.id)) {
+        for p in &c.prs {
+            if state.queued.contains_key(&p.number) && !prs.iter().any(|x| x.number == p.number) {
+                prs.push(p.clone());
+            }
+        }
+    }
     for n in &batch {
         prs.push(CarPr {
             number: *n,
             head_sha: state.queued[n].head_sha.clone(),
         });
     }
+    // `fast-forward` and `merge-batch` land the batch branch itself: in serial mode each car is
+    // built on the branch of the car ahead.
+    let stack_on = (mode == Mode::Serial && rule.method().lands_branch())
+        .then(|| train.cars.last().and_then(|c| c.head_sha.clone()))
+        .flatten();
     let no_cars = train.cars.is_empty();
     let id = state.next_id();
     let pr = state.pull_requests.get(&batch[0]).cloned();
@@ -2065,10 +2656,11 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         && alone
         && up_to_date
         && !rule.two_step()
-        && rule.merge_method.as_deref() != Some("merge-batch")
+        && rule.method() != schlange_config::rules::MergeMethod::MergeBatch
         && pr.as_ref().is_some_and(|p| {
             let ctx = crate::engine::context(state, p.number);
-            eval::eval_list(merge_conditions(rule), p, &ctx, &mut Vec::new()).0
+            let conds = crate::gates::merge_conditions(state, rule, base);
+            eval::eval_list(&conds, p, &ctx, &mut Vec::new()).0
         });
     let in_place = in_place || direct;
     let mut car = Car {
@@ -2089,6 +2681,10 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
         measured: false,
         drifted: false,
         replaces: None,
+        deps,
+        stacked_on: if in_place { None } else { stack_on.clone() },
+        scopes,
+        barrier,
     };
     if in_place {
         let pr = pr.expect("checked");
@@ -2114,6 +2710,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
             base_sha,
             prs,
             own: batch.clone(),
+            stack_on,
         });
     }
     for n in &batch {

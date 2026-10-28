@@ -1,0 +1,32 @@
+# `skip_intermediate_results: true` (queue-skip-intermediate, MQ-23). The full suite fails
+# unless the tree contains FIXED, as a flaky test looks to the queue: car 1 (#1 alone) fails, car
+# 2 (#1 + #2, #2 adds FIXED) passes. Car 2 stands in for car 1: #1 lands with #2
+# (INTERMEDIATE_RESULTS_SKIPPED), nothing is dequeued. Without the option #1 would leave with
+# CHECKS_FAILED (see p1-cascade).
+name: p2-skip-intermediate
+description: A green car behind a red one lands both (skip intermediate results).
+config: configs/skip-intermediate.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    fail_unless_contains: FIXED
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "FIXED\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 5s, open: 2 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_log:
+  - "checks of #1 ended, stays queued: INTERMEDIATE_RESULTS_SKIPPED"

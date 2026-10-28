@@ -33,8 +33,8 @@ discarded and rebuilt. Intermediate results are not skipped by default.
 - `max-parallel`: built. At most `max_parallel_checks` cars; checked as I4 after every simulated step (cars in the engine and open drafts on the forge). Slots are freed on landing, failure, dequeue, reset and foreign push.
 - `front-decides`: built. Only the front car lands or has its failure handled; a red car behind a running one waits, because the cause may lie ahead.
 - `cascade`: built. A discarded car discards every car behind it (`BATCH_AHEAD_FAILED`, `PR_AHEAD_DEQUEUED`, `BATCH_REBUILT`, `MERGE_QUEUE_RESET`).
-- `intermediate-results`: default `skip_intermediate_results: false` is the only behaviour; `true` is not built.
-- `modes`: only `serial`; `parallel` and `isolated` are `queue-modes` (missing).
+- `intermediate-results`: default `skip_intermediate_results: false`; `true` is `queue-skip-intermediate` (partial).
+- `modes`: `serial` here; `parallel` and `isolated` are `queue-modes` (partial).
 
 ## How to get to it (user POV)
 

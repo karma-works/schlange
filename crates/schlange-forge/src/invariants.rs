@@ -17,9 +17,20 @@
 //!     commit. A landing on a base that moved outside the queue must then equal the tested
 //!     change applied to the actual parent (three-way merge of tested base, actual parent and
 //!     tested prefix), not the tested tree itself.
+//!   - *Merge methods*: `merge` and `fast-forward` of a batch branch: each first-parent commit is
+//!     the tested prefix tree (as `squash`); `rebase` and `fast-forward` in place: each pull
+//!     request's last commit is the tested prefix tree, its earlier commits (`LandedCommit::
+//!     extra`) form one chain on the expected parent; `merge-batch`: one merge commit for the
+//!     batch whose tree is the batch's tested tree.
+//!   - *Modes `parallel` and `isolated`*: a car that does not depend on one that landed lands
+//!     as its tested change on the actual parent, with only other lanes' landings in between
+//!     (isolated: any; parallel: those in scopes the car does not touch).
+//!   - *`skip_intermediate_results`*: the batch semantics apply also for batch size 1.
 //! - **I1** No pull request lands whose queue or merge conditions were false at landing time
 //!   (on the forge's truth), whose head is not the head recorded when its car was built (the
-//!   tested head), or that already landed (nothing lands twice, also across crashes).
+//!   tested head), or that already landed (nothing lands twice, also across crashes); nor while
+//!   the queue is paused, a freeze holds it or a merge protection fails (the operator controls
+//!   the simulated forge delivered before the landing); required checks of the base count.
 //! - **I2** At quiescence every queued pull request was merged or dequeued with a reason; a
 //!   queue that halted on purpose (tree mismatch) is reported with its reason.
 //! - **I3** The queue branches on the forge (prefix plus ten hex characters) and the open queue
@@ -48,7 +59,10 @@ use schlange_core::eval::{self, Context};
 use schlange_core::model::PullRequest;
 use schlange_core::queue::{closing_count, is_queue_branch};
 
-use crate::git::{GitStore, Repo, Sha};
+use schlange_config::rules::MergeMethod;
+use schlange_core::engine::LandedCommit;
+
+use crate::git::{GitStore, Sha};
 use crate::sim::{BOT, SimForge};
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -80,6 +94,9 @@ pub struct Checker {
     /// so the checker takes them from what it saw before the landing step.
     queue_seen: BTreeMap<u64, (String, u64, u64, String)>,
     epoch: u64,
+    /// Scopes (and barrier flag) of every landed pull request, from its files right before it
+    /// landed (parallel mode: what may land between a car's base and its landing).
+    landed_scopes: BTreeMap<u64, (Vec<String>, bool)>,
 }
 
 pub const IDS: [&str; 6] = ["I0", "I1", "I2", "I3", "I4", "I5"];
@@ -92,9 +109,24 @@ fn prefixes(rules: &Rules) -> Vec<String> {
         .collect()
 }
 
-/// Strict per-commit I0 applies when no queue batches.
+/// Strict per-commit I0 applies when no queue batches. With `skip_intermediate_results` a
+/// green car lands the cars ahead of it with it (Mergify's semantics: the passing car stands in
+/// for their checks), so the batch semantics apply instead.
 fn strict_i0(rules: &Rules) -> bool {
     rules.queue_rules.iter().all(|q| q.batch_size.max() == 1)
+        && !rules.merge_queue.skip_intermediate_results
+}
+
+/// The first commit a landed commit put on the base (its replayed predecessors come first).
+fn entry(c: &LandedCommit) -> &str {
+    c.extra.first().unwrap_or(&c.sha)
+}
+
+/// Whether the configuration lets a landing sit on a base that moved since its car was built
+/// (the tested change applied to the actual parent): `reset_on_external_merge: never`, and
+/// the `parallel` and `isolated` modes, whose cars do not wait for one another.
+fn drift_allowed(rules: &Rules) -> bool {
+    rules.merge_queue.reset_on_external_merge == "never" || rules.merge_queue.mode != "serial"
 }
 
 impl Checker {
@@ -193,14 +225,57 @@ impl Checker {
     fn landings<G: GitStore>(&mut self, forge: &SimForge<G>, rules: &Rules, t: u64) {
         let new: Vec<_> = forge.landings[self.landings_seen..].to_vec();
         self.landings_seen = forge.landings.len();
-        let never = rules.merge_queue.reset_on_external_merge == "never";
-        for l in new {
+        let never = drift_allowed(rules);
+        let isolated = rules.merge_queue.mode == "isolated";
+        let parallel = rules.merge_queue.mode == "parallel";
+        let ext_ok = rules.merge_queue.reset_on_external_merge == "never";
+        let start = self.landings_seen - new.len();
+        for (k, l) in new.into_iter().enumerate() {
+            let idx = start + k;
             if l.commits.is_empty() {
                 continue;
             }
+            for p in &l.before {
+                let sc = rules
+                    .scopes
+                    .as_ref()
+                    .map(|s| s.of(&p.files))
+                    .unwrap_or_default();
+                self.landed_scopes.insert(p.number, sc);
+            }
+            // I1: nothing lands while the queue is paused or a freeze holds the pull request,
+            // and every merge protection whose `if` holds is satisfied (on the forge's truth).
+            let (paused, freezes) = forge.controls_before(idx);
+            self.check("I1", paused.is_none(), t, || {
+                format!("car {} landed while the merge queue was paused", l.car)
+            });
+            for p in &l.before {
+                let ctx = self.queue_context(p.number, &l.queue, t);
+                for f in &freezes {
+                    let held = f.holds(p, &ctx, l.at);
+                    self.check("I1", !held, t, || {
+                        format!("#{} landed while freeze `{}` held it", p.number, f.reason)
+                    });
+                }
+                for m in &rules.merge_protections {
+                    let applies = eval::eval_list(&m.when, p, &ctx, &mut vec![]).0;
+                    let ok =
+                        !applies || eval::eval_list(&m.success_conditions, p, &ctx, &mut vec![]).0;
+                    self.check("I1", ok, t, || {
+                        format!(
+                            "#{} landed while merge protection `{}` failed",
+                            p.number, m.name
+                        )
+                    });
+                }
+            }
             for c in &l.commits {
                 self.landed_commits.insert(c.sha.clone());
+                self.landed_commits.extend(c.extra.iter().cloned());
                 self.landed_by.insert(c.sha.clone(), c.number);
+                for x in &c.extra {
+                    self.landed_by.insert(x.clone(), c.number);
+                }
                 let first = self.landed_prs.insert(c.number, l.car);
                 self.check("I1", first.is_none(), t, || {
                     format!(
@@ -219,12 +294,28 @@ impl Checker {
             };
             // I1: heads and conditions on the truth right before landing.
             let rule = rules.queue_rules.iter().find(|q| q.name == l.queue);
+            let required = forge
+                .required_checks
+                .get(&l.base_branch)
+                .cloned()
+                .unwrap_or_default();
             let merge_conds = rule.map(|r| {
-                if r.merge_conditions.is_empty() {
+                let mut v = if r.merge_conditions.is_empty() {
                     r.queue_conditions.clone()
                 } else {
                     r.merge_conditions.clone()
+                };
+                if r.injection_mode != schlange_config::rules::InjectionMode::None {
+                    v.extend(required_conditions(&required));
                 }
+                v
+            });
+            let queue_conds = rule.map(|r| {
+                let mut v = r.queue_conditions.clone();
+                if r.injection_mode == schlange_config::rules::InjectionMode::Queue {
+                    v.extend(required_conditions(&required));
+                }
+                v
             });
             let mut green = true;
             for c in &l.commits {
@@ -253,7 +344,10 @@ impl Checker {
                     continue;
                 };
                 let ctx = self.queue_context(c.number, &l.queue, t);
-                let (q_ok, _) = eval::eval_list(&rule.queue_conditions, before, &ctx, &mut vec![]);
+                let qc = queue_conds
+                    .clone()
+                    .unwrap_or_else(|| rule.queue_conditions.clone());
+                let (q_ok, _) = eval::eval_list(&qc, before, &ctx, &mut vec![]);
                 self.check("I1", q_ok, t, || {
                     format!("#{} landed while its queue_conditions were false", c.number)
                 });
@@ -298,7 +392,7 @@ impl Checker {
                 self.check("I0", false, t, || format!("#{first} is not in its car"));
                 continue;
             };
-            let parent = forge.repo.parents(&l.commits[0].sha).first().cloned();
+            let parent = forge.repo.parents(entry(&l.commits[0])).first().cloned();
             let expected_parent = if idx0 == 0 {
                 car.base_sha.clone()
             } else {
@@ -326,6 +420,21 @@ impl Checker {
                 // was tested on and the actual parent; the user opted out of retesting after
                 // external merges, nothing else.
                 let ahead: Vec<u64> = car.prefix[..idx0].iter().map(|(n, ..)| *n).collect();
+                // Scopes of this landing's pull requests (parallel mode).
+                let mine: Vec<(Vec<String>, bool)> = l
+                    .commits
+                    .iter()
+                    .filter_map(|c| self.landed_scopes.get(&c.number).cloned())
+                    .collect();
+                let disjoint = |n: u64| {
+                    let Some((sc, barrier)) = self.landed_scopes.get(&n) else {
+                        return false;
+                    };
+                    !barrier
+                        && mine
+                            .iter()
+                            .all(|(m, b)| !b && !m.iter().any(|x| sc.contains(x)))
+                };
                 let mut reached = false;
                 let mut foreign = Vec::new();
                 for sha in forge
@@ -336,45 +445,51 @@ impl Checker {
                         reached = true;
                         break;
                     }
-                    let external = forge.external_commits.contains(&sha);
-                    let ahead_landing = self.landed_by.get(&sha).is_some_and(|n| ahead.contains(n));
-                    if !external && !ahead_landing {
+                    let external = ext_ok && forge.external_commits.contains(&sha);
+                    let by = self.landed_by.get(&sha).copied();
+                    let ahead_landing = by.is_some_and(|n| ahead.contains(&n));
+                    // Isolated mode: any other queue landing; parallel: landings in scopes
+                    // this car does not touch.
+                    let other_lane = by.is_some_and(|n| isolated || (parallel && disjoint(n)));
+                    if !external && !ahead_landing && !other_lane {
                         foreign.push(sha[..7].to_string());
                     }
                 }
                 self.check("I0", reached && foreign.is_empty(), t, || {
                     format!(
-                        "never mode: #{first} of car {} landed on a parent that is not its tested \
-                         base plus external commits (base reached: {reached}; other commits: \
-                         {foreign:?})",
+                        "drift: #{first} of car {} landed on a parent that is not its tested \
+                         base plus commits it may skip (external with \
+                         reset_on_external_merge: never, other lanes in parallel or isolated \
+                         mode) (base reached: {reached}; other commits: {foreign:?})",
                         car.id
                     )
                 });
                 // `reset_on_external_merge: never`: the tested change on the actual parent.
                 self.note(
                     "I0",
-                    "reset_on_external_merge: never: a landing after an external commit is \
-                     checked as the tested change applied to the actual parent"
+                    "drift (reset_on_external_merge: never, parallel or isolated mode): a \
+                     landing on a base that moved since its car was built is checked as the \
+                     tested change applied to the actual parent"
                         .into(),
                 );
                 let mut prev_tested = expected_parent;
+                let batch_merge = l.method == MergeMethod::MergeBatch;
                 for (k, c) in l.commits.iter().enumerate() {
+                    if batch_merge && k + 1 < l.commits.len() {
+                        continue; // one merge commit for the whole batch: checked once
+                    }
+                    let k = if batch_merge { l.commits.len() - 1 } else { k };
                     let Some((n, tested, _)) = car.prefix.get(idx0 + k).cloned() else {
                         self.check("I0", false, t, || {
                             format!("#{} is not in its car", c.number)
                         });
                         break;
                     };
-                    let actual_parent = forge.repo.parents(&c.sha).first().cloned();
-                    let expected = actual_parent.and_then(|p| {
-                        Repo::merge_trees(
-                            &forge.repo.tree(&prev_tested),
-                            &forge.repo.tree(&p),
-                            &forge.repo.tree(&tested),
-                        )
-                        .ok()
-                    });
-                    let ok = n == c.number && expected == Some(forge.repo.tree(&c.sha));
+                    let actual_parent = forge.repo.parents(entry(c)).first().cloned();
+                    // The repository's own three-way merge (line level on real git).
+                    let expected = actual_parent
+                        .and_then(|p| forge.repo.merged_tree_id(&prev_tested, &p, &tested).ok());
+                    let ok = n == c.number && expected == Some(forge.repo.tree_id_of(&c.sha));
                     self.check("I0", ok, t, || {
                         format!(
                             "commit {} of #{} is not the tested change on its parent",
@@ -395,7 +510,56 @@ impl Checker {
                     car.id
                 )
             });
+            if l.method == MergeMethod::MergeBatch {
+                // One merge commit of the batch branch: the batch's tested tip tree, parent the
+                // expected base; every pull request of the car names that commit.
+                self.note(
+                    "I0",
+                    "merge-batch: one merge commit per batch whose tree is the tested batch tree"
+                        .into(),
+                );
+                let sha = &l.commits[0].sha;
+                let real_tree = forge.repo.tree_id_of(sha);
+                let last_tree = car
+                    .prefix
+                    .get(idx0 + l.commits.len() - 1)
+                    .map(|(_, _, tr)| tr.clone());
+                let ok = l.commits.iter().all(|c| c.sha == *sha)
+                    && Some(real_tree) == last_tree
+                    && l.commits.iter().enumerate().all(|(k, c)| {
+                        car.prefix
+                            .get(idx0 + k)
+                            .is_some_and(|(n, ..)| *n == c.number)
+                    });
+                self.check("I0", ok, t, || {
+                    format!(
+                        "merge-batch commit {} is not car {}'s tested tree",
+                        &sha[..7],
+                        car.id
+                    )
+                });
+                self.check("I0", green, t, || {
+                    format!("car {} landed without green merge checks", car.id)
+                });
+                continue;
+            }
             for (k, c) in l.commits.iter().enumerate() {
+                if k > 0 {
+                    // Each pull request's commits sit right on the one before it.
+                    let p = forge.repo.parents(entry(c)).first().cloned();
+                    self.check(
+                        "I0",
+                        p.as_deref() == Some(l.commits[k - 1].sha.as_str()),
+                        t,
+                        || format!("#{} does not sit on the commit before it", c.number),
+                    );
+                }
+                for (x, w) in c.extra.iter().zip(c.extra.iter().skip(1).chain([&c.sha])) {
+                    let p = forge.repo.parents(w).first().cloned();
+                    self.check("I0", p.as_deref() == Some(x.as_str()), t, || {
+                        format!("the replayed commits of #{} are not one chain", c.number)
+                    });
+                }
                 // The tree as the repository has it, not as the forge's reply claims.
                 let real_tree = forge.repo.tree_id_of(&c.sha);
                 let ok = real_tree == c.tree
@@ -603,6 +767,16 @@ fn pr_head_in_car<G: GitStore>(
     forge.repo.is_ancestor(&pr.head_sha, &car.head)
 }
 
+fn required_conditions(checks: &[String]) -> Vec<schlange_config::conditions::Condition> {
+    let v = serde_json::Value::Array(
+        checks
+            .iter()
+            .map(|c| serde_json::Value::String(format!("check-success = {c}")))
+            .collect(),
+    );
+    schlange_config::conditions::parse_list(&v, "", &mut Vec::new())
+}
+
 fn merge_view(pr: &PullRequest, draft: Option<&PullRequest>, head: &str) -> PullRequest {
     let mut v = pr.clone();
     if let Some(d) = draft {
@@ -643,6 +817,9 @@ mod tests {
                 waiting_since: 0,
                 status: EntryStatus::Waiting,
                 by: None,
+                priority: 2000,
+                priority_rule: None,
+                interrupt: false,
             },
         );
         let mut c = Checker::new();

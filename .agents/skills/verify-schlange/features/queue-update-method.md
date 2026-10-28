@@ -20,8 +20,10 @@ base by merge or rebase.
 
 ## Sub-features
 
-- `merge`
-- `rebase`
+- `parse`: built. `update_method` is read (`QueueRule::update`, default `merge`, `rebase` for `fast-forward`), but nothing uses it yet.
+- `merge`: missing. Schlange checks a pull request in place only when it is already up to date; a pull request behind the base is checked through a draft instead of being updated.
+- `rebase`: missing.
+- Why not built yet: after the queue's own update the pull request's checks restart on the new head, and the queue conditions (`check-success = …`) are false until they pass; the engine would dequeue the pull request (W-08). That needs a hold for the queue's own updates first.
 
 ## How to get to it (user POV)
 

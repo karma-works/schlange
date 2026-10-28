@@ -24,7 +24,7 @@ fn scenario(name: &str) -> PathBuf {
 }
 
 /// Scenarios that must pass on both forges (the critic's stuck bisection included).
-const BOTH: [&str; 7] = [
+const BOTH: [&str; 21] = [
     "regressions/critic-stuck-bisection",
     "p1-batch-five",
     "p1-bisection",
@@ -32,6 +32,20 @@ const BOTH: [&str; 7] = [
     "p1-semantic-conflict-compile",
     "p1-base-moved",
     "p1-arztagent-two-step",
+    "p2-method-merge",
+    "p2-method-rebase",
+    "p2-method-fast-forward",
+    "p2-method-merge-batch",
+    "p2-isolated",
+    "p2-parallel-scopes",
+    "p2-pause",
+    "p2-freeze",
+    "p2-priority",
+    "p2-priority-no-interrupt",
+    "p2-skip-intermediate",
+    "p2-merge-protections",
+    "p2-required-checks",
+    "regressions/p2-fast-forward-in-place",
 ];
 
 fn check_scenario(name: &str) {
@@ -90,9 +104,147 @@ fn edit(line: usize, text: &str) -> String {
 }
 
 fn matrix_config(batch: u32) -> String {
+    method_config("squash", batch)
+}
+
+fn method_config(method: &str, batch: u32) -> String {
     format!(
-        "merge_queue:\n  max_parallel_checks: 2\nqueue_rules:\n  - name: default\n    merge_method: squash\n    batch_size: {batch}\n    batch_max_wait_time: 1 min\n    queue_conditions:\n      - base = main\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\npull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n"
+        "merge_queue:\n  max_parallel_checks: 2\nqueue_rules:\n  - name: default\n    merge_method: {method}\n    batch_size: {batch}\n    batch_max_wait_time: 1 min\n    queue_conditions:\n      - base = main\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\npull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n"
     )
+}
+
+/// One cell of the matrix for the other merge methods on real git: the same pull requests as
+/// [`matrix_cell`] (same file, different lines, a broken one, a conflicting one). Every merged
+/// change is on main line by line, I0–I4 hold for the method, and the commit graph has the
+/// method's shape.
+fn method_cell(method: &str, batch: u32) {
+    let n = 2 * batch as u64 + 2;
+    let mut sim = Sim::new(
+        &format!("matrix-{method}-{batch}"),
+        &method_config(method, batch),
+    )
+    .base_file("shared.txt", &base_text())
+    .check(ci("quick", "1m").pr_only())
+    .check(ci("full", "10m").queue_only().fails_on("BUG"))
+    .faults(None);
+    let line_of = |k: u64| if k == n { 3 } else { 3 * k as usize };
+    for k in 1..=n {
+        let text = match k {
+            3 => format!("changed by #{k} BUG"),
+            _ if k == n => format!("conflicting change by #{k}"),
+            _ => format!("changed by #{k}"),
+        };
+        let content = edit(line_of(k), &text);
+        sim = sim
+            .pr(k, &[("shared.txt", content.as_str())])
+            .open(if k <= n / 2 { "0s" } else { "5m" }, k);
+    }
+    let s = sim.build();
+    let mut run = Simulation::on(&s, Faults::none(), LocalGit::new().expect("git"), true);
+    run.run(&s);
+    let log: String = run
+        .log
+        .iter()
+        .map(|l| format!("{} {} {}\n", l.t, l.kind, l.text))
+        .collect();
+    let cell = format!("{method} batch {batch}");
+    for (id, r) in &run.checker.results {
+        assert!(
+            r.violations.is_empty(),
+            "{cell}: {id} violated: {:?}\n{log}",
+            r.violations
+        );
+    }
+    for id in ["I0", "I1", "I2", "I3", "I4"] {
+        assert!(run.checker.results[id].checks > 0, "{cell}: {id}");
+    }
+    let mut merged = 0;
+    for k in 1..=n {
+        let outcome = run.outcome(k);
+        match k {
+            3 => assert_eq!(outcome, "dequeued CHECKS_FAILED", "{cell}\n{log}"),
+            _ if k == n => assert!(
+                outcome.starts_with("dequeued"),
+                "{cell}: #{k} {outcome}\n{log}"
+            ),
+            _ => {
+                assert_eq!(outcome, "merged", "{cell}: #{k}\n{log}");
+                merged += 1;
+            }
+        }
+    }
+    let git = &run.forge.repo;
+    let tip = git.ref_sha("main").expect("main");
+    let shared = git.tree(&tip)["shared.txt"].clone();
+    let mut expected: Vec<String> = (0..LINES).map(|i| format!("line {i}")).collect();
+    for k in 1..n {
+        if k != 3 {
+            expected[line_of(k)] = format!("changed by #{k}");
+        }
+    }
+    assert_eq!(shared, expected.join("\n") + "\n", "{cell}");
+    let history = git.first_parent_history(&tip);
+    let landed = &history[..history.len() - 1];
+    let parents = |sha: &String| git.parents(sha).len();
+    match method {
+        // One commit per pull request on the first-parent line.
+        "merge" | "fast-forward" => {
+            assert_eq!(landed.len(), merged, "{cell}: {history:?}\n{log}");
+            assert!(
+                landed.iter().all(|c| parents(c) == 2),
+                "{cell}: merge commits"
+            );
+        }
+        "rebase" => {
+            assert_eq!(landed.len(), merged, "{cell}: {history:?}\n{log}");
+            assert!(landed.iter().all(|c| parents(c) == 1), "{cell}: linear");
+        }
+        // One merge commit per landed batch.
+        "merge-batch" => {
+            assert!(
+                !landed.is_empty() && landed.len() <= merged,
+                "{cell}: {history:?}"
+            );
+            assert!(
+                landed.iter().all(|c| parents(c) == 2),
+                "{cell}: merge commits"
+            );
+        }
+        _ => unreachable!(),
+    }
+    // Every merged pull request's head is in main's history for the methods that keep SHAs.
+    if matches!(method, "merge" | "fast-forward" | "merge-batch") {
+        for k in 1..n {
+            if k != 3 {
+                let head = run.forge.read_pull_request(k).expect("pr").head_sha;
+                assert!(
+                    git.is_ancestor(&head, &tip),
+                    "{cell}: #{k} head not in main"
+                );
+            }
+        }
+    }
+    assert!(git.fsck(), "{cell}: git fsck");
+}
+
+#[test]
+fn matrix_other_merge_methods_keep_i0_on_real_git() {
+    let cells: Vec<(&str, u32)> = ["merge", "rebase", "fast-forward", "merge-batch"]
+        .into_iter()
+        .flat_map(|m| (1..=3u32).map(move |b| (m, b)))
+        .filter(|(m, b)| !(*m == "merge-batch" && *b == 1))
+        .collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = cells
+            .into_iter()
+            .map(|(m, b)| s.spawn(move || method_cell(m, b)))
+            .collect();
+        for h in handles {
+            if let Err(e) = h.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
 }
 
 /// One cell of the matrix: squash with batch size `batch` on real git. `2 * batch + 2` pull

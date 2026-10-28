@@ -198,6 +198,16 @@ fn status_body(state: &State, rules: &Rules, n: u64) -> Option<(String, bool)> {
                     .join(", ")
             ),
         });
+        if let Some(p) = &state.pause {
+            lines.push(String::new());
+            lines.push(format!(
+                "The merge queue is paused ({}): nothing is checked or merged until it resumes.",
+                p.reason
+            ));
+        } else if let Some(h) = state.landing_holds.get(&n) {
+            lines.push(String::new());
+            lines.push(format!("It may not merge yet: {h}."));
+        }
     } else if let Some(p) = state.pending_commands.get(&n) {
         outcome = false;
         lines.push("**Merge queue** · waiting to enter".to_string());
@@ -253,10 +263,15 @@ fn ready(state: &State, rules: &Rules, n: u64) -> bool {
         return false;
     }
     let ctx = crate::engine::context(state, n);
-    rules
-        .queue_rules
-        .iter()
-        .any(|q| eval::eval_list(&q.queue_conditions, pr, &ctx, &mut Vec::new()).0)
+    rules.queue_rules.iter().any(|q| {
+        eval::eval_list(
+            &crate::gates::queue_conditions(state, q, &pr.base),
+            pr,
+            &ctx,
+            &mut Vec::new(),
+        )
+        .0
+    })
 }
 
 fn controls_body(state: &State, rules: &Rules, n: u64) -> Option<String> {

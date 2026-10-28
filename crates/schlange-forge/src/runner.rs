@@ -97,6 +97,8 @@ pub struct Setup {
     /// hold another configuration name): it is read from there after every step, and a change
     /// that lands applies to every pull request (MQ-19).
     pub config_in_repo: bool,
+    /// Checks the protection of the base branch requires (`branch_protection_injection_mode`).
+    pub required_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,11 +192,12 @@ pub struct Simulation<G: GitStore = Repo> {
     intent_seq: u64,
 }
 
-pub const LIMITATIONS: [&str; 6] = [
-    "merge methods other than squash, queue modes parallel/isolated, priorities, scopes: not built",
-    "skip_intermediate_results, direct merge behind the base (scopes), batch_pull_request: not built",
-    "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
-    "in place: only for an up-to-date pull request; Mergify would update it first",
+pub const LIMITATIONS: [&str; 7] = [
+    "scopes: file patterns only (no manual scopes, no capacities); parallel and isolated mode: a batch failure that needs a split rebuilds every other car",
+    "skip_intermediate_results: serial mode with squash, merge or rebase only; direct merge behind the base (scopes), batch_pull_request: not built",
+    "allow_queue_branch_edit: the edit is accepted; merge-batch and fast-forward land it, squash, merge and rebase halt on the tree check",
+    "in place: only for an up-to-date pull request; Mergify would update it first (update_method not built)",
+    "priorities: re-evaluated while a pull request waits; a running bisection is never interrupted",
     "commands backport, copy, rebase, squash, update: recognised and answered, actions not built",
     "commit_message_template (deprecated): not rendered; IANA time zones in Merge-After: not supported",
 ];
@@ -244,10 +247,15 @@ fn describe(d: &Decision) -> String {
             base_sha,
             prs,
             own,
+            stack_on,
             ..
         } => format!(
-            "build car {car} on {branch}: base {} + {} (checks {})",
+            "build car {car} on {branch}: base {}{} + {} (checks {})",
             short(base_sha),
+            stack_on
+                .as_ref()
+                .map(|s| format!(", stacked on {}", short(s)))
+                .unwrap_or_default(),
             prs.iter()
                 .map(|p| format!("#{}", p.number))
                 .collect::<Vec<_>>()
@@ -290,9 +298,11 @@ fn describe(d: &Decision) -> String {
             base_branch,
             expected_base_sha,
             prs,
+            method,
             ..
         } => format!(
-            "land car {car}: squash {} onto {base_branch} if it is still {}",
+            "land car {car}: {} {} onto {base_branch} if it is still {}",
+            method.as_str(),
             prs.iter()
                 .map(|p| format!("#{}", p.number))
                 .collect::<Vec<_>>()
@@ -387,6 +397,11 @@ impl<G: GitStore> Simulation<G> {
         );
         forge.real_ci = real_ci;
         forge.permissions = s.setup.permissions.clone();
+        if !s.setup.required_checks.is_empty() {
+            forge
+                .required_checks
+                .insert(s.base.clone(), s.setup.required_checks.clone());
+        }
         for d in &s.prs {
             forge.define(d.clone());
         }
@@ -651,6 +666,9 @@ impl<G: GitStore> Simulation<G> {
             self.reload_config(&mut owned_rules, &mut config_text);
         }
         let rules = &mut owned_rules;
+        for (base, checks) in self.forge.required_checks.clone() {
+            self.deliver(rules, Event::RequiredChecks { base, checks }, None);
+        }
         let initial = self.wire.snapshot_all(&self.forge, &[]);
         self.deliver(rules, initial, None);
         let mut rounds = 0;
@@ -664,7 +682,14 @@ impl<G: GitStore> Simulation<G> {
                     break;
                 }
                 match item {
-                    Item::Action(text) => self.log("action", text),
+                    Item::Action(text) => {
+                        self.log("action", text);
+                        // An operator's control reaches the engine at once (the API of
+                        // `serve` hands it to the worker and answers after the step).
+                        for control in std::mem::take(&mut self.forge.undelivered_controls) {
+                            self.deliver(rules, Event::Control { control }, None);
+                        }
+                    }
                     Item::Ci(text) => self.log("ci", text),
                     Item::Webhook { hint, text } => {
                         let ev = match &hint {

@@ -24,7 +24,7 @@ queue conditions it meets, unless the `queue` action names one. Arztagent has ex
 - `list`: built. Every queue rule with its options is parsed (`crates/schlange-config/src/rules.rs`): conditions, `merge_method`, `batch_size`, `batch_max_wait_time`, `checks_timeout`, `batch_max_failure_resolution_attempts`, `queue_branch_prefix`, `allow_queue_branch_edit`, `max_checks_retries`, and `merge_queue.*` (`max_parallel_checks`, `mode`, `reset_on_external_merge`, `skip_intermediate_results`).
 - `name`: built.
 - `selection`: built. Without a name, the first queue whose `queue_conditions` hold.
-- `order`: built. One queue per base branch; entries of earlier queue rules go first, a batch never mixes queue rules. Mergify's exact ordering across queue rules is not verified.
+- `order`: built. One queue per base branch; waiting pull requests are ordered by priority (`queue-priority`), then by the order of the queue rules, then by arrival; a batch never mixes queue rules and looks ahead past other rules' pull requests for its own (docs: priority). Mergify's exact ordering across queue rules is not verified. The property tests draw a second queue rule (`hotfix`) ahead of `default`.
 - `retarget`: built. A pull request whose base branch changes leaves with `BASE_BRANCH_CHANGED` (MQ-10).
 - `config-from-base`: missing (the simulation uses one fixed configuration, MQ-19).
 
@@ -44,4 +44,4 @@ Preconditions:
 ## Gotchas
 
 - When a pull request's base changes, it must leave the queue and be evaluated again (MQ-10).
-- Several queue rules share one queue per base branch in Schlange; whether Mergify orders them by rule order exactly like this is not verified (priorities are `queue-priority`, missing).
+- Several queue rules share one queue per base branch in Schlange; whether Mergify orders them by rule order exactly like this (after priority) is not verified.

@@ -1,0 +1,86 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  webhook   #1 check `quick` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:01:00  reply     car 2 built at ecd3e04, draft #1000
++0:01:00  decision  labels #1 +queued
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:02:00  action    #2 opened by bot on main, files: b.txt
++0:03:00  action    #3 opened by bot on main, files: c.txt
++0:03:00  ci        #2 check `quick` completed on bba8845: success
++0:03:00  webhook   #2 check `quick` completed on bba8845: success
++0:03:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:03:00  decision  labels #2 +queued
++0:03:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:04:00  ci        #3 check `quick` completed on ffa0eec: success
++0:04:00  webhook   #3 check `quick` completed on ffa0eec: success
++0:04:00  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
++0:04:00  decision  labels #3 +queued
++0:04:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
++0:11:00  ci        #1000 check `full` completed on ecd3e04: success
++0:11:00  webhook   #1000 check `full` completed on ecd3e04: success
++0:11:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:11:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:11:00  message   #1: Pull request 1 (#1)
++0:11:00  reply     car 2 landed #1 as 84886d8
++0:11:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:11:00  decision  #1 merged as 84886d8
++0:11:00  decision  labels #1 -queued
++0:11:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 84886d8.
++0:11:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 84886d8 + #3 (checks #3)
++0:11:00  reply     car 6 built at f3e1bdd, draft #1001
++0:11:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked.
++0:11:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:13:00  action    #4 opened by bot on main, files: d.txt
++0:14:00  ci        #4 check `quick` completed on 24d14ee: success
++0:14:00  webhook   #4 check `quick` completed on 24d14ee: success
++0:14:00  decision  enqueue #4 into `default` (rule `queue bot pull requests`)
++0:14:00  decision  close car 6, delete mergify/merge-queue/744dfff868, close #1001
++0:14:00  decision  checks of #3 ended, stays queued: PR_WITH_HIGHER_PRIORITY_QUEUED: #4 with a higher priority interrupted these checks
++0:14:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
++0:14:00  decision  labels #4 +queued
++0:14:00  decision  status comment #4: **Merge queue** · queue `default` — Waiting for its turn.
++0:14:00  decision  build car 8 on mergify/merge-queue/0fe36e3333: base 84886d8 + #4 (checks #4)
++0:14:00  reply     car 8 built at 0d1e27d, draft #1002
++0:14:00  decision  status comment #4: **Merge queue** · queue `default` — Being checked.
++0:14:00  decision  status comment #4: **Merge queue** · queue `default` — Being checked in draft pull request #1002.
++0:24:00  ci        #1002 check `full` completed on 0d1e27d: success
++0:24:00  webhook   #1002 check `full` completed on 0d1e27d: success
++0:24:00  decision  read #4 #1002 main mergify/merge-queue/0fe36e3333 before acting
++0:24:00  decision  land car 8: squash #4 onto main if it is still 84886d8
++0:24:00  message   #4: Pull request 4 (#4)
++0:24:00  reply     car 8 landed #4 as 24d14ee
++0:24:00  decision  close car 8, delete mergify/merge-queue/0fe36e3333, close #1002
++0:24:00  decision  #4 merged as 24d14ee
++0:24:00  decision  labels #4 -queued
++0:24:00  decision  status comment #4: **Merge queue** · merged — Merged by the queue as 24d14ee.
++0:24:00  decision  build car 10 on mergify/merge-queue/2eac436db0: base 24d14ee + #3 (checks #3)
++0:24:00  reply     car 10 built at bd33d4c, draft #1003
++0:24:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked.
++0:24:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked in draft pull request #1003.
++0:34:00  ci        #1003 check `full` completed on bd33d4c: success
++0:34:00  webhook   #1003 check `full` completed on bd33d4c: success
++0:34:00  decision  read #3 #1003 main mergify/merge-queue/2eac436db0 before acting
++0:34:00  decision  land car 10: squash #3 onto main if it is still 24d14ee
++0:34:00  message   #3: Pull request 3 (#3)
++0:34:00  reply     car 10 landed #3 as 45dbd3d
++0:34:00  decision  close car 10, delete mergify/merge-queue/2eac436db0, close #1003
++0:34:00  decision  #3 merged as 45dbd3d
++0:34:00  decision  labels #3 -queued
++0:34:00  decision  status comment #3: **Merge queue** · merged — Merged by the queue as 45dbd3d.
++0:34:00  decision  build car 12 on mergify/merge-queue/2e7e3f9594: base 45dbd3d + #2 (checks #2)
++0:34:00  reply     car 12 built at 7942ea5, draft #1004
++0:34:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:34:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1004.
++0:44:00  ci        #1004 check `full` completed on 7942ea5: success
++0:44:00  webhook   #1004 check `full` completed on 7942ea5: success
++0:44:00  decision  read #2 #1004 main mergify/merge-queue/2e7e3f9594 before acting
++0:44:00  decision  land car 12: squash #2 onto main if it is still 45dbd3d
++0:44:00  message   #2: Pull request 2 (#2)
++0:44:00  reply     car 12 landed #2 as 31654b4
++0:44:00  decision  close car 12, delete mergify/merge-queue/2e7e3f9594, close #1004
++0:44:00  decision  #2 merged as 31654b4
++0:44:00  decision  labels #2 -queued
++0:44:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as 31654b4.

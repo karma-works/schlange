@@ -21,13 +21,6 @@
       "column": 5,
       "message": "`config:queue_rules.merge_bot_account` is not supported by Schlange yet (feature queue-bot-accounts, P1, partial: not built in this partial feature (`config:queue_rules.merge_bot_account`))",
       "feature": "queue-bot-accounts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
-      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
-      "feature": "queue-branch-protection"
     }
   ],
   "support": [
@@ -446,11 +439,8 @@
       "id": "default:queue_rules.branch_protection_injection_mode",
       "feature": "queue-branch-protection",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.checks_timeout",

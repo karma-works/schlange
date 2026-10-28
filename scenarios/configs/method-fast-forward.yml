@@ -1,0 +1,23 @@
+# Two-step CI landing with `merge_method: fast-forward` (queue-merge-methods-other). Batches of two, two
+# parallel checks.
+merge_queue:
+  max_parallel_checks: 2
+
+queue_rules:
+  - name: default
+    merge_method: fast-forward
+    batch_size: 2
+    batch_max_wait_time: 1 min
+    queue_conditions:
+      - base = main
+      - -draft
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

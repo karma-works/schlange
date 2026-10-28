@@ -102,6 +102,36 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
     assert!(status.contains("\"persistent\": true"), "{status}");
     assert!(dir.join("data/schlange.db").is_file());
 
+    // `schlange queue`: the queue API of serve with the admin token.
+    let queue = |args: &[&str], token: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_schlange"))
+            .arg("queue")
+            .args(args)
+            .args(["--url", &format!("http://127.0.0.1:{port}")])
+            .args(["--repo", &gh.config().full_name()])
+            .env("SCHLANGE_ADMIN_TOKEN", token)
+            .env_remove("SCHLANGE_ADMIN_TOKEN_FILE")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    let (code, out) = queue(
+        &["pause", "--reason", "CI incident"],
+        "serve-test-admin-token",
+    );
+    assert_eq!((code, out.trim()), (Some(0), "paused: CI incident"));
+    let (code, out) = queue(&["status"], "serve-test-admin-token");
+    assert_eq!(code, Some(0));
+    assert!(out.contains("PAUSED: CI incident"), "{out}");
+    let (code, out) = queue(&["status", "--json"], "wrong-token-of-16-bytes");
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("\"status\": 401"), "{out}");
+    let (code, out) = queue(&["unpause"], "serve-test-admin-token");
+    assert_eq!((code, out.trim()), (Some(0), "not paused"));
+
     // Doctor with the same environment: the GitHub checks run and none fails. It validates the
     // repository's `.mergify.yml` from the default branch.
     gh.push_base(&[(

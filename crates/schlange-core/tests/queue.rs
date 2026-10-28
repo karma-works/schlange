@@ -120,6 +120,7 @@ fn landed_tree_differs_from_tested_tree_halts_the_queue() {
             number: 1,
             sha: "m1".into(),
             tree: "OTHER".into(),
+            extra: vec![],
         }],
         error: None,
     });

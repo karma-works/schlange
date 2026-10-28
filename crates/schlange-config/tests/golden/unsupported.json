@@ -43,42 +43,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/priority_rules",
-      "line": 14,
-      "column": 1,
-      "message": "`config:priority_rules` is not supported by Schlange yet (feature queue-priority, P2, missing: feature not built)",
-      "feature": "queue-priority"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/priority_rules/0/conditions",
-      "line": 16,
-      "column": 5,
-      "message": "`config:priority_rules.conditions` is not supported by Schlange yet (feature queue-priority, P2, missing: feature not built)",
-      "feature": "queue-priority"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/priority_rules/0/name",
-      "line": 15,
-      "column": 5,
-      "message": "`config:priority_rules.name` is not supported by Schlange yet (feature queue-priority, P2, missing: feature not built)",
-      "feature": "queue-priority"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/priority_rules/0/priority",
-      "line": 18,
-      "column": 5,
-      "message": "`config:priority_rules.priority` is not supported by Schlange yet (feature queue-priority, P2, missing: feature not built)",
-      "feature": "queue-priority"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/pull_request_rules/0/actions/label",
       "line": 24,
       "column": 7,
@@ -107,33 +71,8 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `queue_rules.branch_protection_injection_mode` is in effect but not supported by Schlange yet (feature queue-branch-protection, P1, missing: feature not built)",
-      "feature": "queue-branch-protection"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `queue_rules.merge_method` is in effect but not supported by Schlange yet (feature queue-merge-method-squash, P1, partial: not built in this partial feature (`default:queue_rules.merge_method`))",
       "feature": "queue-merge-method-squash"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/queue_rules/0/merge_method",
-      "line": 8,
-      "column": 5,
-      "message": "`enum:merge_method:rebase` is not supported by Schlange yet (feature queue-merge-methods-other, P2, missing: feature not built)",
-      "feature": "queue-merge-methods-other"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "/priority_rules/0/priority",
-      "line": 18,
-      "column": 5,
-      "message": "`enum:priority:high` is not supported by Schlange yet (feature queue-priority, P2, missing: feature not built)",
-      "feature": "queue-priority"
     }
   ],
   "support": [
@@ -220,44 +159,32 @@
       "id": "config:priority_rules",
       "feature": "queue-priority",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/priority_rules"
     },
     {
       "id": "config:priority_rules.conditions",
       "feature": "queue-priority",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/priority_rules/0/conditions"
     },
     {
       "id": "config:priority_rules.name",
       "feature": "queue-priority",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/priority_rules/0/name"
     },
     {
       "id": "config:priority_rules.priority",
       "feature": "queue-priority",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/priority_rules/0/priority"
     },
     {
@@ -533,11 +460,8 @@
       "id": "default:queue_rules.branch_protection_injection_mode",
       "feature": "queue-branch-protection",
       "priority": "P1",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      }
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:queue_rules.checks_timeout",
@@ -568,22 +492,16 @@
       "id": "enum:merge_method:rebase",
       "feature": "queue-merge-methods-other",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/queue_rules/0/merge_method"
     },
     {
       "id": "enum:priority:high",
       "feature": "queue-priority",
       "priority": "P2",
-      "status": "missing",
-      "supported": false,
-      "reason": {
-        "kind": "feature_missing"
-      },
+      "status": "partial",
+      "supported": true,
       "pointer": "/priority_rules/0/priority"
     }
   ],

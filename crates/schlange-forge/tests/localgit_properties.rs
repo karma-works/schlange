@@ -1,7 +1,8 @@
 //! Property test on real git (`localgit`): random pull requests editing random lines of two
 //! shared files (so they overlap: some merge line by line, some conflict the way git says),
 //! random CI outcomes (markers that break the full suite, semantic-conflict pairs, flaky
-//! checks), direct pushes to main, random queue settings. The runner checks I0–I4 against the
+//! checks), direct pushes to main, random queue settings (every merge method, serial and
+//! isolated mode). The runner checks I0–I4 against the
 //! real repository after every step and I2/I3 at quiescence; any violation fails the case.
 //!
 //! Every case starts git hundreds of times, so the count is small: `SCHLANGE_LOCALGIT_PBT_CASES`
@@ -66,6 +67,10 @@ struct Plan {
     pushes: Vec<(u64, usize, usize)>,
     flake: bool,
     seed: u64,
+    /// `merge_method`.
+    method: &'static str,
+    /// `merge_queue.mode` (never `fast-forward` outside serial mode, as Mergify refuses it).
+    mode: &'static str,
 }
 
 fn plan() -> impl Strategy<Value = Plan> {
@@ -90,21 +95,37 @@ fn plan() -> impl Strategy<Value = Plan> {
         prop::collection::vec((0u64..2400, 0usize..2, 0usize..LINES), 0..=2),
         prop::bool::weighted(0.3),
         any::<u64>(),
+        prop::sample::select(vec![
+            "squash",
+            "merge",
+            "rebase",
+            "fast-forward",
+            "merge-batch",
+        ]),
+        prop::sample::select(vec!["serial", "serial", "isolated"]),
     )
-        .prop_map(|(batch, max_parallel, prs, pushes, flake, seed)| Plan {
-            batch,
-            max_parallel,
-            prs,
-            pushes,
-            flake,
-            seed,
-        })
+        .prop_map(
+            |(batch, max_parallel, prs, pushes, flake, seed, method, mode)| Plan {
+                batch,
+                max_parallel,
+                prs,
+                pushes,
+                flake,
+                seed,
+                method,
+                mode: if method == "fast-forward" {
+                    "serial"
+                } else {
+                    mode
+                },
+            },
+        )
 }
 
 fn scenario(p: &Plan) -> Scenario {
     let yaml = format!(
-        "merge_queue:\n  max_parallel_checks: {}\nqueue_rules:\n  - name: default\n    merge_method: squash\n    batch_size: {}\n    batch_max_wait_time: 1 min\n    queue_conditions:\n      - base = main\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\npull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
-        p.max_parallel, p.batch
+        "merge_queue:\n  max_parallel_checks: {}\n  mode: {}\nqueue_rules:\n  - name: default\n    merge_method: {}\n    batch_size: {}\n    batch_max_wait_time: 1 min\n    queue_conditions:\n      - base = main\n      - check-success = quick\n    merge_conditions:\n      - check-success = full\npull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
+        p.max_parallel, p.mode, p.method, p.batch
     );
     let mut full = ci("full", "10m")
         .queue_only()
