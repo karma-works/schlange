@@ -23,8 +23,9 @@ Scenario format (JSON), steps in order:
   {"close": "a"}
   {"main_commit": {"path": "content"}}                base moves outside the queue
   {"sleep": 30}
-  {"wait": "merged"|"closed"|"done", "prs": ["a"], "timeout": 2400}
+  {"wait": "merged"|"closed"|"done"|"queued", "prs": ["a"], "timeout": 2400}
   {"wait": "quiet", "seconds": 300, "timeout": 2400}   no activity on the PRs
+  {"assert_unqueued": "a"}                            open and never entered the queue
 Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
 
@@ -125,7 +126,7 @@ class Client:
                 if e.code in (502, 503, 504) or (e.code in (403, 429) and "rate limit" in text.lower()):
                     time.sleep(2 ** attempt * 5)
                     continue
-                raise RuntimeError(f"{self.label}: {method} {path} → {e.code} {text[:300]}") from None
+                raise RuntimeError(f"{self.label}: {method} {path} → HTTP {e.code}") from None
         raise RuntimeError(f"{self.label}: {method} {path} failed repeatedly")
 
     def paged(self, path):
@@ -198,15 +199,31 @@ def schlange_client():
     return Client(lambda: (token, 10 ** 9), "schlange"), url
 
 
-def fetch_events(client, url):
+def fetch_events(client, url, strict=False):
     events, cursor = [], None
     for _ in range(50):
         page = client.call("GET", url + (f"&cursor={cursor}" if cursor else ""))
+        if strict and (not isinstance(page, dict) or not isinstance(page.get("events"), list)):
+            raise RuntimeError("invalid queue event log response")
+        if strict and any(not isinstance(e, dict) or not isinstance(e.get("type"), str)
+                          or ("queue" in e["type"] and e["type"].endswith("enter")
+                              and not isinstance(e.get("pull_request"), int))
+                          for e in page["events"]):
+            raise RuntimeError("invalid queue event log entry")
         events += page.get("events", [])
         cursor = page.get("next_cursor") or (page.get("links") or {}).get("next")
+        if strict and cursor and not page.get("events"):
+            raise RuntimeError("incomplete queue event log response")
         if not cursor or not page.get("events"):
             break
+    if strict and cursor:
+        raise RuntimeError("queue event log exceeds pagination limit")
     return events
+
+
+def currently_queued(events, number):
+    mine = [e["type"] for e in events if e.get("pull_request") == number and "queue" in e["type"]]
+    return sum(t.endswith("enter") for t in mine) > sum(t.endswith("leave") for t in mine)
 
 
 # --- Scenario ---------------------------------------------------------------------------
@@ -229,6 +246,7 @@ class Run:
         self.out = out_dir
         self.actors = {"driver": installation_client("driver", org), "human": human_client()}
         self.prs = {}  # key -> {"number", "branch"}
+        self.checkpoints = []
         self.started = now_iso()
 
     def actor(self, spec):
@@ -260,7 +278,7 @@ class Run:
         return commit["sha"]
 
     def write_changes(self, client, branch, key, spec, n):
-        files = dict(spec.get("files", {}))
+        files = {path: content.replace("{run}", self.run_id) for path, content in spec.get("files", {}).items()}
         # Every commit changes the flag file, so CI always has something to evaluate.
         files[self.flag_path(key)] = f"# {self.run_id} {key} commit {n}\n" + self.flag_lines(spec.get("flags", []))
         if spec.get("conflict"):
@@ -328,8 +346,12 @@ class Run:
         log(f"#{n} closed")
 
     def step_main_commit(self, s):
+        self.checkpoints.append({"kind": "base_push_started", "at": now_iso()})
+        self.save_state()
         files = {path: content.replace("{run}", self.run_id) for path, content in s["main_commit"].items()}
         self.commit_files(self.actors["human"], "main", files, f"Scenario {self.run_id}: base moves")
+        self.checkpoints.append({"kind": "base_push_completed", "at": now_iso()})
+        self.save_state()
         log("Commit directly on main (admin bypass)")
 
     def queue_activity(self):
@@ -342,6 +364,25 @@ class Run:
     def pr_state(self, key):
         pr = self.actors["human"].call("GET", f"{self.r}/pulls/{self.prs[key]['number']}")
         return "merged" if pr["merged"] else pr["state"], pr["updated_at"]
+
+    def queue_events(self):
+        if self.repo == "queue-lab":
+            client, base = mergify_client(), MERGIFY_API
+        else:
+            client, base = schlange_client()
+        if client is None or base is None:
+            raise RuntimeError("queue event log is required for queue checkpoints")
+        url = f"{base}/repos/{self.org}/{self.repo}/logs?per_page=100&received_from={self.started}"
+        return fetch_events(client, url, strict=True)
+
+    def step_assert_unqueued(self, s):
+        key = s["assert_unqueued"]
+        number = self.prs[key]["number"]
+        entered = any(e.get("pull_request") == number and "queue" in e.get("type", "")
+                      and e["type"].endswith("enter") for e in self.queue_events())
+        if self.pr_state(key)[0] != "open" or entered:
+            raise RuntimeError(f"PR {key} was closed or entered the queue before the authorized command")
+        log(f"PR {key} is open and has not entered the queue")
 
     def step_wait(self, s):
         what, deadline = s["wait"], time.time() + s.get("timeout", 2400)
@@ -358,6 +399,20 @@ class Run:
                 seen, last_change = states, time.time()
                 log("State: " + ", ".join(f"{k}=#{self.prs[k]['number']}:{v[0]}" for k, v in states.items() if k in self.prs))
             st = {k: v[0] for k, v in states.items()}
+            if what == "queued":
+                events = self.queue_events()
+                if all(st[k] == "open" and currently_queued(events, self.prs[k]["number"]) for k in keys):
+                    numbers = {self.prs[k]["number"] for k in keys}
+                    self.checkpoints.append({"kind": "queued", "at": now_iso(), "prs": keys,
+                        "events": [{"pull_request": e["pull_request"], "type": e["type"],
+                                    "received_at": e.get("received_at")}
+                                   for e in events if e.get("pull_request") in numbers
+                                   and "queue" in e["type"] and (e["type"].endswith("enter")
+                                                                 or e["type"].endswith("leave"))]})
+                    log("Queue checkpoint: " + ", ".join(keys))
+                    return
+                if any(st[k] != "open" for k in keys):
+                    raise RuntimeError("pull request closed before the queue checkpoint")
             if what == "merged" and all(v == "merged" for v in st.values()):
                 return
             if what == "closed" and all(v == "closed" for v in st.values()):
@@ -367,6 +422,8 @@ class Run:
             if what == "quiet" and time.time() - last_change >= s.get("seconds", 300):
                 return
             time.sleep(20)
+        if what == "queued":
+            raise RuntimeError("timeout before queue checkpoint; subsequent steps were not run")
         log(f"Timeout while waiting for {what}; recording anyway")
         self.timed_out = True
 
@@ -374,7 +431,7 @@ class Run:
         (self.out / "scenario.json").write_text(json.dumps(self.scenario, indent=2, ensure_ascii=False))
         for s in self.scenario["steps"]:
             kind = next(k for k in ("open", "push", "comment", "label", "ready", "draft", "edit_body",
-                                    "close", "main_commit", "sleep", "wait") if k in s)
+                                    "close", "main_commit", "sleep", "wait", "assert_unqueued") if k in s)
             if kind == "sleep":
                 time.sleep(s["sleep"])
             else:
@@ -384,11 +441,22 @@ class Run:
 
     def save_state(self, **extra):
         state = {"org": self.org, "repo": self.repo, "run_id": self.run_id, "started": self.started,
-                 "prs": self.prs, **extra}
+                 "prs": self.prs, "checkpoints": self.checkpoints, **extra}
         (self.out / "run.json").write_text(json.dumps(state, indent=2))
 
 
 # --- Recording -----------------------------------------------------------------------
+
+def public_record_summary(summary):
+    """Print only structured facts; upstream text stays in the private local summary."""
+    conclusions = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"}
+    return {"prs": {k: {"number": pr["number"], "end": pr["end"]}
+                    for k, pr in summary["prs"].items()},
+            "queue_prs": [{"number": q["number"], "commits": q["commits"],
+                           "ci_ok": q["ci_ok"] if q["ci_ok"] in conclusions else None}
+                          for q in summary["queue_prs"]],
+            "main_commit_count": len(summary["main_commits"])}
+
 
 def record(out):
     state = json.loads((out / "run.json").read_text())
@@ -447,7 +515,7 @@ def record(out):
         "main_commits": [m["message"].split("\n")[0] for m in reversed(trace["main"])],
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print(json.dumps(public_record_summary(summary), indent=2, ensure_ascii=False))
     log(f"Recording: {out}")
 
 
@@ -492,16 +560,42 @@ def write_outcome(out):
     return outcome
 
 
-def compare_outcomes(expected_path, actual_path, strict_batches=False):
+def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_observation=False, expected_prs=None):
     """0 = same behaviour, 1 = deviations (they are printed)."""
     exp = json.loads(Path(expected_path).read_text())
     act = json.loads(Path(actual_path).read_text())
+    if not isinstance(exp, dict) or not isinstance(act, dict):
+        print("DEVIATION\n  outcome is not an object")
+        return 1
+    strict_observation = strict_observation or act.get("repo") == "schlange-e2e"
+    if strict_observation:
+        if (act.get("repo") != "schlange-e2e" or not isinstance(exp.get("prs"), dict)
+                or not exp["prs"] or not isinstance(act.get("prs"), dict) or not act["prs"]
+                or not all(isinstance(k, str) and isinstance(v, dict)
+                           for prs in (exp["prs"], act["prs"]) for k, v in prs.items())
+                or not all(isinstance(x, list) and all(isinstance(k, str) for k in x)
+                           for x in (exp.get("landed"), act.get("landed")))):
+            print("DEVIATION\n  compatibility evidence is missing or invalid")
+            return 1
+        if expected_prs is not None and (set(exp["prs"]) != expected_prs or set(act["prs"]) != expected_prs):
+            print("DEVIATION\n  pull request evidence does not match the scenario")
+            return 1
     diffs, known = [], []
     # Documented deviations of Schlange from the baseline: {"pr", "field", "observed", "why"}.
     allowed = {(d["pr"], d["field"]): d for d in exp.get("known_deviations", [])}
+    def valid(field, value):
+        return {
+            "end": lambda v: v in ("open", "closed", "merged"),
+            "queued": lambda v: type(v) is bool,
+            "enter_count": lambda v: type(v) is int and v >= 0,
+            "dequeue_codes": lambda v: isinstance(v, list) and all(isinstance(c, str) for c in v),
+        }[field](value)
     for k in sorted(set(exp["prs"]) | set(act["prs"])):
         e, a = exp["prs"].get(k, {}), act["prs"].get(k, {})
         for field in ("end", "queued", "enter_count", "dequeue_codes"):
+            if strict_observation and (not valid(field, e.get(field)) or not valid(field, a.get(field))):
+                diffs.append(f"PR {k}.{field}: compatibility evidence is missing or invalid")
+                continue
             # None means: this side cannot observe the field.
             if e.get(field) is not None and a.get(field) is not None and e.get(field) != a.get(field):
                 line = f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}"
@@ -589,7 +683,9 @@ def cmd_run(a):
         log("A wait timed out: failing the run")
         sys.exit(1)
     if a.baseline:
-        sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json"))
+        expected_prs = {step["open"] for step in scenario["steps"] if "open" in step}
+        sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json",
+                                  strict_observation=a.repo == "schlange-e2e", expected_prs=expected_prs))
 
 
 def cleanup(org, repo, prefix="sbx/"):
@@ -655,6 +751,7 @@ def main():
     c.add_argument("expected")
     c.add_argument("actual")
     c.add_argument("--strict-batches", action="store_true")
+    c.add_argument("--strict-observation", action="store_true", help="require complete Schlange compatibility evidence")
     sub.add_parser("reset").add_argument("--repo", required=True)
     sub.add_parser("doctor")
     sub.add_parser("token").add_argument("role", choices=["queue", "driver", "shadow"])
@@ -668,7 +765,7 @@ def main():
         sys.exit(f"Refused: unknown sandbox repository {a.repo}")
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
-     "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches)),
+     "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),
      "doctor": cmd_doctor, "token": cmd_token}[a.cmd](a)
 
 

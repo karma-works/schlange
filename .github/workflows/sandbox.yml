@@ -6,8 +6,7 @@ name: Sandbox
 #   changes). Scenarios without a baseline are only recorded.
 # - schlange-e2e: Schlange active. The job builds the release binary and runs `schlange serve`
 #   with the queue app in the runner (no webhooks: it polls by reconciliation every 10 s).
-#   A scenario is compared with sandbox/baselines/<scenario>.json when that file exists;
-#   without one the run is only recorded (and fails when a wait times out).
+#   Every selected scenario needs a reviewed baseline; a missing baseline or wait timeout fails.
 #
 # Trigger it, also by agents:
 #   gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
@@ -71,6 +70,10 @@ jobs:
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
         run: python3 -I sandbox/driver/sandbox.py doctor
+      - name: Test sandbox driver
+        run: |
+          python3 -I -m unittest discover -s sandbox/driver -p 'test_*.py'
+          python3 -I -m unittest discover -s sandbox/ci/tests -p 'test_*.py'
       - name: Scenarios
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}

@@ -42,7 +42,9 @@ gh run watch "$run" --exit-status
 gh run download "$run" -D evidence/sandbox-$run      # outcome.json, run.json, scenario.json
 ```
 
-`scenarios=all` runs all eleven (about 3–4 hours). The job summary has one row per scenario.
+`scenarios=all` runs every scenario. The job summary has one row per scenario. A Schlange
+compatibility run fails before starting if any selected scenario lacks a reviewed baseline;
+record new baselines on `queue-lab` first.
 
 Local:
 
@@ -61,7 +63,7 @@ $D run sandbox/scenarios/s01-single-pr.json --repo queue-lab
 | Dequeue on `halt`, new push, draft (MQ-07, MQ-09, MQ-11) | S05, S06, S07 | both |
 | `commands_restrictions`, constitution paths (MQ-50, MQ-52) | S08, S11 | both |
 | Checks that never pass, missing check (MQ-16, MQ-37) | S09 | both |
-| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10 | both |
+| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10, S12, S13 | both |
 
 No scenario fits? Write one (section 6) before changing code: the scenario is the test.
 

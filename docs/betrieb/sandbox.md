@@ -116,6 +116,8 @@ python3 -I sandbox/driver/sandbox.py reset --repo queue-lab   # close open scena
 | S09 | red quick check, missing Datenschutz section, red KI-Review | MQ-16, MQ-37 |
 | S10 | `main` moves, text conflict with `main` | MQ-06, MQ-27, MQ-47 |
 | S11 | `@mergifyio dequeue` and `queue` again | MQ-45, MQ-50 |
+| S12 | base moves after both pull requests have entered the queue | MQ-06, MQ-27, MQ-47 |
+| S13 | base moves while the conflicting pull request is still a draft | MQ-06, MQ-27, MQ-47 |
 
 Every run writes `.sandbox-runs/<run>/` (not checked in):
 
