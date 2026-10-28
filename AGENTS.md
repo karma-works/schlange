@@ -24,6 +24,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | `docs/mq-coverage.md` | which MQ case has which test |
 | `.cargo/config.toml` | `LIBSQLITE3_FLAGS`: the bundled SQLite without FTS, R-tree, JSON, extension loading (binary and image size) |
 | `sandbox/` | GitHub sandbox: setup, app manifests, fixture repository, scenario driver, baselines, CI helpers (workflow `sandbox.yml`) |
+| `.agents/skills/sandbox-e2e/` | skill for end-to-end and differential tests in the sandbox (linked for Claude in `.claude/skills/`) |
 | `scripts/critic.sh` | independent critic (Codex CLI) |
 | `.critic/` | critic verdicts, checked in |
 

@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Sandbox-Driver: spielt Szenarien in der Sandbox ab und zeichnet auf, was die Queue tut.
+"""Sandbox driver: replays scenarios in the sandbox and records what the queue does.
 
     python3 -I sandbox/driver/sandbox.py doctor
-    python3 -I sandbox/driver/sandbox.py run sandbox/scenarios/s01-einzelner-pr.json --repo queue-lab
-    python3 -I sandbox/driver/sandbox.py record <lauf-verzeichnis>     # Aufzeichnung wiederholen
-    python3 -I sandbox/driver/sandbox.py reset --repo queue-lab        # offene Szenario-PRs schließen
-    python3 -I sandbox/driver/sandbox.py token driver                  # Installations-Token ausgeben
+    python3 -I sandbox/driver/sandbox.py run sandbox/scenarios/s01-single-pr.json --repo queue-lab
+    python3 -I sandbox/driver/sandbox.py record <run-directory>     # record again
+    python3 -I sandbox/driver/sandbox.py reset --repo queue-lab        # close open scenario PRs
+    python3 -I sandbox/driver/sandbox.py token driver                  # print an installation token
 
-Akteure: „driver“ ist die Driver-App (Bot), „human“ ist das mit gh angemeldete Konto.
-Aufzeichnungen landen in .sandbox-runs/ (nicht eingecheckt): Szenario, Zeitachse je PR,
-Queue-PRs, Checks und die Commits auf main. Das ist das beobachtete Verhalten, gegen das
-Schlange später verglichen wird.
+Actors: "driver" is the driver app (bot), "human" is the account logged in with gh.
+Recordings go to .sandbox-runs/ (not checked in): scenario, timeline per PR, queue PRs,
+checks and the commits on main. This is the observed behaviour that Schlange is compared
+against later.
 
-Szenario-Format (JSON), Schritte der Reihe nach:
+Scenario format (JSON), steps in order:
   {"open": "a", "flags": ["fail-full"], "files": {...}, "draft": false, "datenschutz": true,
    "ki_review": "gruen"|"rot", "as": "driver"|"human", "conflict": true, "title": "..."}
-  {"push": "a", "flags": [...], "files": {...}}        neuer Commit auf den PR-Branch
+  {"push": "a", "flags": [...], "files": {...}}        new commit on the PR branch
   {"comment": "a", "text": "@mergifyio queue", "as": "human"}
   {"label": "a", "add": "halt"} / {"label": "a", "remove": "halt"}
-  {"ready": "a"}  /  {"draft": "a"}                    Entwurfsstatus ändern
-  {"edit_body": "a", "ki_review": "rot"}               Beschreibung neu setzen
+  {"ready": "a"}  /  {"draft": "a"}                    change the draft status
+  {"edit_body": "a", "ki_review": "rot"}               set the description again
   {"close": "a"}
-  {"main_commit": {"pfad": "inhalt"}}                  Base bewegt sich außerhalb der Queue
+  {"main_commit": {"path": "content"}}                base moves outside the queue
   {"sleep": 30}
   {"wait": "merged"|"closed"|"done", "prs": ["a"], "timeout": 2400}
-  {"wait": "quiet", "seconds": 300, "timeout": 2400}   keine Aktivität auf den PRs
-Flags: siehe fixture/ci/run.sh. "conflict": true ändert shared/conflict.txt (Textkonflikt).
+  {"wait": "quiet", "seconds": 300, "timeout": 2400}   no activity on the PRs
+Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
 
 import argparse
@@ -50,7 +50,7 @@ DEFAULT_ORG = os.environ.get("SANDBOX_ORG", "schlange-sandbox")
 
 
 def die(msg):
-    print(f"Fehler: {msg}", file=sys.stderr)
+    print(f"Error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -62,12 +62,12 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# --- Zugang -----------------------------------------------------------------------------
+# --- Access -----------------------------------------------------------------------------
 
 def app_meta(role):
     f = CONFIG_DIR / "apps" / f"{role}.json"
     if not f.exists():
-        die(f"App „{role}“ ist nicht registriert (sandbox/setup.sh apps)")
+        die(f'App "{role}" is not registered (sandbox/setup.sh apps)')
     return json.loads(f.read_text())
 
 
@@ -123,14 +123,14 @@ class Client:
                     time.sleep(2 ** attempt * 5)
                     continue
                 raise RuntimeError(f"{self.label}: {method} {path} → {e.code} {text[:300]}") from None
-        raise RuntimeError(f"{self.label}: {method} {path} scheitert wiederholt")
+        raise RuntimeError(f"{self.label}: {method} {path} failed repeatedly")
 
     def paged(self, path):
         sep = "&" if "?" in path else "?"
         page, out = 1, []
         while True:
             items = self.call("GET", f"{path}{sep}per_page=100&page={page}")
-            if isinstance(items, dict):  # z. B. check-runs: {"check_runs": [...]}
+            if isinstance(items, dict):  # e.g. check-runs: {"check_runs": [...]}
                 items = next(v for v in items.values() if isinstance(v, list))
             out += items
             if len(items) < 100:
@@ -147,7 +147,7 @@ def installation_client(role, owner=None):
         jwt = Client(lambda: (app_jwt(role), 500), f"{role}-jwt")
         inst = jwt.call("GET", f"/{kind}/{owner}/installation", ok404=True)
         if not inst:
-            die(f"App „{role}“ ist bei {owner} nicht installiert: {meta['html_url']}/installations/new")
+            die(f'App "{role}" is not installed at {owner}: {meta["html_url"]}/installations/new')
         tok = jwt.call("POST", f"/app/installations/{inst['id']}/access_tokens")
         return tok["token"], 3000
 
@@ -155,7 +155,7 @@ def installation_client(role, owner=None):
 
 
 def secret(env, filename):
-    """Secret aus der Umgebung (CI) oder aus ~/.config/schlange-sandbox/<datei> (lokal)."""
+    """Secret from the environment (CI) or from ~/.config/schlange-sandbox/<file> (local)."""
     if os.environ.get(env):
         return os.environ[env].strip()
     f = CONFIG_DIR / filename
@@ -163,12 +163,12 @@ def secret(env, filename):
 
 
 def human_client():
-    # Fine-grained Token von karma-works, nur für Repos von schlange-sandbox gültig.
-    # Rückfall auf den gh-Login nur lokal und mit Warnung: der darf mehr als die Sandbox.
+    # Fine-grained token of karma-works, valid only for repos of schlange-sandbox.
+    # Falling back to the gh login happens only locally and with a warning: it may do more than the sandbox.
     def fetch():
         tok = secret("SANDBOX_HUMAN_TOKEN", "human-token")
         if not tok:
-            print("Warnung: kein Sandbox-Token (human-token), nutze den gh-Login", file=sys.stderr)
+            print("Warning: no sandbox token (human-token), using the gh login", file=sys.stderr)
             tok = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True).stdout.strip()
         return tok, 10 ** 9
 
@@ -186,12 +186,12 @@ def mergify_client():
 MERGIFY_API = "https://api.mergify.com/v1"
 
 
-# --- Szenario ---------------------------------------------------------------------------
+# --- Scenario ---------------------------------------------------------------------------
 
 def pr_body(spec, run_id, key):
-    parts = [f"Sandbox-Szenario `{run_id}`, PR `{key}`."]
+    parts = [f"Sandbox scenario `{run_id}`, PR `{key}`."]
     if spec.get("datenschutz", True):
-        parts.append("## Datenschutz\n\nKeine personenbezogenen Daten (Testdaten).")
+        parts.append("## Datenschutz\n\nNo personal data (test data).")
     if spec.get("ki_review") == "rot":
         parts.append("KI-Review: rot")
     return "\n\n".join(parts)
@@ -217,7 +217,7 @@ class Run:
     def flag_lines(self, flags):
         out = []
         for f in flags:
-            # conflicts-with <key> verweist auf die Flag-Datei des anderen Szenario-PRs.
+            # conflicts-with <key> refers to the flag file of the other scenario PR.
             if f.startswith("conflicts-with "):
                 out.append(f"conflicts-with {self.run_id}-{f.split(' ', 1)[1]}")
             else:
@@ -225,7 +225,7 @@ class Run:
         return "\n".join(out) + "\n"
 
     def commit_files(self, client, branch, files, msg):
-        """Ein Commit mit allen Dateien auf den Branch (ein Push, ein synchronize-Event)."""
+        """One commit with all files on the branch (one push, one synchronize event)."""
         ref = client.call("GET", f"{self.r}/git/ref/heads/{branch}")
         parent = ref["object"]["sha"]
         base_tree = client.call("GET", f"{self.r}/git/commits/{parent}")["tree"]["sha"]
@@ -238,11 +238,11 @@ class Run:
 
     def write_changes(self, client, branch, key, spec, n):
         files = dict(spec.get("files", {}))
-        # Jeder Commit ändert die Flag-Datei, damit CI immer etwas zum Auswerten hat.
+        # Every commit changes the flag file, so CI always has something to evaluate.
         files[self.flag_path(key)] = f"# {self.run_id} {key} commit {n}\n" + self.flag_lines(spec.get("flags", []))
         if spec.get("conflict"):
-            files["shared/conflict.txt"] = f"Gemeinsame Datei für Textkonflikte zwischen Szenario-PRs.\nzeile: {key} ({self.run_id})\n"
-        self.commit_files(client, branch, files, f"Szenario {self.run_id}: {key} ({n})")
+            files["shared/conflict.txt"] = f"Shared file for text conflicts between scenario PRs.\nline: {key} ({self.run_id})\n"
+        self.commit_files(client, branch, files, f"Scenario {self.run_id}: {key} ({n})")
 
     def step_open(self, s):
         key, client = s["open"], self.actor(s)
@@ -251,7 +251,7 @@ class Run:
         client.call("POST", f"{self.r}/git/refs", {"ref": f"refs/heads/{branch}", "sha": main["object"]["sha"]})
         self.write_changes(client, branch, key, s, 1)
         pr = client.call("POST", f"{self.r}/pulls", {
-            "title": s.get("title", f"Szenario {self.scenario['id']}: {key}"),
+            "title": s.get("title", f"Scenario {self.scenario['id']}: {key}"),
             "head": branch, "base": "main", "body": pr_body(s, self.run_id, key), "draft": s.get("draft", False),
         })
         self.prs[key] = {"number": pr["number"], "branch": branch, "commits": 1, "node_id": pr["node_id"]}
@@ -262,12 +262,12 @@ class Run:
         p = self.prs[key]
         p["commits"] += 1
         self.write_changes(self.actor(s), p["branch"], key, s, p["commits"])
-        log(f"Push auf {key} (#{p['number']})")
+        log(f"Push to {key} (#{p['number']})")
 
     def step_comment(self, s):
         n = self.prs[s["comment"]]["number"]
         self.actor(s).call("POST", f"{self.r}/issues/{n}/comments", {"body": s["text"]})
-        log(f"Kommentar auf #{n} als {s.get('as', 'driver')}: {s['text']}")
+        log(f"Comment on #{n} as {s.get('as', 'driver')}: {s['text']}")
 
     def step_label(self, s):
         n = self.prs[s["label"]]["number"]
@@ -276,7 +276,7 @@ class Run:
             c.call("POST", f"{self.r}/issues/{n}/labels", {"labels": [s["add"]]})
         else:
             c.call("DELETE", f"{self.r}/issues/{n}/labels/{s['remove']}", ok404=True)
-        log(f"Label auf #{n}: {s}")
+        log(f"Label on #{n}: {s}")
 
     def graphql(self, client, query, variables):
         res = client.call("POST", "/graphql", {"query": query, "variables": variables})
@@ -286,28 +286,28 @@ class Run:
     def step_ready(self, s):
         p = self.prs[s["ready"]]
         self.graphql(self.actor(s), "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}", {"id": p["node_id"]})
-        log(f"#{p['number']} bereit")
+        log(f"#{p['number']} ready")
 
     def step_draft(self, s):
         p = self.prs[s["draft"]]
         self.graphql(self.actor(s), "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){clientMutationId}}", {"id": p["node_id"]})
-        log(f"#{p['number']} wieder Entwurf")
+        log(f"#{p['number']} draft again")
 
     def step_edit_body(self, s):
         key = s["edit_body"]
         n = self.prs[key]["number"]
         self.actor(s).call("PATCH", f"{self.r}/pulls/{n}", {"body": pr_body(s, self.run_id, key)})
-        log(f"Beschreibung von #{n} geändert")
+        log(f"Description of #{n} changed")
 
     def step_close(self, s):
         n = self.prs[s["close"]]["number"]
         self.actor(s).call("PATCH", f"{self.r}/pulls/{n}", {"state": "closed"})
-        log(f"#{n} geschlossen")
+        log(f"#{n} closed")
 
     def step_main_commit(self, s):
         files = {path: content.replace("{run}", self.run_id) for path, content in s["main_commit"].items()}
-        self.commit_files(self.actors["human"], "main", files, f"Szenario {self.run_id}: Base bewegt")
-        log("Commit direkt auf main (Admin-Ausnahme)")
+        self.commit_files(self.actors["human"], "main", files, f"Scenario {self.run_id}: base moves")
+        log("Commit directly on main (admin bypass)")
 
     def pr_state(self, key):
         pr = self.actors["human"].call("GET", f"{self.r}/pulls/{self.prs[key]['number']}")
@@ -321,7 +321,7 @@ class Run:
             states = {k: self.pr_state(k) for k in keys}
             if states != seen:
                 seen, last_change = states, time.time()
-                log("Stand: " + ", ".join(f"{k}=#{self.prs[k]['number']}:{v[0]}" for k, v in states.items()))
+                log("State: " + ", ".join(f"{k}=#{self.prs[k]['number']}:{v[0]}" for k, v in states.items()))
             st = {k: v[0] for k, v in states.items()}
             if what == "merged" and all(v == "merged" for v in st.values()):
                 return
@@ -332,7 +332,7 @@ class Run:
             if what == "quiet" and time.time() - last_change >= s.get("seconds", 300):
                 return
             time.sleep(20)
-        log(f"Zeitlimit beim Warten auf {what}; Aufzeichnung trotzdem")
+        log(f"Timeout while waiting for {what}; recording anyway")
 
     def execute(self):
         (self.out / "scenario.json").write_text(json.dumps(self.scenario, indent=2, ensure_ascii=False))
@@ -352,7 +352,7 @@ class Run:
         (self.out / "run.json").write_text(json.dumps(state, indent=2))
 
 
-# --- Aufzeichnung -----------------------------------------------------------------------
+# --- Recording -----------------------------------------------------------------------
 
 def record(out):
     state = json.loads((out / "run.json").read_text())
@@ -386,7 +386,7 @@ def record(out):
                               "author": (cm.get("author") or {}).get("login"),
                               "committer": (cm.get("committer") or {}).get("login"),
                               "message": cm["commit"]["message"], "date": cm["commit"]["committer"]["date"]})
-    # Aktivitätslog von Mergify (nur queue-lab): strukturierte Gründe fürs Ein- und Austragen.
+    # Mergify's activity log (queue-lab only): structured reasons for entering and leaving the queue.
     m = mergify_client() if state["repo"] == "queue-lab" else None
     if m:
         url = (f"{MERGIFY_API}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
@@ -412,12 +412,12 @@ def record(out):
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    log(f"Aufzeichnung: {out}")
+    log(f"Recording: {out}")
 
 
-# --- Ergebnis und Vergleich -------------------------------------------------------------
-# outcome.json ist ein eigenes, textfreies Format (keine Mergify-Texte, Clean-Room) und kann
-# als Sollwert eingecheckt werden: sandbox/baselines/<szenario>.json.
+# --- Outcome and comparison -------------------------------------------------------------
+# outcome.json is a format of its own, free of text (no Mergify texts, clean room), and can be
+# checked in as a baseline: sandbox/baselines/<scenario>.json.
 
 def write_outcome(out):
     trace = json.loads((out / "trace.json").read_text())
@@ -431,14 +431,14 @@ def write_outcome(out):
         left = [e for e in mine if "queue" in e["type"] and e["type"].endswith("leave")]
         prs[k] = {
             "end": "merged" if v["merged"] else v["state"],
-            # Ohne Mergify-Log (schlange-e2e) liefert später Schlanges eigenes Ereignisprotokoll diese Felder.
+            # Without the Mergify log (schlange-e2e), Schlange's own event log will provide these fields later.
             "queued": bool(entered) if events is not None else None,
             "enter_count": len(entered) if events is not None else None,
             "dequeue_codes": [(e.get("metadata") or {}).get("dequeue_code") for e in left
                               if not (e.get("metadata") or {}).get("merged")] if events is not None else None,
         }
     landed = []
-    for cm in reversed(trace["main"]):  # älteste zuerst
+    for cm in reversed(trace["main"]):  # oldest first
         for num in re.findall(r"\(#(\d+)\)", cm["message"].split("\n")[0]):
             if int(num) in key_of:
                 landed.append(key_of[int(num)])
@@ -454,25 +454,25 @@ def write_outcome(out):
 
 
 def compare_outcomes(expected_path, actual_path, strict_batches=False):
-    """0 = gleiches Verhalten, 1 = Abweichungen (werden ausgegeben)."""
+    """0 = same behaviour, 1 = deviations (they are printed)."""
     exp = json.loads(Path(expected_path).read_text())
     act = json.loads(Path(actual_path).read_text())
     diffs = []
     for k in sorted(set(exp["prs"]) | set(act["prs"])):
         e, a = exp["prs"].get(k, {}), act["prs"].get(k, {})
         for field in ("end", "queued", "dequeue_codes"):
-            # None heißt: diese Seite kann das Feld (noch) nicht beobachten.
+            # None means: this side cannot observe the field (yet).
             if e.get(field) is not None and a.get(field) is not None and e.get(field) != a.get(field):
-                diffs.append(f"PR {k}.{field}: erwartet {e.get(field)}, beobachtet {a.get(field)}")
+                diffs.append(f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}")
     if exp["landed"] != act["landed"]:
-        diffs.append(f"Landereihenfolge: erwartet {exp['landed']}, beobachtet {act['landed']}")
-    # Bündel hängen vom Timing ab (batch_max_wait_time); nur auf Wunsch streng vergleichen.
+        diffs.append(f"Landing order: expected {exp['landed']}, observed {act['landed']}")
+    # Batches depend on timing (batch_max_wait_time); compare strictly only on request.
     if strict_batches and [b["prs"] for b in exp["batches"]] != [b["prs"] for b in act["batches"]]:
-        diffs.append(f"Bündel: erwartet {exp['batches']}, beobachtet {act['batches']}")
+        diffs.append(f"Batches: expected {exp['batches']}, observed {act['batches']}")
     if diffs:
-        print("ABWEICHUNG\n  " + "\n  ".join(diffs))
+        print("DEVIATION\n  " + "\n  ".join(diffs))
         return 1
-    print("GLEICH")
+    print("SAME")
     return 0
 
 
@@ -495,21 +495,21 @@ def slim_check(x):
             "app": (x.get("app") or {}).get("slug"), "started_at": x["started_at"], "completed_at": x["completed_at"]}
 
 
-# --- Befehle ----------------------------------------------------------------------------
+# --- Commands ----------------------------------------------------------------------------
 
 def busy(org, repo):
-    """Offene Szenario- oder Queue-PRs: dann läuft dort gerade etwas (lokal, CI oder anderer Agent)."""
+    """Open scenario or queue PRs: then something is running there (local, CI or another agent)."""
     open_prs = human_client().paged(f"/repos/{org}/{repo}/pulls?state=open")
     return [p["number"] for p in open_prs if p["head"]["ref"].startswith(("sbx/", QUEUE_PREFIX))]
 
 
 def wait_idle(org, repo, timeout):
-    # Zwei Szenarien gleichzeitig in einem Repo landen im selben Bündel und verfälschen sich.
+    # Two scenarios at once in one repo end up in the same batch and distort each other.
     deadline = time.time() + timeout
     while (prs := busy(org, repo)):
         if time.time() > deadline:
-            die(f"{org}/{repo} ist belegt (offene PRs {prs}); aufräumen mit: sandbox.py reset --repo {repo}")
-        log(f"{repo} belegt (offene PRs {prs}), warte …")
+            die(f"{org}/{repo} is busy (open PRs {prs}); clean up with: sandbox.py reset --repo {repo}")
+        log(f"{repo} is busy (open PRs {prs}), waiting …")
         time.sleep(30)
 
 
@@ -520,7 +520,7 @@ def cmd_run(a):
     run_id = f"{scenario['id'].lower()}-{a.repo}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     out = RUNS / run_id
     out.mkdir(parents=True)
-    log(f"Szenario {scenario['id']} – {scenario['title']} in {a.org}/{a.repo} ({out})")
+    log(f"Scenario {scenario['id']} – {scenario['title']} in {a.org}/{a.repo} ({out})")
     try:
         Run(a.org, a.repo, scenario, out).execute()
     finally:
@@ -533,16 +533,16 @@ def cmd_run(a):
 
 
 def cleanup(org, repo, prefix="sbx/"):
-    """Schließt offene Szenario-PRs und löscht ihre Branches (nach jedem Lauf, sonst sperrt das Repo)."""
+    """Closes open scenario PRs and deletes their branches (after every run, otherwise the repo stays locked)."""
     h = human_client()
     r = f"/repos/{org}/{repo}"
     for pr in h.paged(f"{r}/pulls?state=open"):
         if pr["head"]["ref"].startswith(prefix):
             h.call("PATCH", f"{r}/pulls/{pr['number']}", {"state": "closed"})
-            log(f"#{pr['number']} geschlossen")
+            log(f"#{pr['number']} closed")
     for ref in h.paged(f"{r}/git/matching-refs/heads/{prefix}"):
         h.call("DELETE", f"{r}/git/{ref['ref']}", ok404=True)
-        log(f"{ref['ref']} gelöscht")
+        log(f"{ref['ref']} deleted")
 
 
 def cmd_reset(a):
@@ -554,20 +554,20 @@ def cmd_doctor(a):
     for role in ("queue", "driver"):
         f = CONFIG_DIR / "apps" / f"{role}.json"
         if not f.exists():
-            print(f"☐ App {role} nicht registriert")
+            print(f"☐ App {role} not registered")
             ok = False
             continue
         try:
             jwt = Client(lambda r=role: (app_jwt(r), 500), role)
             inst = jwt.call("GET", f"/orgs/{a.org}/installation", ok404=True)
             if not inst:
-                print(f"☐ App {role} nicht in {a.org} installiert: {app_meta(role)['html_url']}/installations/new")
+                print(f"☐ App {role} not installed in {a.org}: {app_meta(role)['html_url']}/installations/new")
                 ok = False
                 continue
             tok = jwt.call("POST", f"/app/installations/{inst['id']}/access_tokens")["token"]
             repos = Client(lambda t=tok: (t, 3000), role).call("GET", "/installation/repositories")
             names = sorted(x["name"] for x in repos["repositories"])
-            print(f"→ App {role} installiert, Repos: {', '.join(names) or '–'}")
+            print(f"→ App {role} installed, repos: {', '.join(names) or '–'}")
         except Exception as e:  # noqa: BLE001
             print(f"☐ App {role}: {e}")
             ok = False
@@ -585,9 +585,9 @@ def main():
     r = sub.add_parser("run")
     r.add_argument("scenario")
     r.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
-    r.add_argument("--baseline", help="outcome.json als Sollwert; Exit 1 bei Abweichung")
-    r.add_argument("--no-wait", action="store_true", help="nicht warten, bis das Repo frei ist")
-    r.add_argument("--keep", action="store_true", help="offene Szenario-PRs nach dem Lauf nicht schließen")
+    r.add_argument("--baseline", help="outcome.json as the baseline; exit 1 on deviation")
+    r.add_argument("--no-wait", action="store_true", help="do not wait until the repo is free")
+    r.add_argument("--keep", action="store_true", help="do not close open scenario PRs after the run")
     r.add_argument("--idle-timeout", type=int, default=1800)
     sub.add_parser("record").add_argument("dir")
     sub.add_parser("outcome").add_argument("dir")
@@ -598,7 +598,7 @@ def main():
     sub.add_parser("reset").add_argument("--repo", required=True)
     sub.add_parser("doctor")
     sub.add_parser("token").add_argument("role", choices=["queue", "driver", "shadow"])
-    # --org auch nach dem Unterbefehl erlauben
+    # also allow --org after the subcommand
     for sp in sub.choices.values():
         sp.add_argument("--org", default=argparse.SUPPRESS)
     a = p.parse_args()

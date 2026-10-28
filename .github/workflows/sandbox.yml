@@ -1,49 +1,49 @@
 name: Sandbox
 
-# Integrationstests in der GitHub-Sandbox schlange-sandbox (docs/betrieb/sandbox.md).
-# - queue-lab: Mergify aktiv. Zeichnet Mergifys Verhalten auf und vergleicht es mit den
-#   Sollwerten in sandbox/baselines/ (meldet, wenn Mergify sich ändert).
-# - schlange-e2e: Schlange aktiv. Kompatibilitätstest gegen dieselben Sollwerte
-#   (braucht das Schlange-Binary; bis dahin bricht der Lauf mit klarer Meldung ab).
+# Integration tests in the GitHub sandbox schlange-sandbox (docs/betrieb/sandbox.md).
+# - queue-lab: Mergify active. Records Mergify's behaviour and compares it with the
+#   baselines in sandbox/baselines/ (reports when Mergify changes).
+# - schlange-e2e: Schlange active. Compatibility test against the same baselines
+#   (needs the Schlange binary; until then the run aborts with a clear message).
 #
-# Auslösen, auch durch Agenten:
-#   gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-einzelner-pr s03-rotes-buendel"
-# Die Secrets setzt sandbox/ci/upload-secrets.sh. Sie wirken nur in schlange-sandbox
-# (Apps dort installiert, Token auf die Organisation begrenzt).
-# Nur workflow_dispatch und schedule: Fork-PRs erreichen diesen Workflow und seine Secrets nie.
+# Trigger it, also by agents:
+#   gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
+# sandbox/ci/upload-secrets.sh sets the secrets. They only work in schlange-sandbox
+# (apps installed there, token limited to the organisation).
+# Only workflow_dispatch and schedule: fork PRs never reach this workflow or its secrets.
 on:
   workflow_dispatch:
     inputs:
       repo:
-        description: Sandbox-Repo
+        description: Sandbox repo
         type: choice
         options: [queue-lab, schlange-e2e]
         default: queue-lab
       scenarios:
-        description: Szenarien (Dateinamen ohne .json, mit Leerzeichen getrennt) oder all
+        description: Scenarios (file names without .json, separated by spaces) or all
         required: false
-        default: s01-einzelner-pr
+        default: s01-single-pr
   schedule:
-    # Sonntags alle Szenarien auf queue-lab: erkennt Verhaltensänderungen von Mergify.
+    # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.
     - cron: '17 2 * * 0'
 
 permissions:
   contents: read
 
-# Ein Lauf pro Sandbox-Repo; parallele Szenarien würden sich gegenseitig ins Bündel geraten.
-# Der Driver wartet zusätzlich, bis keine Szenario- oder Queue-PRs mehr offen sind (lokale Läufe).
+# One run per sandbox repo; parallel scenarios would end up in each other's batch.
+# The driver also waits until no scenario or queue PRs are open any more (local runs).
 concurrency:
   group: sandbox-${{ inputs.repo || 'queue-lab' }}
   cancel-in-progress: false
 
 jobs:
   scenarios:
-    name: Szenarien ${{ inputs.repo || 'queue-lab' }}
+    name: Scenarios ${{ inputs.repo || 'queue-lab' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - name: Zugangsdaten aus den Secrets
+      - name: Credentials from the secrets
         env:
           SANDBOX_QUEUE_APP: ${{ secrets.SANDBOX_QUEUE_APP }}
           SANDBOX_QUEUE_PEM: ${{ secrets.SANDBOX_QUEUE_PEM }}
@@ -52,22 +52,22 @@ jobs:
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
           SANDBOX_SMEE_URL: ${{ vars.SANDBOX_SMEE_URL }}
         run: bash sandbox/ci/write-config.sh
-      - name: Stand der Sandbox
+      - name: State of the sandbox
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
         run: python3 -I sandbox/driver/sandbox.py doctor
-      - name: Szenarien
+      - name: Scenarios
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
           SCENARIOS: ${{ inputs.scenarios || 'all' }}
-        # Mehrere Namen werden einzelne Argumente.
+        # Several names become separate arguments.
         run: |
           read -ra names <<<"$SCENARIOS"
           bash sandbox/ci/run-scenarios.sh "$REPO" "${names[@]}"
-      # Öffentliches Repo: nur das eigene, textfreie Format. trace.json und summary.json enthalten
-      # Mergify-Texte (Clean Room) und bleiben im Runner.
+      # Public repo: only our own format, free of text. trace.json and summary.json contain
+      # Mergify texts (clean room) and stay in the runner.
       - uses: actions/upload-artifact@v4
         if: always()
         with:

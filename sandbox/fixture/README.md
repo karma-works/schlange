@@ -1,7 +1,7 @@
 # Schlange-Sandbox
 
-Synthetisches Test-Repo für [Schlange](https://github.com/karma-works/schlange). Es bildet die
-Pflicht-Checks und die `.mergify.yml` von Arztagent nach. Erzeugt und zurückgesetzt von
-`sandbox/setup.sh` im Schlange-Repo; PRs öffnet der Sandbox Driver nach Szenario.
+Synthetic test repo for [Schlange](https://github.com/karma-works/schlange). It imitates the
+required checks and the `.mergify.yml` of Arztagent. Created and reset by
+`sandbox/setup.sh` in the Schlange repo; the Sandbox Driver opens PRs according to a scenario.
 
-Inhalte hier sind Testdaten ohne Bedeutung.
+The content here is test data without meaning.

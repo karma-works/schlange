@@ -1,9 +1,9 @@
 name: CI
 
-# Nachbau von arzt-agent/.github/workflows/ci.yml: ein Pflichtergebnis `ci-ok`.
-# PR: schnelle Prüfung (light). Queue-PR (Head mergify/merge-queue/*): volle Suite (full).
-# Was die Suite tut, steuern Flag-Dateien unter ci/flags/, die der PR selbst ändert
-# (siehe ci/run.sh). Flags auf main wirken nicht mehr.
+# Imitation of arzt-agent/.github/workflows/ci.yml: one required result `ci-ok`.
+# PR: quick check (light). Queue PR (head mergify/merge-queue/*): full suite (full).
+# What the suite does is controlled by flag files under ci/flags/ that the PR itself changes
+# (see ci/run.sh). Flags on main no longer have any effect.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -34,10 +34,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" = pull_request ] && [[ "$HEAD_REF" != mergify/merge-queue/* ]]; then mode=light; else mode=full; fi
-          echo "Modus: $mode"
+          echo "Mode: $mode"
           bash ci/run.sh "$mode" "${BASE:-}" "${HEAD:-}"
 
-  # Rot bei jedem Fehler oder Abbruch; nicht gemeldet, wenn der ganze Lauf abgebrochen wurde.
+  # Red on any failure or abort; not reported if the whole run was cancelled.
   ci-ok:
     name: ci-ok
     if: ${{ !cancelled() }}
@@ -49,4 +49,4 @@ jobs:
           RESULT: ${{ needs.suite.result }}
         run: |
           echo "suite: $RESULT"
-          [ "$RESULT" = success ] || { echo "::error::Nicht grün: suite"; exit 1; }
+          [ "$RESULT" = success ] || { echo "::error::Not green: suite"; exit 1; }

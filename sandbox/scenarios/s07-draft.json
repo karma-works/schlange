@@ -1,6 +1,6 @@
 {
   "id": "S07",
-  "title": "Entwurf wird nicht eingereiht; nach ready schon; zurück zum Entwurf trägt aus",
+  "title": "A draft is not enqueued; after ready it is; back to draft dequeues it",
   "refs": [
     "MQ-09"
   ],

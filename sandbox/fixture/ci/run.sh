@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Steuerbare Test-Suite der Sandbox.  run.sh <light|full> [BASE HEAD]
+# Controllable test suite of the sandbox.  run.sh <light|full> [BASE HEAD]
 #
-# Es zählen nur Flag-Dateien unter ci/flags/, die zwischen BASE und HEAD geändert wurden
-# (also vom PR bzw. vom Bündel im Queue-PR). Ohne BASE/HEAD: keine Flags. Je Zeile ein Flag:
-#   fail                 rot in beiden Modi
-#   fail-light           rot nur im PR (light)
-#   fail-full            rot nur im Queue-PR (full): „semantischer Konflikt mit main“
-#   conflicts-with <id>  rot im full-Modus, wenn auch ci/flags/<id> im Bündel steckt
-#   flaky <prozent>      rot mit dieser Wahrscheinlichkeit im full-Modus
-#   sleep <sekunden>     Laufzeit, in beiden Modi
-#   sleep-full <sek>     Laufzeit nur im full-Modus
+# Only flag files under ci/flags/ that changed between BASE and HEAD count (that is, those of
+# the PR or of the batch in the queue PR). Without BASE/HEAD: no flags. One flag per line:
+#   fail                 red in both modes
+#   fail-light           red only in the PR (light)
+#   fail-full            red only in the queue PR (full): "semantic conflict with main"
+#   conflicts-with <id>  red in full mode if ci/flags/<id> is also in the batch
+#   flaky <prozent>      red with this probability in full mode
+#   sleep <sekunden>     run time, in both modes
+#   sleep-full <sek>     run time, in full mode only
 set -euo pipefail
 mode="$1" base="${2:-}" head="${3:-}"
 flags=()
@@ -29,13 +29,13 @@ for f in "${flags[@]:-}"; do
       fail) echo "::error::$f: fail"; status=1 ;;
       fail-light) [ "$mode" = light ] && { echo "::error::$f: fail-light"; status=1; } ;;
       fail-full) [ "$mode" = full ] && { echo "::error::$f: fail-full"; status=1; } ;;
-      conflicts-with) [ "$mode" = full ] && present "$arg" && { echo "::error::$f: Konflikt mit $arg"; status=1; } ;;
+      conflicts-with) [ "$mode" = full ] && present "$arg" && { echo "::error::$f: conflict with $arg"; status=1; } ;;
       flaky) [ "$mode" = full ] && [ $((RANDOM % 100)) -lt "$arg" ] && { echo "::error::$f: flaky"; status=1; } ;;
       sleep) sleep "$arg" ;;
       sleep-full) [ "$mode" = full ] && sleep "$arg" ;;
-      *) echo "::warning::$f: unbekanntes Flag $flag" ;;
+      *) echo "::warning::$f: unknown flag $flag" ;;
     esac
   done < "$f"
 done
-[ "$status" = 0 ] && echo "Suite grün ($mode)"
+[ "$status" = 0 ] && echo "Suite green ($mode)"
 exit "$status"

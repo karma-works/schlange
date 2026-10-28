@@ -1,6 +1,6 @@
 {
   "id": "S10",
-  "title": "main bewegt sich außerhalb der Queue, Textkonflikt mit main",
+  "title": "main moves outside the queue, text conflict with main",
   "refs": [
     "MQ-06",
     "MQ-27",
@@ -22,7 +22,7 @@
     },
     {
       "main_commit": {
-        "shared/conflict.txt": "Gemeinsame Datei für Textkonflikte zwischen Szenario-PRs.\nzeile: main ({run})\n"
+        "shared/conflict.txt": "Shared file for text conflicts between scenario PRs.\nline: main ({run})\n"
       }
     },
     {

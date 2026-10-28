@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Registriert eine GitHub App über den Manifest-Flow.
+"""Registers a GitHub App through the manifest flow.
 
-Im Browser ist nur ein Klick nötig („Create GitHub App“). Danach tauscht das Skript den
-einmaligen Code gegen App-ID und Private Key und legt beides unter
-~/.config/schlange-sandbox/apps/ ab (Verzeichnis 0700, Schlüssel 0600). Nichts davon landet
-im Repo.
+The browser needs only one click ("Create GitHub App"). The script then exchanges the
+one-time code for the app ID and private key and stores both in
+~/.config/schlange-sandbox/apps/ (directory 0700, keys 0600). None of it ends up in the
+repo.
 
     python3 -I sandbox/apps/create_app.py queue  --org schlange-sandbox --webhook-url https://smee.io/…
     python3 -I sandbox/apps/create_app.py driver --org schlange-sandbox
-    python3 -I sandbox/apps/create_app.py shadow --user karma-works   # Schattenbetrieb Arztagent
+    python3 -I sandbox/apps/create_app.py shadow --user karma-works   # shadow mode on Arztagent
 
-Nur Standardbibliothek. Ein schon vorhandener Eintrag wird nicht überschrieben (--force).
+Standard library only. An existing entry is not overwritten (--force).
 """
 
 import argparse
@@ -29,12 +29,12 @@ from urllib.parse import parse_qs, urlparse
 HERE = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.environ.get("SCHLANGE_SANDBOX_CONFIG", Path.home() / ".config/schlange-sandbox"))
 HOMEPAGE = "https://github.com/karma-works/schlange"
-# Platzhalter, solange es noch keinen Empfänger gibt; der Webhook bleibt dann inaktiv.
+# Placeholder while there is no receiver yet; the webhook then stays inactive.
 NO_WEBHOOK = "https://example.invalid/schlange-webhook"
 
 
 def die(msg):
-    print(f"Fehler: {msg}", file=sys.stderr)
+    print(f"Error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -98,17 +98,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("role", choices=["queue", "driver", "shadow"])
     who = p.add_mutually_exclusive_group(required=True)
-    who.add_argument("--org", help="Organisation, der die App gehört")
-    who.add_argument("--user", help="Persönliches Konto, dem die App gehört")
-    p.add_argument("--webhook-url", help="Webhook-Empfänger (z. B. smee.io-Kanal); ohne: Webhook inaktiv")
-    p.add_argument("--name", help="anderer App-Name, falls der Name auf GitHub schon vergeben ist")
-    p.add_argument("--force", action="store_true", help="vorhandene Zugangsdaten ersetzen")
-    p.add_argument("--no-browser", action="store_true", help="URL nur ausgeben")
+    who.add_argument("--org", help="organisation that owns the app")
+    who.add_argument("--user", help="personal account that owns the app")
+    p.add_argument("--webhook-url", help="webhook receiver (e.g. a smee.io channel); without it the webhook stays inactive")
+    p.add_argument("--name", help="different app name, if the name is already taken on GitHub")
+    p.add_argument("--force", action="store_true", help="replace existing credentials")
+    p.add_argument("--no-browser", action="store_true", help="only print the URL")
     args = p.parse_args()
 
     if (CONFIG_DIR / "apps" / f"{args.role}.json").exists() and not args.force:
         meta = json.loads((CONFIG_DIR / "apps" / f"{args.role}.json").read_text())
-        print(f"App „{args.role}“ ist schon registriert: {meta['html_url']} (ersetzen mit --force)")
+        print(f"App \"{args.role}\" is already registered: {meta['html_url']} (replace with --force)")
         return
 
     owner = args.org or args.user
@@ -138,52 +138,52 @@ def main():
             url = urlparse(self.path)
             if url.path == "/":
                 manifest = build_manifest(args.role, args, f"http://127.0.0.1:{port}/callback")
-                self.send(200, f"""<!doctype html><meta charset="utf-8"><title>App registrieren</title>
+                self.send(200, f"""<!doctype html><meta charset="utf-8"><title>Register app</title>
 <body style="font-family:system-ui;max-width:40em;margin:3em auto">
 <h1>{html.escape(manifest['name'])}</h1>
-<p>Weiter zu GitHub. Dort nur „Create GitHub App“ klicken.</p>
+<p>Continue to GitHub. Only click "Create GitHub App" there.</p>
 <form id="f" method="post" action="{html.escape(new_url)}?state={state}">
 <input type="hidden" name="manifest" value="{html.escape(json.dumps(manifest))}">
-<button>Weiter zu GitHub</button></form>
+<button>Continue to GitHub</button></form>
 <script>document.getElementById('f').submit()</script>""")
                 return
             if url.path == "/callback":
                 q = parse_qs(url.query)
                 if q.get("state", [""])[0] != state or "code" not in q:
-                    self.send(400, "Ungültiger Rückruf (state passt nicht).")
+                    self.send(400, "Invalid callback (state does not match).")
                     return
                 try:
                     result["meta"] = store(args.role, convert(q["code"][0]), owner, owner_type)
-                except Exception as e:  # noqa: BLE001 – Fehler an Browser und Terminal melden
+                except Exception as e:  # noqa: BLE001 – report the error to browser and terminal
                     result["error"] = str(e)
-                    self.send(500, f"Umwandlung fehlgeschlagen: {html.escape(str(e))}")
+                    self.send(500, f"Conversion failed: {html.escape(str(e))}")
                     done.set()
                     return
                 install = result["meta"]["html_url"] + "/installations/new"
-                self.send(200, f"""<!doctype html><meta charset="utf-8"><title>Fertig</title>
+                self.send(200, f"""<!doctype html><meta charset="utf-8"><title>Done</title>
 <body style="font-family:system-ui;max-width:40em;margin:3em auto">
-<h1>App registriert</h1><p>Zugangsdaten liegen lokal. Nächster Schritt: App installieren.</p>
+<h1>App registered</h1><p>The credentials are stored locally. Next step: install the app.</p>
 <p><a href="{html.escape(install)}">{html.escape(install)}</a></p>""")
                 done.set()
                 return
-            self.send(404, "nicht gefunden")
+            self.send(404, "not found")
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     start = f"http://127.0.0.1:{port}/"
-    print(f"Registrierung von „{args.role}“ für {owner}: {start}", flush=True)
+    print(f"Registering \"{args.role}\" for {owner}: {start}", flush=True)
     if not args.no_browser:
         webbrowser.open(start)
     if not done.wait(timeout=900):
         server.shutdown()
-        die("Kein Rückruf von GitHub innerhalb von 15 Minuten.")
+        die("No callback from GitHub within 15 minutes.")
     server.shutdown()
     if "error" in result:
         die(result["error"])
     meta = result["meta"]
-    print(f"Registriert: {meta['name']} (ID {meta['id']}, Bot {meta['bot_login']})")
-    print(f"Jetzt installieren: {meta['html_url']}/installations/new")
+    print(f"Registered: {meta['name']} (ID {meta['id']}, bot {meta['bot_login']})")
+    print(f"Install now: {meta['html_url']}/installations/new")
 
 
 if __name__ == "__main__":

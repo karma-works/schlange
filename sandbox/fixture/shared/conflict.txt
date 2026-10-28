@@ -1,2 +1,2 @@
-Gemeinsame Datei für Textkonflikte zwischen Szenario-PRs.
-zeile: main
+Shared file for text conflicts between scenario PRs.
+line: main

@@ -1,6 +1,6 @@
 {
   "name": "Schlange Sandbox Driver",
-  "description": "Test-Akteur der Sandbox: oeffnet PRs, pusht und kommentiert nach Szenario.",
+  "description": "Test actor of the sandbox: opens PRs, pushes and comments according to a scenario.",
   "public": false,
   "default_permissions": {
     "metadata": "read",

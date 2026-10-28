@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Spielt Szenarien nacheinander ab und vergleicht mit dem Sollwert, falls vorhanden.
+# Replays scenarios one after another and compares them with the baseline, if there is one.
 #
 #   bash sandbox/ci/run-scenarios.sh <repo> all
-#   bash sandbox/ci/run-scenarios.sh <repo> s01-einzelner-pr s03-rotes-buendel
+#   bash sandbox/ci/run-scenarios.sh <repo> s01-single-pr s03-red-batch
 #
-# Sollwert: sandbox/baselines/<szenario>.json (aus einem geprüften Mergify-Lauf, ohne
-# Mergify-Texte). Auf queue-lab erkennt der Vergleich, wenn Mergify sein Verhalten ändert;
-# auf schlange-e2e ist er der Kompatibilitätstest von Schlange.
-# Exit 1, wenn ein Szenario abweicht oder scheitert. Ergebnis zusätzlich in GITHUB_STEP_SUMMARY.
+# Baseline: sandbox/baselines/<scenario>.json (from a reviewed Mergify run, without
+# Mergify texts). On queue-lab the comparison detects when Mergify changes its behaviour;
+# on schlange-e2e it is Schlange's compatibility test.
+# Exit 1 if a scenario deviates or fails. The result also goes to GITHUB_STEP_SUMMARY.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 repo="${1:?repo}"; shift
@@ -17,12 +17,12 @@ if [ "${1:-all}" = all ]; then
 fi
 
 if [ "$repo" = schlange-e2e ] && ! command -v schlange >/dev/null; then
-  echo "::error::Für schlange-e2e muss schlange serve mit der Queue-App laufen (noch nicht in diesem Workflow eingebaut)."
+  echo "::error::schlange-e2e needs schlange serve running with the queue app (not built into this workflow yet)."
   exit 1
 fi
 
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-{ echo "### Sandbox $repo"; echo; echo "| Szenario | Ergebnis |"; echo "|---|---|"; } >> "$summary"
+{ echo "### Sandbox $repo"; echo; echo "| Scenario | Result |"; echo "|---|---|"; } >> "$summary"
 failed=0
 for s in "$@"; do
   args=(run "$HERE/scenarios/$s.json" --repo "$repo")
@@ -33,9 +33,9 @@ for s in "$@"; do
   rc=$?
   echo "::endgroup::"
   if [ $rc -eq 0 ]; then
-    result=$([ -f "$base" ] && echo "gleich wie Sollwert" || echo "aufgezeichnet (kein Sollwert)")
+    result=$([ -f "$base" ] && echo "same as baseline" || echo "recorded (no baseline)")
   else
-    result="**Abweichung oder Fehler** (Exit $rc)"; failed=1
+    result="**Deviation or error** (exit $rc)"; failed=1
   fi
   echo "| $s | $result |" >> "$summary"
   echo "$s: $result"

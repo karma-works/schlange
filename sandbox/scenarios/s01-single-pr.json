@@ -1,6 +1,6 @@
 {
   "id": "S01",
-  "title": "Ein PR, alles grün: einreihen, Queue-PR, Squash-Merge",
+  "title": "One PR, all green: enqueue, queue PR, squash merge",
   "refs": [
     "MQ-18",
     "MQ-20",

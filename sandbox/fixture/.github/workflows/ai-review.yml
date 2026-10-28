@@ -1,9 +1,9 @@
 name: KI-Review
 
-# Nachbau von arzt-agent/.github/workflows/ai-review.yml: eigener Check-Run `KI-Review` auf
-# dem PR-Head, über pull_request_target (Workflow von main, nichts aus dem PR läuft).
-# Statt eines Modells entscheidet die PR-Beschreibung: „KI-Review: rot“ → failure.
-# Nie für Entwürfe, Queue-PRs und Dependabot (wie im Original: dann gibt es keinen Check).
+# Imitation of arzt-agent/.github/workflows/ai-review.yml: its own check run `KI-Review` on
+# the PR head, via pull_request_target (workflow from main, nothing from the PR runs).
+# Instead of a model the PR description decides: "KI-Review: rot" → failure.
+# Never for drafts, queue PRs and Dependabot (as in the original: then there is no check).
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -38,9 +38,9 @@ jobs:
             -f status=in_progress -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .id)
           sleep "${KI_REVIEW_DELAY:-20}"
           if printf '%s' "$BODY" | grep -qiE 'KI-Review:[[:space:]]*rot'; then
-            conclusion=failure; summary="Befund (vom Szenario verlangt)."
+            conclusion=failure; summary="Finding (required by the scenario)."
           else
-            conclusion=success; summary="Keine Befunde."
+            conclusion=success; summary="No findings."
           fi
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" -f status=completed \
             -f conclusion="$conclusion" -f "output[title]=KI-Review" -f "output[summary]=$summary" >/dev/null
