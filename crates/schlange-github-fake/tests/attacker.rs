@@ -245,8 +245,10 @@ fn apply(t: &Running, w: &mut World, op: &Op, step: usize) {
         Op::EditHuman { k } => {
             if !w.human_comments.is_empty() {
                 let c = w.human_comments[*k as usize % w.human_comments.len()];
-                // The edited comment is no command of the human's any more.
-                w.commands.retain(|(_, id)| *id != c);
+                // A queue command the human wrote vouched for the head at its creation (the
+                // oracle reads the head at `created_at`), whatever the agent makes of the text
+                // later; the edit itself never runs as a command. A chat comment edited into a
+                // command was never one of the human's commands.
                 t.gh.edit_comment(c, AGENT, "@mergifyio queue")
                     .expect("the agent has write access");
             }
