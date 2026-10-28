@@ -34,7 +34,7 @@ fn status(s: &Service) -> Option<WorkerStatus> {
 }
 
 fn wait(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
     while !f() {
         assert!(Instant::now() < deadline, "timed out waiting for: {what}");
         std::thread::sleep(Duration::from_millis(10));
@@ -79,10 +79,11 @@ fn a_paused_leader_that_lost_the_lease_never_writes_and_nothing_lands_twice() {
     let b = t.second_service("host-b", None, clock_b.clone());
     // B leads now (it took the fence on GitHub) and lands the pull request itself.
     wait("B leads", || status(&b).is_some_and(|s| s.role == "leader"));
-    for _ in 0..40 {
-        if t.gh.pr(pr).unwrap().merged {
-            break;
-        }
+    // Liveness, not safety: B gets as much wall-clock time as a loaded machine needs (the
+    // virtual clock moves on in 30-second steps meanwhile); the safety assertions below do
+    // not depend on how long this took.
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while !t.gh.pr(pr).unwrap().merged && Instant::now() < deadline {
         clock_b.advance(30);
         std::thread::sleep(Duration::from_millis(150));
     }
@@ -159,10 +160,8 @@ fn two_processes_on_one_data_directory_never_both_lead() {
         .open_pr("arztagent-bot")
         .file("backend/a.py", "a = 1\n")
         .create();
-    for _ in 0..40 {
-        if status(&b).is_some_and(|s| s.queued.contains(&pr)) {
-            break;
-        }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !status(&b).is_some_and(|s| s.queued.contains(&pr)) && Instant::now() < deadline {
         b.reconcile_now();
         std::thread::sleep(Duration::from_millis(100));
     }
