@@ -1,0 +1,25 @@
+# A user-defined merge protection (merge-protections): pull requests touching `db/` need the
+# `db-approved` label before they may merge. Two-step CI otherwise.
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+merge_protections:
+  - name: database changes are approved
+    description: A database change needs the db-approved label.
+    if:
+      - files ~= ^db/
+    success_conditions:
+      - label = db-approved
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

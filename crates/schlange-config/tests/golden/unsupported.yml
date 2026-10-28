@@ -1,0 +1,32 @@
+# Valid for Mergify; uses features Schlange has not built (exit 2 with --strict): whole
+# features that are missing, and not-built entries of partial features.
+shared:
+  ci: &ci
+    - check-success = ci
+queue_rules:
+  - name: default
+    merge_method: rebase
+    merge_conditions: *ci
+  - name: unset-method
+    queue_conditions:
+      - -conflict
+      - dependabot-dependency-name = serde
+priority_rules:
+  - name: hotfix
+    conditions:
+      - label = hotfix
+    priority: high
+pull_request_rules:
+  - name: label
+    conditions:
+      - base = main
+    actions:
+      label:
+        add: [ready]
+  - name: "off"  # quoted: YAML 1.1 reads a plain off as false, as Mergify does
+    disabled:
+      reason: not now
+    conditions:
+      - body ~= urgent
+    actions:
+      queue:

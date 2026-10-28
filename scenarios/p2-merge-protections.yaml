@@ -1,0 +1,32 @@
+# A user-defined merge protection (merge-protections, MQ-13): #1 changes `db/` and lacks the
+# `db-approved` label. Its checks pass, but it waits green at the front: the protection's
+# success conditions are false (I1 checks every landing against them). #2 behind it waits too
+# (serial: it was tested on top of #1). At +0:30 someone adds the label; both land.
+name: p2-merge-protections
+description: A merge protection holds a green pull request until its success conditions hold.
+config: configs/merge-protections.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { db/schema.sql: "create table t;\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 10s, open: 2 }
+  - { at: 30m, label: { pr: 1, name: db-approved } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_log:
+  - "It may not merge yet: merge protection `database changes are approved` is not satisfied."
+  - "land car 2: squash #1 onto main"

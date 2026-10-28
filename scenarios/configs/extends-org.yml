@@ -1,0 +1,31 @@
+# The organisation's shared configuration (extended by extends-local.yml).
+shared:
+  never: &never
+    - label = never-used
+
+defaults:
+  actions:
+    comment:
+      message: "Org default (overridden locally)."
+    close:
+      message: "Closed by the organisation's rules: {{ title }}."
+
+pull_request_rules:
+  - name: label bugs
+    conditions:
+      - title ~= (?i)bug
+    actions:
+      label:
+        add: [org-bug]
+
+  - name: welcome
+    conditions:
+      - -closed
+    actions:
+      comment:
+
+  - name: no drafts named junk
+    conditions:
+      - title ~= junk
+    actions:
+      close:

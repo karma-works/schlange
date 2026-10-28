@@ -1,0 +1,16 @@
+diff --git a/crates/schlange-github-fake/src/lib.rs b/crates/schlange-github-fake/src/lib.rs
+index dbed08d..8ceeb18 100644
+--- a/crates/schlange-github-fake/src/lib.rs
++++ b/crates/schlange-github-fake/src/lib.rs
+@@ -1138,6 +1138,11 @@ impl FakeGithub {
+         });
+     }
+ 
++    /// CRITIC TEMP: `sender` edits comment `id`.
++    pub fn critic_edit_comment(&self, id: u64, sender: &str, body: &str) -> bool {
++        self.with(|s| s.edit_comment(id, sender, body))
++    }
++
+     /// `user` comments `body` on pull request `n`; returns the comment id.
+     pub fn comment(&self, n: u64, user: &str, body: &str) -> u64 {
+         self.with(|s| s.add_comment(n, user, body))

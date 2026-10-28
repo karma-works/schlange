@@ -1,0 +1,57 @@
++0:00:00  action    #1 opened by arztagent-bot on main, files: .github/workflows/ci.yml
++0:00:00  action    #2 opened by arztagent-bot on main, files: backend/a.py
++0:01:00  ci        #1 check `Risk class and data protection` completed on 0a5ec89: success
++0:01:00  ci        #2 check `Risk class and data protection` completed on 71a5ba5: success
++0:03:00  ci        #1 check `ci-ok` completed on 0a5ec89: success
++0:03:00  ci        #2 check `ci-ok` completed on 71a5ba5: success
++0:05:00  ci        #1 check `KI-Review` completed on 0a5ec89: success
++0:05:00  ci        #2 check `KI-Review` completed on 71a5ba5: success
++0:05:00  webhook   #1 check `KI-Review` completed on 0a5ec89: success
++0:05:00  decision  controls comment #1: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
++0:05:00  webhook   #2 check `KI-Review` completed on 71a5ba5: success
++0:05:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #2 +queued
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
++0:10:00  action    arztagent-bot commented on #1: @mergifyio queue
++0:10:00  webhook   timer
++0:10:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #2 (checks #2)
++0:10:00  reply     car 2 built at 9a5c5ff, draft #1000
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:10:00  webhook   #1 comment 3 by arztagent-bot
++0:10:00  decision  react +1 to comment 3 on #1
++0:10:00  decision  reply #1: @arztagent-bot, you may not run `queue` on this pull request: condition 1 of the `queue` restriction is not met.
++0:11:00  ci        #1000 check `Risk class and data protection` completed on 9a5c5ff: success
++0:30:00  ci        #1000 check `ci-ok` completed on 9a5c5ff: success
++0:30:00  webhook   #1000 check `ci-ok` completed on 9a5c5ff: success
++0:30:00  decision  read #2 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:30:00  decision  land car 2: squash #2 onto main if it is still 5a8b940
++0:30:00  message   #2: Pull request 2 (#2)
++0:30:00  reply     car 2 landed #2 as 71a5ba5
++0:30:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:30:00  decision  #2 merged as 71a5ba5
++0:30:00  decision  labels #2 -queued
++0:30:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as 71a5ba5.
++0:40:00  action    karma-works commented on #1: @mergifyio queue
++0:40:00  webhook   #1 comment 5 by karma-works
++0:40:00  decision  react +1 to comment 5 on #1
++0:40:00  decision  enqueue #1 into `default` (rule `queue command by @karma-works`)
++0:40:00  decision  labels #1 +queued
++0:40:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @karma-works) — Waiting for its turn: first in its queue.
++0:40:00  decision  controls comment #1: **Merge queue** — @karma-works asked to queue this pull request.
++0:45:00  webhook   timer
++0:45:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 71a5ba5 + #1 (checks #1)
++0:45:00  reply     car 5 built at 57fd666, draft #1001
++0:45:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @karma-works) — Being checked.
++0:45:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @karma-works) — Being checked in draft pull request #1001.
++0:46:00  ci        #1001 check `Risk class and data protection` completed on 57fd666: success
++1:05:00  ci        #1001 check `ci-ok` completed on 57fd666: success
++1:05:00  webhook   #1001 check `ci-ok` completed on 57fd666: success
++1:05:00  decision  read #1 #1001 main mergify/merge-queue/f2f5067500 before acting
++1:05:00  decision  land car 5: squash #1 onto main if it is still 71a5ba5
++1:05:00  message   #1: Tighten the CI workflow (#1)
++1:05:00  reply     car 5 landed #1 as c9d685a
++1:05:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1001
++1:05:00  decision  #1 merged as c9d685a
++1:05:00  decision  labels #1 -queued
++1:05:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as c9d685a.

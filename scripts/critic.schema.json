@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature",
+    "verdict",
+    "findings",
+    "missing_tests",
+    "clean_room_ok",
+    "summary"
+  ],
+  "properties": {
+    "feature": {
+      "type": "string",
+      "description": "Feature ID, `feature-map` or `pr`."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "conformant",
+        "deviating",
+        "missing"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subfeature",
+          "verdict",
+          "evidence",
+          "severity"
+        ],
+        "properties": {
+          "subfeature": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "conformant",
+              "deviating",
+              "missing"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "description": "File and line, command and output, or documentation page that supports the verdict."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "info"
+            ]
+          }
+        }
+      }
+    },
+    "missing_tests": {
+      "type": "array",
+      "description": "MQ IDs named by the feature that no test or scenario covers.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "clean_room_ok": {
+      "type": "boolean",
+      "description": "False when Mergify code or documentation text was copied into the repository."
+    },
+    "summary": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# Critic reproduction B1 (phase 1abc): a hanging merge check times out, `max_checks_retries: 1`
+# rebuilds the car while the close of the first attempt is not confirmed yet, and the forge
+# loses, delays and duplicates replies (`forge_faults: standard`). Before the fix the retry
+# reused a slot the unconfirmed close still held (I4). Expected: #1 times out on both attempts
+# and leaves with CHECKS_TIMEOUT, #2 merges, and I4 holds at every step.
+name: critic-b1-retry-timeout
+description: A retry after a checks timeout never runs while the old attempt still holds the slot.
+config: configs/retry-timeout.yml
+forge_faults: standard
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 5m
+    runs_on: queue
+    hang_when_contains: HANG
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "HANG\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+
+expect:
+  - { pr: 1, state: dequeued, reason: CHECKS_TIMEOUT }
+  - { pr: 2, state: merged }

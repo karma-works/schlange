@@ -1,0 +1,16 @@
+queue_rules:
+  - name: default
+    batch_max_wait_time: soon
+    checks_timeout: 30 seconds
+  - name: default
+pull_request_rules:
+  - name: auto
+    conditions:
+      - base = main
+    actions:
+      queue:
+        name: fast
+  - name: auto
+    conditions: []
+    actions:
+      queue:

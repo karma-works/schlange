@@ -1,0 +1,91 @@
+# Phase 0: Arztagent's real configuration decides who enters the queue.
+# Covers: pull_request_rules with action `queue`, queue_conditions, check semantics,
+# the constitution regex with lookahead, Dependabot update types, label `halt`, drafts.
+# Since phase 1a the queue is real: queued pull requests are tested on a draft pull request
+# (batch of up to 5, 5 minutes wait) and land as squash commits.
+name: p0-queue-conditions
+description: Pull requests open, CI reports, queue_conditions decide enqueue and dequeue.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+  - check: KI-Review
+    duration: 5m
+
+pull_requests:
+  - number: 1
+    title: Agent change in the backend
+    author: arztagent-bot
+    files: [aa-kalender-backend/src/booking.py]
+  - number: 2
+    title: Agent change to a workflow (constitution)
+    author: arztagent-bot
+    files: [.github/workflows/ci.yml, aa-kalender-backend/src/booking.py]
+  - number: 3
+    title: Dependabot patch update, no AI review for Dependabot
+    author: dependabot[bot]
+    dependabot_update_type: version-update:semver-patch
+    files: [package.json, pnpm-lock.yaml]
+    checks: { KI-Review: none }
+  - number: 4
+    title: Dependabot major update
+    author: dependabot[bot]
+    dependabot_update_type: version-update:semver-major
+    files: [package.json]
+    checks: { KI-Review: none }
+  - number: 5
+    title: Stopped with label halt after it was queued
+    author: karma-works
+    files: [docs/readme.md]
+  - number: 6
+    title: Draft, then ready for review
+    author: arztagent-bot
+    draft: true
+    files: [aa-kalender-backend/src/slots.py]
+  - number: 7
+    title: Quick checks fail
+    author: arztagent-bot
+    files: [aa-kalender-backend/src/slots.py]
+    checks: { ci-ok: failure }
+  - number: 8
+    title: Author not in the rule
+    author: someone-else
+    files: [README.md]
+  - number: 9
+    title: Exception path inside .agents/skills is not constitution
+    author: arztagent-bot
+    files: [.agents/skills/verify-arztagent/features/waiting-room.md]
+  - number: 10
+    title: Cancelled check counts as failure
+    author: arztagent-bot
+    files: [aa-kalender-backend/src/a.py]
+    checks: { Risk class and data protection: cancelled }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 30s, open: 3 }
+  - { at: 30s, open: 4 }
+  - { at: 1m, open: 5 }
+  - { at: 1m, open: 6 }
+  - { at: 2m, open: 7 }
+  - { at: 2m, open: 8 }
+  - { at: 2m, open: 9 }
+  - { at: 2m, open: 10 }
+  - { at: 10m, label: { pr: 5, name: halt } }
+  - { at: 20m, ready: 6 }
+
+expect:
+  - { pr: 1, state: merged, queue: default }
+  - { pr: 2, queued: false }
+  - { pr: 3, state: merged, queue: default }
+  - { pr: 4, queued: false }
+  - { pr: 5, queued: false }
+  - { pr: 6, state: merged, queue: default }
+  - { pr: 7, queued: false }
+  - { pr: 8, queued: false }
+  - { pr: 9, state: merged, queue: default }
+  - { pr: 10, queued: false }

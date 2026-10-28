@@ -1,0 +1,42 @@
+# Rule actions next to the queue: a `label` toggle and a `comment` (edge-triggered, with
+# variables), a label added by a rule that the queue's conditions then read, and a thank-you
+# comment after the merge.
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - check-success = quick
+      - label = ready
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: work in progress
+    conditions:
+      - title ~= WIP
+    actions:
+      label:
+        toggle: [WIP]
+      comment:
+        message: "@{{ author }}, #{{ number }} ({{ title }}) is marked as work in progress."
+
+  - name: ready once the quick check passes
+    conditions:
+      - check-success = quick
+    actions:
+      label:
+        add: [ready]
+
+  - name: queue ready pull requests
+    conditions:
+      - label = ready
+      - -title ~= WIP
+    actions:
+      queue:
+
+  - name: thank after the merge
+    conditions:
+      - merged
+    actions:
+      comment:
+        message: "Merged, thanks @{{ author }}. Labels: {{ labels }}."

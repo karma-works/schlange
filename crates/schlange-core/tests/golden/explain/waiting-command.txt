@@ -1,0 +1,26 @@
+#2 Change 2: waiting-for-conditions
+@carol asked to queue #2; it waits for queue `default`: check-success = quick (is no checks); one of [label = ready; all of [author = bot; -draft]]
+
+holds:
+  - [..] queue-command: a queue command by @carol waits for the queue conditions of any queue
+
+waiting `queue` command by @carol: it runs once the queue conditions hold
+
+pull_request_rules with a `queue` action:
+  rule `bots` -> first matching queue
+    conditions: do not hold
+      [no] author = bot  (value: `alice`)
+
+queue rules:
+  queue `default`
+    queue_conditions: do not hold
+      [no] check-success = quick  (value: no checks)
+      [no] or
+        [no] label = ready  (value: [])
+        [no] and
+          [no] author = bot  (value: `alice`)
+          [ok] -draft  (value: false)
+      [ok] not
+        [no] label = halt  (value: [])
+    merge_conditions: do not hold
+      [no] check-success = full  (value: no checks)

@@ -1,0 +1,33 @@
+# Isolated mode (queue-modes `isolated`, MQ-44). Three pull requests are each tested on main
+# alone, at the same time. #1 is slow to fail (BROKEN), #2 and #3 pass: they land without
+# waiting for #1, and #1's failure discards no other car (no BATCH_AHEAD_FAILED). I0 checks every
+# landing as the tested change on the actual parent: the other lanes may land in between.
+name: p2-isolated
+description: Isolated batches are tested on the base alone and land independently.
+config: configs/isolated.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    fail_when_contains: BROKEN
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "BROKEN\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 5s, open: 2 }
+  - { at: 10s, open: 3 }
+
+expect:
+  - { pr: 1, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: merged }
+expect_merged_order: [2, 3]
+expect_base: { b.txt: "b\n", c.txt: "c\n" }

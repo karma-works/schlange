@@ -1,0 +1,30 @@
+# `merge_method: fast-forward` with checks in place (queue-merge-methods-other, MQ-05), with
+# forge faults. #1 has two commits and is up to date: main moves onto its head, so both of its
+# commits (same SHAs) are on main and the pull request is merged only because its head is
+# reachable. #2 was opened on the old main: it is behind, so it is checked through a draft and
+# lands as the draft's branch. I0 checks the replayed own commits as one chain whose tip is the
+# tested tree, under lost, late and duplicated replies.
+name: p2-fast-forward-in-place
+description: Fast-forward lands an up-to-date pull request at its own head, keeping its SHAs.
+config: configs/fast-forward-in-place.yml
+forge_faults: standard
+
+ci:
+  - check: ci
+    duration: 2m
+    runs_on: both
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 10s, push: { pr: 1, files: { a2.txt: "second\n" } } }
+  - { at: 30s, open: 2 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [1, 2]
+expect_base: { a.txt: "a\n", a2.txt: "second\n", b.txt: "b\n" }

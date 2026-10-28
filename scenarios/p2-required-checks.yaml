@@ -1,0 +1,34 @@
+# Required checks from branch protection (queue-branch-protection, MQ-13). The protection of
+# `main` requires `lint`; with the default `branch_protection_injection_mode: queue` it joins
+# the queue conditions and the merge conditions. #1 passes lint and lands; #2 fails lint and
+# never enters the queue, although the configuration does not name `lint` at all. (Like any
+# required check, `lint` runs on the queue's draft too, where the merge conditions read it.)
+name: p2-required-checks
+description: Checks the base branch requires join the queue conditions (injection mode queue).
+config: configs/two-step.yml
+required_checks: [lint]
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: lint
+    duration: 2m
+    runs_on: both
+  - check: full
+    duration: 10m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, checks: { lint: failure }, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: open }
+expect_log:
+  - "enqueue #1 into `default`"

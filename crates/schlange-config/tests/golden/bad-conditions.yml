@@ -1,0 +1,24 @@
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base = main
+      - lable = halt
+      - draft = true
+      - "#files >= many"
+      - files ~= ^(unclosed
+      - -commits-behind > 3
+      - files *= web/{a,b
+      - check-success = @github-actions
+      - "#files ≥ 2"
+      - check-success = @github-actions/pep8
+      - or:
+          - check-success = ci
+          - base ? main
+      - xor:
+          - base = main
+pull_request_rules:
+  - name: rule
+    conditions:
+      - sender-permission ~= write
+    actions:
+      queue:

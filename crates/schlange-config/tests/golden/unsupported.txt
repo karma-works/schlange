@@ -1,0 +1,5 @@
+unsupported.yml: unsupported[support] feature conditions-dependabot (P1, partial): attr:dependabot-dependency-name (13:9)
+unsupported.yml: unsupported[support] feature conditions-pr-metadata (P2, partial): attr:body (30:9)
+unsupported.yml: unsupported[support] feature queue-conflicts (P1, partial): attr:conflict (12:9)
+unsupported.yml: unsupported[support] feature queue-merge-method-squash (P1, partial): default:queue_rules.merge_method
+unsupported.yml: valid for Mergify; 4 entries not supported by Schlange yet (--strict makes this exit 2)

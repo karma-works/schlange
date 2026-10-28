@@ -1,0 +1,17 @@
+# Merge method combinations Mergify rejects (stage 4).
+merge_queue:
+  mode: isolated
+queue_rules:
+  - name: squash-edit
+    merge_method: squash
+    allow_queue_branch_edit: true
+  - name: unset-edit
+    allow_queue_branch_edit: true
+  - name: ff-retries
+    merge_method: fast-forward
+    max_checks_retries: 2
+    allow_queue_branch_edit: true
+  - name: batch-edit
+    merge_method: merge-batch
+    batch_size: 3
+    allow_queue_branch_edit: true

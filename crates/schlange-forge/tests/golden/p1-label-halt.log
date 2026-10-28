@@ -1,0 +1,67 @@
++0:00:00  action    #1 opened by arztagent-bot on main, files: backend/a.py
++0:00:00  action    #2 opened by arztagent-bot on main, files: backend/b.py
++0:01:00  ci        #1 check `Risk class and data protection` completed on 219df9a: success
++0:01:00  ci        #2 check `Risk class and data protection` completed on f2573df: success
++0:03:00  ci        #1 check `ci-ok` completed on 219df9a: success
++0:03:00  ci        #2 check `ci-ok` completed on f2573df: success
++0:05:00  ci        #1 check `KI-Review` completed on 219df9a: success
++0:05:00  ci        #2 check `KI-Review` completed on f2573df: success
++0:05:00  webhook   #1 check `KI-Review` completed on 219df9a: success
++0:05:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #1 +queued
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
++0:05:00  webhook   #2 check `KI-Review` completed on f2573df: success
++0:05:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #2 +queued
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
++0:10:00  webhook   timer
++0:10:00  decision  build car 3 on mergify/merge-queue/6353138441: base 5a8b940 + #1 #2 (checks #1 #2)
++0:10:00  reply     car 3 built at 22ae1a7, draft #1000
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:10:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:11:00  action    #1 labeled halt
++0:11:00  ci        #1000 check `Risk class and data protection` completed on 22ae1a7: success
++0:11:00  webhook   #1 labeled
++0:11:00  decision  close car 3, delete mergify/merge-queue/6353138441, close #1000
++0:11:00  decision  checks of #2 ended, stays queued: BATCH_REBUILT: #1 left this batch
++0:11:00  decision  dequeue #1 from `default`: PR_DEQUEUED (code assumed): queue_conditions no longer hold (condition 3 is false)
++0:11:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #2 (checks #2)
++0:11:00  reply     car 4 built at 5822f2d, draft #1001
++0:11:00  decision  labels #1 +dequeued -queued
++0:11:00  decision  status comment #1: **Merge queue** · left the queue — Reason: PR_DEQUEUED (code assumed): queue_conditions no longer hold (condition 3 is false) — - [ ] Put this pull request back into the queue
++0:11:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:11:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:12:00  ci        #1001 check `Risk class and data protection` completed on 5822f2d: success
++0:14:00  ci        #1001 check `ci-ok` completed on 5822f2d: success
++0:14:00  webhook   #1001 check `ci-ok` completed on 5822f2d: success
++0:14:00  decision  read #2 #1001 main mergify/merge-queue/34fd968ed0 before acting
++0:14:00  decision  land car 4: squash #2 onto main if it is still 5a8b940
++0:14:00  message   #2: Pull request 2 (#2)
++0:14:00  reply     car 4 landed #2 as f2573df
++0:14:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
++0:14:00  decision  #2 merged as f2573df
++0:14:00  decision  labels #2 -queued
++0:14:00  decision  status comment #2: **Merge queue** · merged — Merged by the queue as f2573df.
++1:00:00  action    #1 unlabeled halt
++1:00:00  webhook   #1 unlabeled
++1:00:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++1:00:00  decision  labels #1 +queued -dequeued
++1:00:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
++1:05:00  webhook   timer
++1:05:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base f2573df + #1 (checks #1)
++1:05:00  reply     car 7 built at bac8edd, draft #1002
++1:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++1:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1002.
++1:06:00  ci        #1002 check `Risk class and data protection` completed on bac8edd: success
++1:08:00  ci        #1002 check `ci-ok` completed on bac8edd: success
++1:08:00  webhook   #1002 check `ci-ok` completed on bac8edd: success
++1:08:00  decision  read #1 #1002 main mergify/merge-queue/a7693b7b9b before acting
++1:08:00  decision  land car 7: squash #1 onto main if it is still f2573df
++1:08:00  message   #1: Pull request 1 (#1)
++1:08:00  reply     car 7 landed #1 as 7742762
++1:08:00  decision  close car 7, delete mergify/merge-queue/a7693b7b9b, close #1002
++1:08:00  decision  #1 merged as 7742762
++1:08:00  decision  labels #1 -queued
++1:08:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 7742762.

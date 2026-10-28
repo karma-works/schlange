@@ -1,0 +1,39 @@
+# `backport` after the queue merged, `copy` before the merge, conflicts and reports.
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+      - label = queue
+    merge_conditions:
+      - check-success = quick
+
+pull_request_rules:
+  - name: queue
+    conditions:
+      - base = main
+      - label = queue
+    actions:
+      queue:
+
+  - name: backport fixes
+    conditions:
+      - base = main
+      - label = backport
+    actions:
+      backport:
+        branches: [stable]
+        regexes: ["release/"]
+        labels: [backport]
+        assignees: ["{{ author }}"]
+        report_mode: [check, comment]
+
+  - name: copy experiments
+    conditions:
+      - base = main
+      - label = experiment
+    actions:
+      copy:
+        branches: [old]
+        ignore_conflicts: true

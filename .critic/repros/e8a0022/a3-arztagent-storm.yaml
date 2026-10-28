@@ -1,0 +1,41 @@
+# Arztagent under forge faults: six agent PRs, one culprit (full suite red), a halt label on
+# one while its batch runs, a base hotfix, a push to a queued PR, a constitution PR queued by a
+# human. Every invariant must hold; the culprit and the halted PR never land.
+name: a3-arztagent-storm
+description: Arztagent batch flow under forge faults
+config: /home/ubuntu/Projects/schlange/.claude/worktrees/agent-ae7a951a5462d5f29/crates/schlange-config/tests/golden/arztagent.yml
+permissions: { arztagent-bot: write, karma-works: admin }
+forge_faults: standard
+ci:
+  - { check: Risk class and data protection, duration: 1m }
+  - { check: ci-ok, duration: 3m, runs_on: pull_request }
+  - { check: ci-ok, duration: 20m, runs_on: queue, fail_when_contains: [BREAKS_FULL_SUITE] }
+  - { check: KI-Review, duration: 5m, runs_on: pull_request }
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: { backend/a.py: "a = 1\n" } }
+  - { number: 2, author: arztagent-bot, files: { backend/b.py: "BREAKS_FULL_SUITE\n" } }
+  - { number: 3, author: karma-works, files: { web/c.ts: "c\n" } }
+  - { number: 4, author: arztagent-bot, files: { backend/d.py: "d\n" } }
+  - { number: 5, author: julianhaegele-create, files: { docs/e.md: "e\n" } }
+  - { number: 6, author: arztagent-bot, files: { backend/f.py: "f\n" } }
+  - { number: 7, author: arztagent-bot, files: { governance/risk-paths.yaml: "x\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 1m, open: 4 }
+  - { at: 1m, open: 5 }
+  - { at: 2m, open: 6 }
+  - { at: 2m, open: 7 }
+  - { at: 14m, label: { pr: 4, name: halt } }
+  - { at: 16m, push_base: { files: { hotfix.txt: "x\n" } } }
+  - { at: 18m, push: { pr: 6, files: { backend/f.py: "f2\n" } } }
+  - { at: 20m, comment: { pr: 7, by: karma-works, body: "@mergifyio queue" } }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: CHECKS_FAILED }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: dequeued }
+  - { pr: 5, state: merged }
+  - { pr: 6, state: merged }
+  - { pr: 7, state: merged }

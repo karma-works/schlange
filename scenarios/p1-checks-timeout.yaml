@@ -1,0 +1,31 @@
+# A merge check that never reports (MQ-37, MQ-42; queue-checks-timeout `fixed`): the full suite
+# hangs on any tree holding #1 (marker HANG). With `checks_timeout: 10 min` car 1 fails with
+# CHECKS_TIMEOUT; the reason names the check that is still running. Car 2 (#1 + #2) hangs too
+# but is discarded behind the failure (BATCH_AHEAD_FAILED), rebuilt without #1 and lands.
+name: p1-checks-timeout
+description: A hanging merge check ends in CHECKS_TIMEOUT after the fixed timeout.
+config: configs/two-step-timeout.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 5m
+    runs_on: queue
+    hang_when_contains: HANG
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "HANG\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 2m, open: 2 }
+
+expect:
+  - { pr: 1, state: dequeued, reason: CHECKS_TIMEOUT }
+  - { pr: 2, state: merged }
+expect_log:
+  - "still running: [full]"
+  - "BATCH_AHEAD_FAILED"

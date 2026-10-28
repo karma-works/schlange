@@ -1,0 +1,50 @@
+{
+  "file": "bad-semantics.yml",
+  "valid": false,
+  "strict": false,
+  "exit_code": 1,
+  "findings": [
+    {
+      "stage": "semantics",
+      "severity": "error",
+      "pointer": "/queue_rules/1/name",
+      "line": 5,
+      "column": 11,
+      "message": "duplicate name `default` in queue_rules (first at /queue_rules/0/name)"
+    },
+    {
+      "stage": "semantics",
+      "severity": "error",
+      "pointer": "/pull_request_rules/1/name",
+      "line": 13,
+      "column": 11,
+      "message": "duplicate name `auto` in pull_request_rules (first at /pull_request_rules/0/name)"
+    },
+    {
+      "stage": "semantics",
+      "severity": "error",
+      "pointer": "/pull_request_rules/0/actions/queue/name",
+      "line": 12,
+      "column": 15,
+      "message": "queue `fast` does not exist (known: default)"
+    },
+    {
+      "stage": "semantics",
+      "severity": "error",
+      "pointer": "/queue_rules/0/batch_max_wait_time",
+      "line": 3,
+      "column": 26,
+      "message": "`soon` is not a duration (for example `30 seconds`, `5 minutes`, `1 hour`)"
+    },
+    {
+      "stage": "semantics",
+      "severity": "error",
+      "pointer": "/queue_rules/0/checks_timeout",
+      "line": 4,
+      "column": 21,
+      "message": "checks_timeout must be at least 60 seconds, found 30 seconds"
+    }
+  ],
+  "support": [],
+  "stages_missing": []
+}

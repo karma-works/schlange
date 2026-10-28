@@ -1,0 +1,21 @@
+# `merge_queue.mode: isolated` (queue-modes): every batch is tested on the base alone and lands
+# on its own. Two-step CI, three parallel checks.
+merge_queue:
+  mode: isolated
+  max_parallel_checks: 3
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

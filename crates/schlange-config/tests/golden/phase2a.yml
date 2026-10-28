@@ -1,0 +1,53 @@
+merge_queue:
+  queued_label: in-queue
+  checking_label: checking
+  dequeued_label: null
+  status_comments: outcomes
+  queue_controls_comment: false
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    commit_message_format:
+      title: pr-title
+      body: pr-body
+      trailers:
+        - co-authored-by
+        - approved-by
+        - merged-by
+    queue_conditions:
+      - check-success = ci
+      - queue-dequeue-reason != checks-failed
+    merge_conditions:
+      - check-success = ci
+      - queue-position >= 0
+      - queued-at < 1 day ago
+  - name: legacy
+    merge_method: squash
+    commit_message_template: "{{ title }} (#{{ number }})"
+    merge_bot_account: release-bot
+    queue_conditions:
+      - label = legacy
+      - -mergify-configuration-changed
+      - "#depends-on = 0"
+
+pull_request_rules:
+  - name: queue
+    conditions:
+      - base = main
+    actions:
+      queue:
+
+commands_restrictions:
+  queue:
+    conditions:
+      - sender-permission >= maintain
+  refresh:
+    conditions: true
+  rebase:
+    conditions:
+      - or:
+          - sender-permission >= write
+          - and:
+              - sender = {{author}}
+              - from-fork

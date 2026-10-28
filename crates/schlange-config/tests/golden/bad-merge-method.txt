@@ -1,0 +1,5 @@
+bad-merge-method.yml:7:30: error[semantics] /queue_rules/0/allow_queue_branch_edit: allow_queue_branch_edit: true needs merge_method `merge-batch` or `fast-forward` (found `squash`); other methods merge each pull request at its own head, so an edit of the queue branch could never land
+bad-merge-method.yml:9:30: error[semantics] /queue_rules/1/allow_queue_branch_edit: allow_queue_branch_edit: true needs merge_method `merge-batch` or `fast-forward` (merge_method is not set, and the repository default is never one of them); other methods merge each pull request at its own head, so an edit of the queue branch could never land
+bad-merge-method.yml:11:19: error[semantics] /queue_rules/2/merge_method: merge_method `fast-forward` works in serial mode only, but merge_queue.mode is `isolated`
+bad-merge-method.yml:11:19: error[semantics] /queue_rules/2/merge_method: merge_method `fast-forward` with max_checks_retries 2 needs merge_queue.max_parallel_checks 1 (found 5): a retried batch gets a new head, so the batches checked on top of it cannot be fast-forwarded
+bad-merge-method.yml: invalid (4 errors)

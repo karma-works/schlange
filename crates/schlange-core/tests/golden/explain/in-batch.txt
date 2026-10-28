@@ -1,0 +1,19 @@
+#3 Change 3: queued
+#3 is queued in `default` and being checked in batch 4 (being built)
+
+queue `default` on `main` (rule `bots`), position 1
+  batch 4: #3 (being built)
+
+queue rules:
+  queue `default`
+    queue_conditions: hold
+      [ok] check-success = quick  (value: [quick: success])
+      [ok] or
+        [no] label = ready  (value: [])
+        [ok] and
+          [ok] author = bot  (value: `bot`)
+          [ok] -draft  (value: false)
+      [ok] not
+        [no] label = halt  (value: [])
+    merge_conditions: do not hold
+      [no] check-success = full  (value: [quick: success])

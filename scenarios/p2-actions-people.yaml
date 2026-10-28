@@ -1,0 +1,51 @@
+# Level-triggered actions about people and state (action-assign, action-request-reviews,
+# action-review, action-dismiss-reviews, action-edit, action-post-check). #1 gets its author
+# and the lead assigned and three reviewers plus a team requested; alice approves, dana pushes,
+# and `dismiss_reviews` dismisses the approval given before the push. #2 changes docs only:
+# the bot approves once, however often the rule is evaluated; dana's push dismisses that
+# approval too, and the `review` action, holding the state its rule describes, approves again.
+# #3's quick check fails: `edit` turns it into a draft. `post_check` reports on every pull
+# request: success where the label is there, failure elsewhere. #1 is then shipped.
+name: p2-actions-people
+description: assign, request_reviews, review, dismiss_reviews, edit, post_check.
+config: configs/actions-people.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    fail_when_contains: BROKEN
+
+pull_requests:
+  - { number: 1, author: dana, labels: [documented], files: { api/x.rs: "x\n" } }
+  - { number: 2, author: dana, files: { docs/readme.md: "docs\n" } }
+  - { number: 3, author: erin, files: { lib.rs: "BROKEN\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 2m, review: { pr: 1, by: alice, state: approved } }
+  - { at: 4m, push: { pr: 1, files: { api/x.rs: "x2\n" } } }
+  - { at: 5m, push: { pr: 2, files: { docs/readme.md: "docs 2\n" } } }
+  - { at: 10m, label: { pr: 1, name: ship } }
+
+expect:
+  - pr: 1
+    state: merged
+    assignees: [dana, lead]
+    review_requested: [bob, carol, api-team]
+    reviews: { DISMISSED: 1, APPROVED: 0 }
+    checks: { "Rule: has a description (post_check)": success }
+  - pr: 2
+    state: open
+    reviews: { APPROVED: 1, DISMISSED: 1 }
+    checks: { "Rule: has a description (post_check)": failure }
+  - { pr: 3, state: open, draft: true }
+expect_log:
+  - "action of `owners`: assign #1 +dana +lead"
+  - "action of `owners`: request reviews on #1 from alice, bob, carol, team api-team"
+  - "action of `approve docs`: review #2: APPROVE Docs only, approved by rule."
+  - "action of `stale approvals`: dismiss 1 review(s) on #1"
+  - "action of `failing checks make a draft`: mark #3 as draft"
+  - "check `Rule: has a description (post_check)` on #1: success (Description present)"
+  - "check `Rule: has a description (post_check)` on #2: failure (Description missing)"

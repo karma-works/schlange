@@ -1,0 +1,44 @@
+# Arztagent's real flow (commands-restrictions, MQ-50, MQ-51): a constitution pull request (it
+# edits `.github/workflows`) is green, but no rule queues it, so the queue offers its checkbox.
+# An agent comments `@mergifyio queue` and is refused although it has write permission: only
+# the humans in `commands_restrictions` may queue. A listed human's comment queues it; it is
+# tested on the draft and lands. An agent pull request beside it is queued by its rule.
+name: p1-arztagent-constitution
+description: A constitution pull request waits until a listed human comments `@mergifyio queue`.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+permissions: { arztagent-bot: write, karma-works: admin }
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+    runs_on: pull_request
+  - check: ci-ok
+    duration: 20m
+    runs_on: queue
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+
+pull_requests:
+  - number: 1
+    author: arztagent-bot
+    title: Tighten the CI workflow
+    files: { .github/workflows/ci.yml: "on: [pull_request]\n" }
+  - { number: 2, author: arztagent-bot, files: { backend/a.py: "a = 1\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 10m, comment: { pr: 1, by: arztagent-bot, body: "@mergifyio queue" } }
+  - { at: 40m, comment: { pr: 1, by: karma-works, body: "@mergifyio queue" } }
+
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: merged }
+expect_merged_order: [2, 1]
+expect_log:
+  - "controls comment #1"
+  - "@arztagent-bot, you may not run `queue` on this pull request"
+  - "enqueue #1 into `default` (rule `queue command by @karma-works`)"

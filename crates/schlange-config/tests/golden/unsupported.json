@@ -1,0 +1,461 @@
+{
+  "file": "unsupported.yml",
+  "valid": true,
+  "strict": false,
+  "exit_code": 0,
+  "findings": [
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/pull_request_rules/1/conditions/0",
+      "line": 30,
+      "column": 9,
+      "message": "`attr:body` is not supported by Schlange yet (feature conditions-pr-metadata, P2, partial: not built in this partial feature (`attr:body`))",
+      "feature": "conditions-pr-metadata"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/1/queue_conditions/0",
+      "line": 12,
+      "column": 9,
+      "message": "`attr:conflict` is not supported by Schlange yet (feature queue-conflicts, P1, partial: not built in this partial feature (`attr:conflict`))",
+      "feature": "queue-conflicts"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "/queue_rules/1/queue_conditions/1",
+      "line": 13,
+      "column": 9,
+      "message": "`attr:dependabot-dependency-name` is not supported by Schlange yet (feature conditions-dependabot, P1, partial: not built in this partial feature (`attr:dependabot-dependency-name`))",
+      "feature": "conditions-dependabot"
+    },
+    {
+      "stage": "support",
+      "severity": "unsupported",
+      "pointer": "",
+      "message": "default `queue_rules.merge_method` is in effect but not supported by Schlange yet (feature queue-merge-method-squash, P1, partial: not built in this partial feature (`default:queue_rules.merge_method`))",
+      "feature": "queue-merge-method-squash"
+    }
+  ],
+  "support": [
+    {
+      "id": "action:label",
+      "feature": "action-label",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/actions/label"
+    },
+    {
+      "id": "action:queue",
+      "feature": "action-queue",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/1/actions/queue"
+    },
+    {
+      "id": "attr:base",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/conditions/0"
+    },
+    {
+      "id": "attr:body",
+      "feature": "conditions-pr-metadata",
+      "priority": "P2",
+      "status": "partial",
+      "supported": false,
+      "reason": {
+        "kind": "not_built",
+        "pattern": "attr:body"
+      },
+      "pointer": "/pull_request_rules/1/conditions/0"
+    },
+    {
+      "id": "attr:check-success",
+      "feature": "conditions-checks",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/0/merge_conditions/0"
+    },
+    {
+      "id": "attr:conflict",
+      "feature": "queue-conflicts",
+      "priority": "P1",
+      "status": "partial",
+      "supported": false,
+      "reason": {
+        "kind": "not_built",
+        "pattern": "attr:conflict"
+      },
+      "pointer": "/queue_rules/1/queue_conditions/0"
+    },
+    {
+      "id": "attr:dependabot-dependency-name",
+      "feature": "conditions-dependabot",
+      "priority": "P1",
+      "status": "partial",
+      "supported": false,
+      "reason": {
+        "kind": "not_built",
+        "pattern": "attr:dependabot-dependency-name"
+      },
+      "pointer": "/queue_rules/1/queue_conditions/1"
+    },
+    {
+      "id": "attr:label",
+      "feature": "conditions-basic",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules/0/conditions/0"
+    },
+    {
+      "id": "config:priority_rules",
+      "feature": "queue-priority",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules"
+    },
+    {
+      "id": "config:priority_rules.conditions",
+      "feature": "queue-priority",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules/0/conditions"
+    },
+    {
+      "id": "config:priority_rules.name",
+      "feature": "queue-priority",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules/0/name"
+    },
+    {
+      "id": "config:priority_rules.priority",
+      "feature": "queue-priority",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules/0/priority"
+    },
+    {
+      "id": "config:pull_request_rules",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules"
+    },
+    {
+      "id": "config:pull_request_rules.actions",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/actions"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label",
+      "feature": "action-label",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/actions/label"
+    },
+    {
+      "id": "config:pull_request_rules.actions.label.add",
+      "feature": "action-label",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/actions/label/add"
+    },
+    {
+      "id": "config:pull_request_rules.actions.queue",
+      "feature": "action-queue",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/1/actions/queue"
+    },
+    {
+      "id": "config:pull_request_rules.conditions",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/conditions"
+    },
+    {
+      "id": "config:pull_request_rules.disabled",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/1/disabled"
+    },
+    {
+      "id": "config:pull_request_rules.disabled.reason",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/1/disabled/reason"
+    },
+    {
+      "id": "config:pull_request_rules.name",
+      "feature": "pull-request-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/pull_request_rules/0/name"
+    },
+    {
+      "id": "config:queue_rules",
+      "feature": "queue-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules"
+    },
+    {
+      "id": "config:queue_rules.merge_conditions",
+      "feature": "queue-two-step",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/0/merge_conditions"
+    },
+    {
+      "id": "config:queue_rules.merge_method",
+      "feature": "queue-merge-method-squash",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/0/merge_method"
+    },
+    {
+      "id": "config:queue_rules.name",
+      "feature": "queue-rules",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/0/name"
+    },
+    {
+      "id": "config:queue_rules.queue_conditions",
+      "feature": "queue-two-step",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/1/queue_conditions"
+    },
+    {
+      "id": "config:shared",
+      "feature": "config-shared",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/shared"
+    },
+    {
+      "id": "default:commands_restrictions.backport",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.copy",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.dequeue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.queue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.rebase",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.refresh",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.requeue",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.squash",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:commands_restrictions.update",
+      "feature": "commands-restrictions",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.dequeued_label",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.max_parallel_checks",
+      "feature": "queue-speculation",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.mode",
+      "feature": "queue-speculation",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.queue_controls_comment",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.queued_label",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.reset_on_external_merge",
+      "feature": "queue-conflicts",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:merge_queue.status_comments",
+      "feature": "queue-labels-comments",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.allow_inplace_checks",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.batch_max_wait_time",
+      "feature": "queue-batch",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.batch_pull_request",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.batch_size",
+      "feature": "queue-batch",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.branch_protection_injection_mode",
+      "feature": "queue-branch-protection",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.checks_timeout",
+      "feature": "queue-checks-timeout",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "default:queue_rules.merge_method",
+      "feature": "queue-merge-method-squash",
+      "priority": "P1",
+      "status": "partial",
+      "supported": false,
+      "reason": {
+        "kind": "not_built",
+        "pattern": "default:queue_rules.merge_method"
+      }
+    },
+    {
+      "id": "default:queue_rules.queue_branch_prefix",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
+      "id": "enum:merge_method:rebase",
+      "feature": "queue-merge-methods-other",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/queue_rules/0/merge_method"
+    },
+    {
+      "id": "enum:priority:high",
+      "feature": "queue-priority",
+      "priority": "P2",
+      "status": "partial",
+      "supported": true,
+      "pointer": "/priority_rules/0/priority"
+    }
+  ],
+  "stages_missing": []
+}

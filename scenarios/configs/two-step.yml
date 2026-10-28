@@ -1,0 +1,19 @@
+# Two-step CI: `quick` on the pull request queues it, `full` on the queue draft merges it.
+# Defaults otherwise: batch_size 1, max_parallel_checks 5, checks_timeout auto (no timeout).
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

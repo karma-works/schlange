@@ -1,0 +1,18 @@
+{
+  "file": "bad-syntax.yml",
+  "valid": false,
+  "strict": false,
+  "exit_code": 1,
+  "findings": [
+    {
+      "stage": "yaml",
+      "severity": "error",
+      "pointer": "",
+      "line": 4,
+      "column": 19,
+      "message": "YAML syntax error: illegal placement of ':' indicator"
+    }
+  ],
+  "support": [],
+  "stages_missing": []
+}

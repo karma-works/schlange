@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly schema diff against Mergify's published sources (KONZEPT.md, section 4).
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # The tests need the pinned schema; a source that differs from the lock fails the
+      # separate job `mergify-drift`, not this one.
+      # Tests need the schema. Byte drift of the live docs is reported by `mergify-drift`.
+      - name: Mergify sources
+        run: tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see job mergify-drift)"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The release binary without the `localgit` forge must still build and lint.
+      - run: cargo clippy -p schlange --locked -- -D warnings
+      # The `localgit` tests need git ≥ 2.38 (`merge-tree --write-tree`); ubuntu-latest has it.
+      - name: git for the localgit forge
+        run: git --version
+      - name: Tests (coverage test, golden files, scenarios, localgit)
+        run: cargo test --workspace --locked
+      - name: Property test on real git (localgit), more cases
+        run: SCHLANGE_LOCALGIT_PBT_CASES=16 cargo test -p schlange-forge --locked --test localgit_properties
+
+  image:
+    name: image and size budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t schlange:ci .
+      - run: scripts/image-size.sh schlange:ci
+      - name: Doctor in the container (health check)
+        run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges schlange:ci doctor
+
+  mergify-drift:
+    name: Mergify schema diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Byte changes (docs redeploys) are a notice; a change of the generated inventory
+      # (new or removed paths, attributes, actions, enum values, defaults, operations,
+      # commands) fails this job: that is the schema diff to act on.
+      - name: Download and compare bytes with tools/mergify-sources.lock
+        run: tools/fetch-mergify-sources || echo "::notice::Mergify sources changed byte-wise; checking the inventory"
+      - name: Inventory unchanged against live Mergify sources
+        run: cargo run -q --locked -p inventory -- --check

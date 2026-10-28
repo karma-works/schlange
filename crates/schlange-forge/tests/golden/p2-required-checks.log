@@ -1,0 +1,24 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:00:00  action    #2 opened by bot on main, files: b.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  ci        #2 check `quick` completed on bba8845: success
++0:02:00  ci        #1 check `lint` completed on 84886d8: success
++0:02:00  ci        #2 check `lint` completed on bba8845: failure
++0:02:00  webhook   #1 check `lint` completed on 84886d8: success
++0:02:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:02:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:02:00  reply     car 2 built at ecd3e04, draft #1000
++0:02:00  decision  labels #1 +queued
++0:02:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:02:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:04:00  ci        #1000 check `lint` completed on ecd3e04: success
++0:12:00  ci        #1000 check `full` completed on ecd3e04: success
++0:12:00  webhook   #1000 check `full` completed on ecd3e04: success
++0:12:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:12:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:12:00  message   #1: Pull request 1 (#1)
++0:12:00  reply     car 2 landed #1 as 84886d8
++0:12:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:12:00  decision  #1 merged as 84886d8
++0:12:00  decision  labels #1 -queued
++0:12:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 84886d8.

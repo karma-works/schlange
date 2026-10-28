@@ -1,0 +1,38 @@
+# Critic reproduction (phase 1a): a label that only `merge_conditions` read (`-label = wip`) is
+# added to #1 after the first split test went green and before the round was decided. The test
+# chosen to land then reads red on the fresh read. Before the fix nothing handled that car and
+# the queue wedged (I2). Expected now: #1 no longer meets its own merge conditions and leaves
+# with its own reason (PR_DEQUEUED, not a CI culprit); the hanging #2 is the culprit of the
+# timed-out batch; #3 and #4 are innocent and merge.
+name: critic-stuck-bisection
+description: A label read only by merge_conditions, added after the first split test went green, must not wedge the bisection.
+config: configs/stuck.yml
+faults: none
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 10m
+    runs_on: queue
+    hang_when_contains: HANG
+
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "HANG\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+  - { number: 4, author: bot, files: { d.txt: "d\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 1900s, label: { pr: 1, name: wip } }
+
+expect:
+  - { pr: 1, state: dequeued, reason: PR_DEQUEUED }
+  - { pr: 2, state: dequeued, reason: CHECKS_TIMEOUT }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: merged }

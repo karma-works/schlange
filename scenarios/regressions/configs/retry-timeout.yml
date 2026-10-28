@@ -1,0 +1,18 @@
+merge_queue:
+  max_parallel_checks: 1
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 1
+    max_checks_retries: 1
+    checks_timeout: 10 min
+    queue_conditions:
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+pull_request_rules:
+  - name: q
+    conditions:
+      - author = bot
+    actions:
+      queue:

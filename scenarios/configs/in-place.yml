@@ -1,0 +1,18 @@
+# Every condition for checks in place holds: one parallel check, serial mode, batch size 1,
+# no retries, single-step CI (no merge_conditions).
+merge_queue:
+  max_parallel_checks: 1
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - base = main
+      - check-success = ci
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:
