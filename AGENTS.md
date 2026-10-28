@@ -12,7 +12,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | Path | What |
 |---|---|
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`) |
-| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`) |
+| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), queue controls and P2 gates: pause, freezes, merge protections, priorities, required checks (`gates`), the queue status view (`status`) |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
 | `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit), configuration validation, doctor checks, permission list |
 | `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
@@ -100,8 +100,8 @@ decisions against the fake GitHub), then review the diff.
 | `--webhook-secret-file` | `SCHLANGE_WEBHOOK_SECRET_FILE` or `SCHLANGE_WEBHOOK_SECRET` | – | at least 16 bytes; `--webhook-secret` on the command line works but warns (visible in `ps`) |
 | `--data-dir` | `SCHLANGE_DATA_DIR` | `/data` | `schlange.db` (SQLite, WAL): journal, snapshots, `auto` history, webhook dedup, audit |
 | `--schema` | `SCHLANGE_SCHEMA` | `.research/mergify/schema.json` upwards | `serve` does not start without it: the configuration is validated like `config validate` |
-| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status`; without it `/status` answers 404 |
-| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status` |
+| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status` and the queue API; without it both answer 404 |
+| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |
 | `--insecure-test-api` | `SCHLANGE_INSECURE_TEST_API` | off | allows `http://` API URLs; tests against the fake GitHub only |
 | `--reconcile-every`, `--config`, `--check-name`, `--installation-id` | … | | see `schlange serve --help` |
@@ -123,7 +123,11 @@ Scenarios can comment (`comment: {pr, by, body}`), tick the queue's checkboxes
 (`tick: {pr, by, checkbox: queue|requeue}`), push as someone else (`push: {pr, by}`), edit the
 description (`edit_body`), give logins permissions (`permissions:`) and keep the configuration
 in `.mergify.yml` on the default branch (`config_in_repo: true`); `expect` takes
-`held: <kind or text>`. The simulation's time 0 is 2026-01-01T00:00:00Z.
+`held: <kind or text>`. The simulation's time 0 is 2026-01-01T00:00:00Z. Operators pause
+(`pause: <reason>`, `unpause: true`) and freeze (`freeze: {id, reason, start, end, matching,
+exclude}`, `unfreeze: <id>`); `required_checks: [..]` are the checks the base branch's protection
+requires. `schlange queue status|pause --reason …|unpause --url … --repo owner/name` calls the
+queue API of a running `serve` (admin token in `SCHLANGE_ADMIN_TOKEN`).
 
 ## Exit codes of `schlange`
 

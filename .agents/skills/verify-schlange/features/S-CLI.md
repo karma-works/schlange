@@ -22,7 +22,8 @@ stable and there are no interactive prompts.
 - `sim-run`: built.
 - `doctor`: built (see `S-DOCTOR`).
 - `exit-codes`: built. 0, 1, 2 (`--strict` only), 3 as in AGENTS.md; a usage error (unknown flag or command, missing argument) exits 64 (`EX_USAGE`) instead of clap's 2, which would read as "unsupported"; with `--json` the error is JSON (`{"error", "exit_code"}`); `--help` and `--version` exit 0.
-- `queue`, `pr explain`, `events`: missing.
+- `queue`: partial. `schlange queue status|pause --reason …|unpause` against the queue API of a running `serve` (`queue-status-api`, `queue-pause`); `queue show` missing.
+- `pr explain`, `events`: missing.
 
 ## How to get to it (user POV)
 

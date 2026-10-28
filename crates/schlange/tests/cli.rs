@@ -128,6 +128,18 @@ fn doctor_validates_the_configuration_and_counts_partial_apart() {
         &format!("{GOLDEN}/arztagent.yml"),
     ]);
     assert_eq!(code, 0, "{out}");
+    // Arztagent's configuration is fully supported since the default
+    // `branch_protection_injection_mode: queue` is built.
+    let c = doctor_check(&out, "configuration");
+    assert_eq!(c["status"], "OK", "{c}");
+    let (code, out) = run(&[
+        "doctor",
+        "--json",
+        "--offline",
+        "--config",
+        &format!("{GOLDEN}/unsupported.yml"),
+    ]);
+    assert_eq!(code, 0, "{out}");
     let c = doctor_check(&out, "configuration");
     assert_eq!(c["status"], "WARN", "{c}");
     assert!(
@@ -180,8 +192,8 @@ fn sim_run_on_real_git() {
 
 /// The critic's `merge-method.yml` (phase 1a): `reset_on_external_merge: never`,
 /// `allow_queue_branch_edit: true` and `max_checks_retries: 2` were silently ignored. Now the
-/// edit option is rejected with `rebase` (as Mergify does), and without it `--strict` flags
-/// only what is not built (`rebase`), not the options that now are.
+/// edit option is rejected with `rebase` (as Mergify does), and without it `--strict` passes:
+/// `rebase` is built too (P2).
 #[test]
 fn critic_merge_method_config_is_rejected_or_flagged_precisely() {
     let (code, out) = run(&[
@@ -197,9 +209,8 @@ fn critic_merge_method_config_is_rejected_or_flagged_precisely() {
         "--strict",
         "scenarios/regressions/configs/merge-method-no-edit.yml",
     ]);
-    assert_eq!(code, 2, "{out}");
-    assert!(out.contains("rebase"), "{out}");
-    for built in ["reset_on_external_merge", "max_checks_retries"] {
+    assert_eq!(code, 0, "{out}");
+    for built in ["rebase", "reset_on_external_merge", "max_checks_retries"] {
         assert!(!out.contains(built), "{built} is built now:\n{out}");
     }
 }

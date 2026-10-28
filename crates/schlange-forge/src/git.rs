@@ -83,6 +83,9 @@ pub trait GitStore {
     fn cherry_pick(&mut self, onto: &str, commit: &str, message: &str) -> Result<Sha, Conflict>;
     /// The commit message.
     fn message(&self, sha: &str) -> String;
+    /// The tree id of the three-way merge of commits `ours` and `theirs` with merge base
+    /// `base`, without writing a commit (the invariant checker's oracle for drift landings).
+    fn merged_tree_id(&self, base: &str, ours: &str, theirs: &str) -> Result<String, Conflict>;
     /// Paths that differ between two commits' trees.
     fn changed_paths(&self, from: &str, to: &str) -> Vec<String>;
     /// First-parent history of a commit, newest first.
@@ -149,6 +152,9 @@ impl GitStore for Repo {
     }
     fn message(&self, sha: &str) -> String {
         self.get(sha).message.clone()
+    }
+    fn merged_tree_id(&self, base: &str, ours: &str, theirs: &str) -> Result<String, Conflict> {
+        Repo::merge_trees(self.tree(base), self.tree(ours), self.tree(theirs)).map(|t| tree_id(&t))
     }
     fn changed_paths(&self, from: &str, to: &str) -> Vec<String> {
         Repo::changed_paths(self, from, to)

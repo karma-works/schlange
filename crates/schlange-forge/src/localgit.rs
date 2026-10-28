@@ -512,6 +512,10 @@ impl GitStore for LocalGit {
         Ok(self.commit_tree(&tree, &[onto.to_string()], message))
     }
 
+    fn merged_tree_id(&self, base: &str, ours: &str, theirs: &str) -> Result<String, Conflict> {
+        self.merge_tree_from(Some(base), ours, theirs)
+    }
+
     fn message(&self, sha: &str) -> String {
         self.ok(&["log", "-1", "--format=%B", sha])
             .trim_end()

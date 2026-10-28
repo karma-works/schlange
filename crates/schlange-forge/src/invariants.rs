@@ -17,9 +17,20 @@
 //!     commit. A landing on a base that moved outside the queue must then equal the tested
 //!     change applied to the actual parent (three-way merge of tested base, actual parent and
 //!     tested prefix), not the tested tree itself.
+//!   - *Merge methods*: `merge` and `fast-forward` of a batch branch: each first-parent commit is
+//!     the tested prefix tree (as `squash`); `rebase` and `fast-forward` in place: each pull
+//!     request's last commit is the tested prefix tree, its earlier commits (`LandedCommit::
+//!     extra`) form one chain on the expected parent; `merge-batch`: one merge commit for the
+//!     batch whose tree is the batch's tested tree.
+//!   - *Modes `parallel` and `isolated`*: a car that does not depend on one that landed lands
+//!     as its tested change on the actual parent, with only other lanes' landings in between
+//!     (isolated: any; parallel: those in scopes the car does not touch).
+//!   - *`skip_intermediate_results`*: the batch semantics apply also for batch size 1.
 //! - **I1** No pull request lands whose queue or merge conditions were false at landing time
 //!   (on the forge's truth), whose head is not the head recorded when its car was built (the
-//!   tested head), or that already landed (nothing lands twice, also across crashes).
+//!   tested head), or that already landed (nothing lands twice, also across crashes); nor while
+//!   the queue is paused, a freeze holds it or a merge protection fails (the operator controls
+//!   the simulated forge delivered before the landing); required checks of the base count.
 //! - **I2** At quiescence every queued pull request was merged or dequeued with a reason; a
 //!   queue that halted on purpose (tree mismatch) is reported with its reason.
 //! - **I3** The queue branches on the forge (prefix plus ten hex characters) and the open queue
@@ -475,15 +486,10 @@ impl Checker {
                         break;
                     };
                     let actual_parent = forge.repo.parents(entry(c)).first().cloned();
-                    let expected = actual_parent.and_then(|p| {
-                        Repo::merge_trees(
-                            &forge.repo.tree(&prev_tested),
-                            &forge.repo.tree(&p),
-                            &forge.repo.tree(&tested),
-                        )
-                        .ok()
-                    });
-                    let ok = n == c.number && expected == Some(forge.repo.tree(&c.sha));
+                    // The repository's own three-way merge (line level on real git).
+                    let expected = actual_parent
+                        .and_then(|p| forge.repo.merged_tree_id(&prev_tested, &p, &tested).ok());
+                    let ok = n == c.number && expected == Some(forge.repo.tree_id_of(&c.sha));
                     self.check("I0", ok, t, || {
                         format!(
                             "commit {} of #{} is not the tested change on its parent",

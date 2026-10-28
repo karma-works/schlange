@@ -39,6 +39,27 @@ enum Command {
         #[command(subcommand)]
         command: SimCommand,
     },
+    /// The queue of a running `schlange serve` through its queue API (needs the admin token).
+    Queue {
+        #[command(subcommand)]
+        command: QueueCommand,
+        /// Base URL of `schlange serve` (its `--listen` address, or the URL in front of it).
+        #[arg(
+            long,
+            global = true,
+            env = "SCHLANGE_URL",
+            default_value = "http://127.0.0.1:8080"
+        )]
+        url: String,
+        /// The repository, `owner/name`.
+        #[arg(long, global = true, env = "SCHLANGE_REPO", default_value = "")]
+        repo: String,
+        /// File holding the admin token (or SCHLANGE_ADMIN_TOKEN).
+        #[arg(long, global = true, env = "SCHLANGE_ADMIN_TOKEN_FILE")]
+        admin_token_file: Option<PathBuf>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Which features Schlange supports, from the feature map's status.
     SupportMatrix {
         #[arg(long)]
@@ -196,6 +217,19 @@ enum ConfigCommand {
         #[arg(long)]
         strict: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum QueueCommand {
+    /// The batches being checked and the pull requests waiting (`GET merge-queue/status`).
+    Status,
+    /// Pauses the whole merge queue: nothing is checked or merged until `unpause`.
+    Pause {
+        #[arg(long)]
+        reason: String,
+    },
+    /// Resumes a paused merge queue.
+    Unpause,
 }
 
 #[derive(Subcommand)]
@@ -742,6 +776,125 @@ fn parse_cli() -> Result<Cli, ExitCode> {
     })
 }
 
+/// `schlange queue …`: calls the queue API of `serve` with the admin token. Exit 0 on
+/// success, 1 when serve refused, 3 when it cannot be reached or no token is given.
+fn queue_cli(
+    command: &QueueCommand,
+    url: &str,
+    repo: &str,
+    token_file: Option<&Path>,
+    json_out: bool,
+) -> ExitCode {
+    let token = match token_file {
+        Some(p) => match read_secret_file(p) {
+            Ok(t) => t,
+            Err(e) => return env_error(json_out, &e),
+        },
+        None => match std::env::var("SCHLANGE_ADMIN_TOKEN") {
+            Ok(t) if !t.is_empty() => t,
+            _ => {
+                return env_error(
+                    json_out,
+                    "no admin token: --admin-token-file or SCHLANGE_ADMIN_TOKEN",
+                );
+            }
+        },
+    };
+    if !repo.contains('/') {
+        return env_error(json_out, "--repo owner/name (or SCHLANGE_REPO) is required");
+    }
+    let base = format!("{}/repos/{repo}", url.trim_end_matches('/'));
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
+            .build(),
+    );
+    let auth = format!("Bearer {token}");
+    let resp = match command {
+        QueueCommand::Status => agent
+            .get(&format!("{base}/merge-queue/status"))
+            .header("authorization", &auth)
+            .call(),
+        QueueCommand::Pause { reason } => agent
+            .put(&format!("{base}/merge-queue/pause"))
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .send(json!({ "reason": reason }).to_string()),
+        QueueCommand::Unpause => agent
+            .delete(&format!("{base}/merge-queue/pause"))
+            .header("authorization", &auth)
+            .call(),
+    };
+    let (status, body) = match resp {
+        Ok(mut r) => (
+            r.status().as_u16(),
+            r.body_mut().read_to_string().unwrap_or_default(),
+        ),
+        Err(e) => return env_error(json_out, &format!("cannot reach {url}: {e}")),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| json!({ "message": body.trim() }));
+    if json_out {
+        print_json(&json!({ "status": status, "response": value }));
+    } else if status != 200 {
+        eprintln!("schlange: serve answered {status}: {}", body.trim());
+    } else if matches!(command, QueueCommand::Status) {
+        print!("{}", queue_text(&value));
+    } else if value["paused"] == true {
+        println!("paused: {}", value["reason"].as_str().unwrap_or(""));
+    } else {
+        println!("not paused");
+    }
+    if status == 200 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(exit::INVALID)
+    }
+}
+
+/// The queue status as text: pause, batches with their pull requests, the waiting ones.
+fn queue_text(v: &serde_json::Value) -> String {
+    let mut out = format!("mode: {}\n", v["mode"].as_str().unwrap_or("serial"));
+    if let Some(r) = v["pause"]["reason"].as_str() {
+        out.push_str(&format!("PAUSED: {r}\n"));
+    }
+    let numbers = |list: &serde_json::Value| {
+        list.as_array()
+            .map(|l| {
+                l.iter()
+                    .map(|p| {
+                        let held = p["held"]
+                            .as_str()
+                            .map(|h| format!(" ({h})"))
+                            .unwrap_or_default();
+                        format!(
+                            "#{} [{}]{held}",
+                            p["number"],
+                            p["priority_alias"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    for b in v["batches"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "batch {} on {} ({}): {}\n",
+            b["id"].as_str().unwrap_or(""),
+            b["base_branch"].as_str().unwrap_or(""),
+            b["status"]["code"].as_str().unwrap_or(""),
+            numbers(&b["pull_requests"])
+        ));
+    }
+    out.push_str(&format!(
+        "waiting: {}\n",
+        numbers(&v["waiting_pull_requests"])
+    ));
+    out
+}
+
 fn main() -> ExitCode {
     let cli = match parse_cli() {
         Ok(cli) => cli,
@@ -760,6 +913,13 @@ fn main() -> ExitCode {
         Command::Sim {
             command: SimCommand::Run { file, json, forge },
         } => sim_run(&file, json, forge),
+        Command::Queue {
+            command,
+            url,
+            repo,
+            admin_token_file,
+            json,
+        } => queue_cli(&command, &url, &repo, admin_token_file.as_deref(), json),
         Command::SupportMatrix { json } => support_matrix(json),
         Command::Doctor {
             json,

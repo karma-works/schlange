@@ -110,7 +110,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Batches (`batch_size`, `batch_max_wait_time`)](queue-batch.md) | partial | yes |
 | P1 | [Bisection of red batches](queue-bisection.md) | partial | yes |
 | P1 | [Foreign pushes to queue branches](queue-branch-edit.md) | partial | yes |
-| P1 | [Required checks from branch protection and rulesets](queue-branch-protection.md) | missing | yes |
+| P1 | [Required checks from branch protection and rulesets](queue-branch-protection.md) | partial | yes |
 | P1 | [Check timeout and retries (defaults)](queue-checks-timeout.md) | partial | yes |
 | P1 | [Commit message on merge](queue-commit-message.md) | partial | yes |
 | P1 | [Conflicts and a moving base](queue-conflicts.md) | partial | yes |
@@ -155,18 +155,18 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P2 | [Configuration simulator](config-simulator.md) | missing |  |
 | P2 | [Conflict resolvers (experimental)](conflict-resolvers.md) | missing |  |
 | P2 | [Event log](events.md) | missing |  |
-| P2 | [Merge protections and auto-merge](merge-protections.md) | missing |  |
+| P2 | [Merge protections and auto-merge](merge-protections.md) | partial |  |
 | P2 | [Built-in protection `Merge-After`](merge-after.md) | partial |  |
 | P2 | [Direct merge without queue CI](direct-merge.md) | missing |  |
-| P2 | [Scheduled freeze](queue-freeze.md) | missing |  |
-| P2 | [Other merge methods](queue-merge-methods-other.md) | missing |  |
-| P2 | [Queue modes `parallel` and `isolated`](queue-modes.md) | missing |  |
-| P2 | [Pause the queue](queue-pause.md) | missing |  |
-| P2 | [Priorities (`priority_rules`)](queue-priority.md) | missing |  |
-| P2 | [Skip intermediate results](queue-skip-intermediate.md) | missing |  |
-| P2 | [Queue status through API and CLI](queue-status-api.md) | missing |  |
+| P2 | [Scheduled freeze](queue-freeze.md) | partial |  |
+| P2 | [Other merge methods](queue-merge-methods-other.md) | partial |  |
+| P2 | [Queue modes `parallel` and `isolated`](queue-modes.md) | partial |  |
+| P2 | [Pause the queue](queue-pause.md) | partial |  |
+| P2 | [Priorities (`priority_rules`)](queue-priority.md) | partial |  |
+| P2 | [Skip intermediate results](queue-skip-intermediate.md) | partial |  |
+| P2 | [Queue status through API and CLI](queue-status-api.md) | partial |  |
 | P2 | [Update method of a pull request](queue-update-method.md) | missing |  |
-| P2 | [Scopes for monorepos](scopes.md) | missing |  |
+| P2 | [Scopes for monorepos](scopes.md) | partial |  |
 | P3 | [CI Insights](ci-insights.md) | missing |  |
 | P3 | [Dashboard and statistics](dashboard-statistics.md) | missing |  |
 | P3 | [Integrations, products and account](integrations-account.md) | missing |  |
