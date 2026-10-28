@@ -648,18 +648,19 @@ def slim_check(x):
 
 # --- Commands ----------------------------------------------------------------------------
 
-def busy(org, repo):
+def busy(org, repo, all_open=False):
     """Open scenario or queue PRs: then something is running there (local, CI or another agent)."""
     open_prs = human_client().paged(f"/repos/{org}/{repo}/pulls?state=open")
-    return [p["number"] for p in open_prs if p["head"]["ref"].startswith(("sbx/", QUEUE_PREFIX))]
+    return [p["number"] for p in open_prs if all_open or p["head"]["ref"].startswith(("sbx/", QUEUE_PREFIX))]
 
 
-def wait_idle(org, repo, timeout):
+def wait_idle(org, repo, timeout, all_open=False):
     # Two scenarios at once in one repo end up in the same batch and distort each other.
     deadline = time.time() + timeout
-    while (prs := busy(org, repo)):
+    while (prs := busy(org, repo, all_open=all_open)):
         if time.time() > deadline:
-            die(f"{org}/{repo} is busy (open PRs {prs}); clean up with: sandbox.py reset --repo {repo}")
+            hint = "inspect the open pull requests" if all_open else f"inspect or clean up with: sandbox.py reset --repo {repo}"
+            die(f"{org}/{repo} is busy (open PRs {prs}); {hint}")
         log(f"{repo} is busy (open PRs {prs}), waiting …")
         time.sleep(30)
 
@@ -755,6 +756,10 @@ def main():
     c.add_argument("--strict-batches", action="store_true")
     c.add_argument("--strict-observation", action="store_true", help="require complete Schlange compatibility evidence")
     sub.add_parser("reset").add_argument("--repo", required=True)
+    idle = sub.add_parser("wait-idle")
+    idle.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
+    idle.add_argument("--timeout", type=int, default=1800)
+    idle.add_argument("--all-open", action="store_true", help="wait for every open pull request")
     sub.add_parser("doctor")
     sub.add_parser("token").add_argument("role", choices=["queue", "driver", "shadow"])
     # also allow --org after the subcommand
@@ -766,6 +771,7 @@ def main():
     if getattr(a, "repo", None) not in (None, "queue-lab", "schlange-e2e"):
         sys.exit(f"Refused: unknown sandbox repository {a.repo}")
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
+     "wait-idle": lambda a: wait_idle(a.org, a.repo, a.timeout, all_open=a.all_open),
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),
      "doctor": cmd_doctor, "token": cmd_token}[a.cmd](a)

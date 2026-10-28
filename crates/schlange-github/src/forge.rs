@@ -1174,7 +1174,7 @@ impl GithubForge {
                 .join(", ")
         );
         let body = format!(
-            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\nDo not edit this pull request; the queue closes it.",
+            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\n## Datenschutz\n\nSee the constituent pull requests for their data protection details.\n\nDo not edit this pull request; the queue closes it.",
             short(base_sha),
             prs.iter()
                 .map(|p| format!("- #{} at {}", p.number, short(&p.head_sha)))

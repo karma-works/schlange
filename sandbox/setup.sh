@@ -6,6 +6,7 @@
 #   bash sandbox/setup.sh apps        # register the queue and driver apps (one click each)
 #   bash sandbox/setup.sh repos       # create repos, fixture, labels, variables, rulesets
 #   bash sandbox/setup.sh fixture     # rewrite the fixture on main (after changes)
+#   bash sandbox/setup.sh fixture-e2e # rewrite only schlange-e2e's fixture
 #   bash sandbox/setup.sh all         # smee, apps, repos in turn
 #
 # Options: --dry-run (only show). Environment: SANDBOX_ORG (default schlange-sandbox).
@@ -17,6 +18,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ORG="${SANDBOX_ORG:-schlange-sandbox}"
+if [ "$ORG" != schlange-sandbox ]; then
+  echo "Error: only schlange-sandbox is allowed" >&2
+  exit 1
+fi
 CONFIG="${SCHLANGE_SANDBOX_CONFIG:-$HOME/.config/schlange-sandbox}"
 LAB=queue-lab        # Mergify active, Schlange in shadow mode (differential test)
 E2E=schlange-e2e     # Schlange active, without Mergify (E2E)
@@ -241,6 +246,7 @@ main() {
     apps) preflight; cmd_apps ;;
     repos) preflight; cmd_repos ;;
     fixture) preflight; cmd_fixture ;;
+    fixture-e2e) preflight; push_fixture "$E2E" "Update sandbox fixture" ;;
     all) preflight; cmd_smee; cmd_apps; cmd_repos ;;
     *) sed -n '2,13p' "$0"; exit 2 ;;
   esac

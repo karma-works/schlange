@@ -25,6 +25,10 @@ on:
         description: Scenarios (file names without .json, separated by spaces) or all
         required: false
         default: s01-single-pr
+      update_fixture:
+        description: Reset tracked schlange-e2e main files to the fixture after it is idle
+        type: boolean
+        default: false
   schedule:
     # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.
     - cron: '17 2 * * 0'
@@ -53,6 +57,13 @@ jobs:
           SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
         run: bash sandbox/ci/write-config.sh
+      - name: Update schlange-e2e fixture
+        if: ${{ inputs.update_fixture }}
+        env:
+          GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          REPO: ${{ inputs.repo }}
+        run: bash sandbox/ci/prepare-fixture.sh "$REPO"
       - name: Rust toolchain and cache (schlange-e2e)
         if: ${{ inputs.repo == 'schlange-e2e' }}
         run: rustup show active-toolchain || rustup toolchain install

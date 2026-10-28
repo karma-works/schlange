@@ -12,6 +12,19 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_wait_idle_cli_targets_only_selected_sandbox_repo(self):
+        with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'schlange-e2e', '--all-open']), \
+             patch.object(driver, 'wait_idle') as wait:
+            driver.main()
+        wait.assert_called_once_with('schlange-sandbox', 'schlange-e2e', 1800, all_open=True)
+
+    def test_all_open_idle_check_includes_non_scenario_pull_requests(self):
+        client = unittest.mock.Mock()
+        client.paged.return_value = [{'number': 1, 'head': {'ref': 'ordinary'}}]
+        with patch.object(driver, 'human_client', return_value=client):
+            self.assertEqual(driver.busy('schlange-sandbox', 'schlange-e2e', all_open=True), [1])
+            self.assertEqual(driver.busy('schlange-sandbox', 'schlange-e2e'), [])
+
     def test_api_error_does_not_expose_response_text(self):
         error = driver.urllib.error.HTTPError('https://example.invalid', 400, 'bad', {},
                                                io.BytesIO(b'private upstream response'))
