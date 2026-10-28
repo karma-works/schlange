@@ -692,6 +692,9 @@ fn repo_route(
             p.open = false;
             p.merge_commit_sha = Some(c.clone());
             let merged_by = st.bot();
+            st.comment_clock += 1;
+            let at = st.comment_clock;
+            st.merged_info.insert(n, (merged_by.clone(), at));
             let mut parent_of = tip.clone();
             for r in &replayed {
                 let tree = st.repo.tree_id_of(r);
@@ -743,6 +746,61 @@ fn repo_route(
                 None => err(404, "Not Found"),
             }
         }
+        // References outside `refs/heads/` (the lease's fence, `refs/schlange/lease`).
+        ("GET", ["git", "ref", r @ ..]) => {
+            let name = format!("refs/{}", r.join("/"));
+            match st.custom_refs.get(&name) {
+                Some(sha) => reply(200, json!({ "ref": name, "object": { "sha": sha } })),
+                None => err(404, "Not Found"),
+            }
+        }
+        ("PATCH", ["git", "refs", r @ ..]) if r.first() != Some(&"heads") => {
+            let name = format!("refs/{}", r.join("/"));
+            let Some(old) = st.custom_refs.get(&name).cloned() else {
+                return err(422, "Reference does not exist");
+            };
+            let new = body["sha"].as_str().unwrap_or("").to_string();
+            if st.repo.get_opt(&new).is_none() {
+                return err(422, "Object does not exist");
+            }
+            let force = body["force"].as_bool().unwrap_or(false);
+            if !force && !st.repo.is_ancestor(&old, &new) {
+                return err(422, "Update is not a fast forward");
+            }
+            st.custom_refs.insert(name.clone(), new.clone());
+            reply(200, json!({ "ref": name, "object": { "sha": new } }))
+        }
+        ("POST", ["git", "commits"]) => {
+            // A commit from a tree another branch tip has (all the lease needs) and parents.
+            let tree_id = body["tree"].as_str().unwrap_or("");
+            let tree = st
+                .repo
+                .refs()
+                .values()
+                .find(|tip| st.repo.tree_id_of(tip) == tree_id)
+                .map(|tip| st.repo.tree(tip).clone());
+            let Some(tree) = tree else {
+                return err(422, "Tree does not exist");
+            };
+            let parents: Vec<Sha> = body["parents"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if parents.iter().any(|p| st.repo.get_opt(p).is_none()) {
+                return err(422, "Parent does not exist");
+            }
+            let message = body["message"].as_str().unwrap_or("").to_string();
+            let c = st.repo.commit(tree, parents.clone(), &message);
+            reply(
+                201,
+                json!({ "sha": c, "tree": { "sha": tree_id }, "message": message,
+                        "parents": parents.iter().map(|p| json!({ "sha": p })).collect::<Vec<_>>() }),
+            )
+        }
         ("GET", ["git", "matching-refs", "heads", p @ ..]) => {
             let prefix = p.join("/");
             let items = st
@@ -753,6 +811,25 @@ fn repo_route(
                 .map(|(name, sha)| json!({ "ref": format!("refs/heads/{name}"), "object": { "sha": sha } }))
                 .collect();
             paginate(base_url, path, query, items, None)
+        }
+        ("POST", ["git", "refs"])
+            if body["ref"].as_str().is_some_and(|r| {
+                r.starts_with("refs/")
+                    && !r.starts_with("refs/heads/")
+                    && !r.starts_with("refs/tags/")
+                    && r.matches('/').count() >= 2
+            }) =>
+        {
+            let name = body["ref"].as_str().unwrap_or("").to_string();
+            let sha = body["sha"].as_str().unwrap_or("").to_string();
+            if st.repo.get_opt(&sha).is_none() {
+                return err(422, "Object does not exist");
+            }
+            if st.custom_refs.contains_key(&name) {
+                return err(422, "Reference already exists");
+            }
+            st.custom_refs.insert(name.clone(), sha.clone());
+            reply(201, json!({ "ref": name, "object": { "sha": sha } }))
         }
         ("POST", ["git", "refs"]) => {
             let Some(name) = body["ref"]

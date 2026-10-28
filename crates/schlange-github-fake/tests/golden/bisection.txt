@@ -1,9 +1,9 @@
 {"type":"enqueue","number":1,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
 {"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":["queued"],"remove":[]}}
-{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn: first in its queue."}}
 {"type":"enqueue","number":2,"queue":"default","rule":"Agenten- und Menschen-PRs automatisch einreihen"}
 {"type":"cosmetic","cosmetic":{"kind":"labels","number":2,"add":["queued"],"remove":[]}}
-{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nWaiting for its turn: position 2 in queue `default`, behind #1."}}
 {"type":"build_car","car":"<car1>","queue":"default","base_branch":"main","branch":"mergify/merge-queue/<branch1>","base_sha":"<sha1>","prs":[{"number":1,"head_sha":"<sha2>"},{"number":2,"head_sha":"<sha3>"}],"own":[1,2]}
 {"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked."}}
 {"type":"cosmetic","cosmetic":{"kind":"status_comment","number":2,"body":"<!-- schlange:status -->\n**Merge queue** · queue `default`\n\nBeing checked."}}

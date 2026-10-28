@@ -11,7 +11,7 @@
 +0:05:00  webhook   #2 check `KI-Review` completed on 71a5ba5: success
 +0:05:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:05:00  decision  labels #2 +queued
-+0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:10:00  action    arztagent-bot commented on #1: @mergifyio queue
 +0:10:00  webhook   timer
 +0:10:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #2 (checks #2)
@@ -37,7 +37,7 @@
 +0:40:00  decision  react +1 to comment 5 on #1
 +0:40:00  decision  enqueue #1 into `default` (rule `queue command by @karma-works`)
 +0:40:00  decision  labels #1 +queued
-+0:40:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @karma-works) — Waiting for its turn.
++0:40:00  decision  status comment #1: **Merge queue** · queue `default` (queued by @karma-works) — Waiting for its turn: first in its queue.
 +0:40:00  decision  controls comment #1: **Merge queue** — @karma-works asked to queue this pull request.
 +0:45:00  webhook   timer
 +0:45:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 71a5ba5 + #1 (checks #1)

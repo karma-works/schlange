@@ -9,7 +9,7 @@
 +0:01:00  webhook   #1 check `quick` completed on 84886d8: success
 +0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
 +0:01:00  decision  labels #1 +queued
-+0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn.
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:01:10  ci        #2 check `quick` completed on c4242bc: success
 +0:01:10  webhook   #2 check `quick` completed on c4242bc: success
 +0:01:10  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
@@ -25,7 +25,7 @@
 +0:01:20  webhook   #3 check `quick` completed on ffa0eec: success
 +0:01:20  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
 +0:01:20  decision  labels #3 +queued
-+0:01:20  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
++0:01:20  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #1, #2.
 +0:01:20  webhook   #4 check `quick` completed on 0c551c0: success
 +0:01:20  decision  enqueue #4 into `default` (rule `queue bot pull requests`)
 +0:01:20  decision  build car 6 on mergify/merge-queue/744dfff868: base 5a8b940, stacked on 8d76274 + #1 #2 #3 #4 (checks #3 #4)
@@ -39,7 +39,7 @@
 +0:01:30  webhook   #5 check `quick` completed on a22c6f7: success
 +0:01:30  decision  enqueue #5 into `default` (rule `queue bot pull requests`)
 +0:01:30  decision  labels #5 +queued
-+0:01:30  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn.
++0:01:30  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn: position 5 in queue `default`, behind #1, #2, #3, #4.
 +0:11:10  ci        #1000 check `full` completed on 8d76274: success
 +0:11:10  webhook   #1000 check `full` completed on 8d76274: success
 +0:11:10  decision  read #1 #2 #1000 main mergify/merge-queue/6353138441 before acting
@@ -52,6 +52,7 @@
 +0:11:10  decision  status comment #1: **Merge queue** · merged — Merged by the queue as ecd3e04.
 +0:11:10  decision  labels #2 -queued
 +0:11:10  decision  status comment #2: **Merge queue** · merged — Merged by the queue as 8d76274.
++0:11:10  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #3, #4.
 +0:11:10  decision  build car 9 on mergify/merge-queue/8cd12edb01: base 8d76274, stacked on c7551a5 + #3 #4 #5 (checks #5)
 +0:11:10  reply     car 9 built at 2d594d2, draft #1002
 +0:11:10  decision  status comment #5: **Merge queue** · queue `default` — Being checked.

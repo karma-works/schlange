@@ -165,6 +165,12 @@ pub struct Pull {
     /// How many files the pull request changes; `GET /pulls/{n}/files` lists at most 3000.
     #[serde(default)]
     pub changed_files: Option<u64>,
+    /// When it was merged (also in list responses, which lack `merged`).
+    #[serde(default)]
+    pub merged_at: Option<String>,
+    /// Who merged it (single reads only).
+    #[serde(default)]
+    pub merged_by: Option<User>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -191,6 +197,16 @@ pub struct CheckRunJson {
     pub conclusion: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
+    #[serde(default)]
+    pub output: Option<CheckOutput>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CheckOutput {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -466,6 +482,15 @@ impl RepoApi {
     }
 
     /// Open pull requests with this head branch (in this repository).
+    /// The most recently updated pull requests, open and closed: one page of 100 (the shadow
+    /// observer's view of what the other queue did).
+    pub fn recent_pulls(&self, prio: Priority) -> Result<Vec<Pull>, Error> {
+        self.get(
+            "/pulls?state=all&sort=updated&direction=desc&per_page=100",
+            prio,
+        )
+    }
+
     pub fn pulls_with_head(&self, branch: &str, prio: Priority) -> Result<Vec<Pull>, Error> {
         let head = format!("{}:{branch}", self.repo.owner);
         self.list(
@@ -650,6 +675,73 @@ impl RepoApi {
 
     pub fn ruleset(&self, id: u64, prio: Priority) -> Result<Ruleset, Error> {
         self.get(&format!("/rulesets/{id}"), prio)
+    }
+
+    // ---- the lease's fence (MQ-32): a reference outside `refs/heads/` -------------------
+
+    /// The commit a reference outside `refs/heads/` points to (`name` without `refs/`);
+    /// `None` on 404.
+    pub fn fence_ref(&self, name: &str, prio: Priority) -> Result<Option<String>, Error> {
+        match self.get::<GitRef>(&format!("/git/ref/{}", enc_path(name)), prio) {
+            Ok(r) => Ok(Some(r.object.sha)),
+            Err(Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Creates a commit with this tree, parents and message, bypassing the write gate (the
+    /// fence itself). Returns its SHA.
+    pub fn fence_commit(
+        &self,
+        tree: &str,
+        parents: &[String],
+        message: &str,
+        prio: Priority,
+    ) -> Result<String, Error> {
+        let path = self.p("/git/commits");
+        let resp = self.client.send_unfenced(
+            "POST",
+            &path,
+            auth_inst(self.installation),
+            prio,
+            Some(&json!({ "message": message, "tree": tree, "parents": parents })),
+        )?;
+        let c: GitCommit = resp.json(&path)?;
+        Ok(c.sha)
+    }
+
+    /// Creates the fence reference; `Ok(false)` when it exists already (another process was
+    /// first).
+    pub fn fence_create(&self, name: &str, sha: &str, prio: Priority) -> Result<bool, Error> {
+        match self.client.send_unfenced(
+            "POST",
+            &self.p("/git/refs"),
+            auth_inst(self.installation),
+            prio,
+            Some(&json!({ "ref": format!("refs/{name}"), "sha": sha })),
+        ) {
+            Ok(_) => Ok(true),
+            Err(Error::Status { status: 422, .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Moves the fence reference to `sha` only as a fast-forward (`force: false`): GitHub
+    /// refuses the update when `sha` does not descend from the current commit, so of two
+    /// processes that both build on the commit they read, only the first wins. `Ok(false)`
+    /// when refused.
+    pub fn fence_advance(&self, name: &str, sha: &str, prio: Priority) -> Result<bool, Error> {
+        match self.client.send_unfenced(
+            "PATCH",
+            &self.p(&format!("/git/refs/{}", enc_path(name))),
+            auth_inst(self.installation),
+            prio,
+            Some(&json!({ "sha": sha, "force": false })),
+        ) {
+            Ok(_) => Ok(true),
+            Err(Error::Status { status: 422, .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     // ---- writes ------------------------------------------------------------------------

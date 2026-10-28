@@ -1,0 +1,21 @@
+#1 Change 1: not-queued
+#1 is not queued: no rule matches (`bots`: author = bot (is `alice`))
+
+pull_request_rules with a `queue` action:
+  rule `bots` -> first matching queue
+    conditions: do not hold
+      [no] author = bot  (value: `alice`)
+
+queue rules:
+  queue `default`
+    queue_conditions: do not hold
+      [ok] check-success = quick  (value: [quick: success])
+      [no] or
+        [no] label = ready  (value: [`halt`])
+        [no] and
+          [no] author = bot  (value: `alice`)
+          [ok] -draft  (value: false)
+      [no] not
+        [ok] label = halt  (value: [`halt`])
+    merge_conditions: do not hold
+      [no] check-success = full  (value: [quick: success])

@@ -24,6 +24,7 @@
 //! [`tester`] has a small DSL that starts the fake and `schlange serve` against it.
 
 pub mod http;
+pub mod mergify;
 pub mod tester;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -384,6 +385,11 @@ pub(crate) struct St {
     /// Pushes to branches, oldest first (`GET /activity`): GitHub records when and by whom
     /// a branch moved, which no commit metadata can fake.
     pub activity: Vec<Activity>,
+    /// Who merged each merged pull request, and when (comment clock): `merged_by`,
+    /// `merged_at`.
+    pub merged_info: BTreeMap<u64, (String, u64)>,
+    /// References outside `refs/heads/` (`refs/schlange/lease`), full name → commit.
+    pub custom_refs: BTreeMap<String, Sha>,
 }
 
 /// One entry of the repository activity (`GET /repos/{o}/{r}/activity`).
@@ -786,6 +792,8 @@ impl St {
             "base": { "ref": pr.base, "sha": base_sha, "repo": { "full_name": own } },
             "labels": pr.labels.iter().map(|l| json!({ "name": l })).collect::<Vec<_>>(),
             "changed_files": self.pr_files(&pr).len(),
+            "merged_at": self.merged_info.get(&n).filter(|_| pr.merged).map(|(_, at)| format_rfc3339(*at)),
+            "merged_by": self.merged_info.get(&n).filter(|_| pr.merged).map(|(by, _)| json!({ "login": by })),
         }))
     }
 
@@ -1052,6 +1060,8 @@ impl FakeGithub {
             squash_message_setting: "COMMIT_MESSAGES".into(),
             files_cap: 3000,
             activity: Vec::new(),
+            merged_info: BTreeMap::new(),
+            custom_refs: BTreeMap::new(),
         };
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()

@@ -3,12 +3,15 @@ id: config-simulator
 title: "Configuration simulator"
 priority: P2
 arztagent: false
-status: missing
+status: partial
 inventory:
   - "api:POST /repos/{owner}/{repository}/configuration-simulator"
   - "api:POST /repos/{owner}/{repository}/pulls/{number}/simulator"
   - "api:POST /repos/{owner}/{repository}/simulator"
   - "cli:mergify config simulate"
+unsupported:
+  - "api:POST /repos/{owner}/{repository}/configuration-simulator"
+  - "api:POST /repos/{owner}/{repository}/simulator"
 problems:
   - "W-12"
 source: "https://docs.mergify.com/configuration/file-format"
@@ -21,12 +24,14 @@ Evaluate a configuration against real pull requests without acting. In Schlange 
 
 ## Sub-features
 
-- `against-pr`
-- `against-repo`
+- `against-pr`: built (`POST /repos/{owner}/{repo}/pulls/{n}/simulator` of `serve`, and
+  `schlange config simulate <file> --pr <n>`); see `S-SIMULATE.md`.
+- `against-repo`: missing (`POST …/simulator` and `POST …/configuration-simulator` without a
+  pull request).
 
 ## How to get to it (user POV)
 
-- `schlange config simulate --pr <n>` (planned).
+- `schlange config simulate <file> --pr <n>`
 
 ## Driving it with schlange
 
@@ -34,8 +39,8 @@ Preconditions:
 
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
-- **Not drivable yet.** Planned: a scenario under `scenarios/` that shows the flow in the simulated forge, then `localgit`.
+- **Scenario.** Run `target/release/schlange config simulate crates/schlange-config/tests/golden/arztagent.yml --pr 1 --scenario scenarios/p0-queue-conditions.yaml`. Exit `0`.
 
 ## Gotchas
 
-- Needs the forge adapter.
+- The answer's `summary` is Schlange's explanation text, not Mergify's check-run text.

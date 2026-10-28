@@ -901,6 +901,14 @@ pub fn run(s: &Scenario) -> RunReport {
     }
 }
 
+/// The engine state at the end of a scenario's undisturbed run in the simulated forge (for
+/// `schlange explain --scenario` and `config simulate --scenario`).
+pub fn end_state(s: &Scenario) -> State {
+    let mut sim = Simulation::on(s, Faults::none(), Repo::new(), false);
+    sim.run(s);
+    sim.state
+}
+
 /// Runs a scenario on git stores made by `make` (one per run: perfect, and disturbed when the
 /// scenario has faults). `real_ci`: every check runs as a process in a checkout.
 pub fn run_with<G: GitStore, E>(

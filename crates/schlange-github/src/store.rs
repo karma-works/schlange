@@ -10,6 +10,9 @@
 //! | `cars` | per car: the tree after each pull request (the landing compares against it) |
 //! | `deliveries` | webhook delivery ids handled successfully (GitHub redelivers failed ones) |
 //! | `audit` | one row per landed pull request: tested head and tree, base before, landed commit and tree (S-AUDIT) |
+//! | `events` | the event log: queue and action events per repository, with the pull requests they belong to (`schlange events`) |
+//! | `shadow` | shadow mode: what Schlange would have done and what Mergify did, per pull request (`schlange shadow report`) |
+//! | `lease` | which process may act for a repository, until when (MQ-32); journal writes check it |
 //!
 //! Durability: `synchronous = FULL`, so a checkpoint or an intent is on disk before the side
 //! effect it guards is sent. One connection behind a mutex: the workers write a few rows per
@@ -127,7 +130,18 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, at INTEGER NOT NULL,
                  car INTEGER NOT NULL, number INTEGER NOT NULL, tested_head TEXT NOT NULL,
                  tested_tree TEXT, base_before TEXT NOT NULL, landed_sha TEXT NOT NULL,
-                 landed_tree TEXT NOT NULL, landed_parent TEXT NOT NULL, note TEXT NOT NULL);",
+                 landed_tree TEXT NOT NULL, landed_parent TEXT NOT NULL, note TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, at INTEGER NOT NULL,
+                 type TEXT NOT NULL, pull_request INTEGER, pulls TEXT NOT NULL,
+                 base_ref TEXT, trigger TEXT NOT NULL, metadata TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS events_repo ON events (repo, id);
+             CREATE TABLE IF NOT EXISTS shadow (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, side TEXT NOT NULL,
+                 pr INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL,
+                 UNIQUE (repo, side, pr, kind));
+             CREATE TABLE IF NOT EXISTS lease (
+                 repo TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);",
         )
         .map_err(&e)?;
         let version: Option<String> = conn
@@ -173,6 +187,7 @@ impl Store {
             store: self.clone(),
             repo: repo.to_string(),
             history_written: None,
+            holder: None,
         }
     }
 
@@ -299,6 +314,221 @@ impl Store {
         })
     }
 
+    // ---- meta --------------------------------------------------------------------------
+
+    pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.with(|c| {
+            c.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()
+        })
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .map(|_| ())
+        })
+    }
+
+    // ---- event log ---------------------------------------------------------------------
+
+    /// Appends an event; returns its id.
+    pub fn add_event(&self, e: &EventRecord) -> rusqlite::Result<u64> {
+        let pulls = format!(
+            ",{},",
+            e.pull_requests
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let meta = e.metadata.to_string();
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO events (repo, at, type, pull_request, pulls, base_ref, trigger, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    e.repository,
+                    e.at as i64,
+                    e.kind,
+                    e.pull_request.map(|n| n as i64),
+                    pulls,
+                    e.base_ref,
+                    e.trigger,
+                    meta
+                ],
+            )?;
+            Ok(c.last_insert_rowid() as u64)
+        })
+    }
+
+    /// Events of a repository, newest first: those of pull request `pr` (as its own or as one
+    /// of a batch), at or after `since` (Unix seconds), with an id below `before` (paging), at
+    /// most `limit`.
+    pub fn events(&self, repo: &str, q: &EventQuery) -> rusqlite::Result<Vec<EventRecord>> {
+        let like = q.pr.map(|n| format!("%,{n},%"));
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT id, repo, at, type, pull_request, pulls, base_ref, trigger, metadata
+                 FROM events
+                 WHERE repo = ?1 AND (?2 IS NULL OR pulls LIKE ?2) AND (?3 IS NULL OR at >= ?3)
+                   AND (?4 IS NULL OR id < ?4) AND (?5 IS NULL OR type = ?5)
+                 ORDER BY id DESC LIMIT ?6",
+            )?;
+            let rows = st.query_map(
+                params![
+                    repo,
+                    like,
+                    q.since.map(|t| t as i64),
+                    q.before.map(|t| t as i64),
+                    q.kind,
+                    q.limit.clamp(1, 10_000) as i64
+                ],
+                |r| {
+                    let pulls: String = r.get(5)?;
+                    let meta: String = r.get(8)?;
+                    Ok(EventRecord {
+                        id: r.get::<_, i64>(0)? as u64,
+                        repository: r.get(1)?,
+                        at: r.get::<_, i64>(2)? as u64,
+                        kind: r.get(3)?,
+                        pull_request: r.get::<_, Option<i64>>(4)?.map(|n| n as u64),
+                        pull_requests: pulls.split(',').filter_map(|x| x.parse().ok()).collect(),
+                        base_ref: r.get(6)?,
+                        trigger: r.get(7)?,
+                        metadata: serde_json::from_str(&meta).unwrap_or_default(),
+                    })
+                },
+            )?;
+            rows.collect()
+        })
+    }
+
+    // ---- shadow mode -------------------------------------------------------------------
+
+    /// Records an observation of one side (`schlange` or `mergify`) about a pull request.
+    /// `first`: only the first of its kind counts (an existing row stays); otherwise the last
+    /// one replaces it. Returns whether it was written.
+    pub fn shadow_record(&self, o: &ShadowFact, first: bool) -> rusqlite::Result<bool> {
+        let data = o.data.to_string();
+        self.with(|c| {
+            let sql = if first {
+                "INSERT OR IGNORE INTO shadow (repo, side, pr, kind, at, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+            } else {
+                "INSERT OR REPLACE INTO shadow (repo, side, pr, kind, at, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+            };
+            let n = c.execute(
+                sql,
+                params![o.repo, o.side, o.pr as i64, o.kind, o.at as i64, data],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Whether a fact of this kind exists.
+    pub fn shadow_has(
+        &self,
+        repo: &str,
+        side: &str,
+        pr: u64,
+        kind: &str,
+    ) -> rusqlite::Result<bool> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT 1 FROM shadow WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4",
+                params![repo, side, pr as i64, kind],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|r| r.is_some())
+        })
+    }
+
+    /// Every shadow fact of a repository, in the order they were first written.
+    pub fn shadow_facts(&self, repo: &str) -> rusqlite::Result<Vec<ShadowFact>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT repo, side, pr, kind, at, data, id FROM shadow WHERE repo = ?1 ORDER BY id",
+            )?;
+            let rows = st.query_map(params![repo], |r| {
+                let data: String = r.get(5)?;
+                Ok(ShadowFact {
+                    repo: r.get(0)?,
+                    side: r.get(1)?,
+                    pr: r.get::<_, i64>(2)? as u64,
+                    kind: r.get(3)?,
+                    at: r.get::<_, i64>(4)? as u64,
+                    data: serde_json::from_str(&data).unwrap_or_default(),
+                    seq: r.get::<_, i64>(6)? as u64,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    // ---- lease (MQ-32) -----------------------------------------------------------------
+
+    /// Takes or renews the lease of `repo` for `holder` until `expires` when it is free, held
+    /// by `holder`, or expired at `now`. Returns whether `holder` holds it now.
+    pub fn lease_acquire(
+        &self,
+        repo: &str,
+        holder: &str,
+        now: u64,
+        expires: u64,
+    ) -> rusqlite::Result<bool> {
+        self.with(|c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT holder, expires FROM lease WHERE repo = ?1",
+                    params![repo],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let free = match &current {
+                None => true,
+                Some((h, e)) => h == holder || (*e as u64) <= now,
+            };
+            if free {
+                tx.execute(
+                    "INSERT OR REPLACE INTO lease (repo, holder, expires) VALUES (?1, ?2, ?3)",
+                    params![repo, holder, expires as i64],
+                )?;
+            }
+            tx.commit()?;
+            Ok(free)
+        })
+    }
+
+    /// The holder of `repo`'s lease and when it expires.
+    pub fn lease_holder(&self, repo: &str) -> rusqlite::Result<Option<(String, u64)>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT holder, expires FROM lease WHERE repo = ?1",
+                params![repo],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)),
+            )
+            .optional()
+        })
+    }
+
+    /// Gives the lease up (a clean shutdown), if `holder` has it.
+    pub fn lease_release(&self, repo: &str, holder: &str) -> rusqlite::Result<()> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM lease WHERE repo = ?1 AND holder = ?2",
+                params![repo, holder],
+            )
+            .map(|_| ())
+        })
+    }
+
     // ---- checks_timeout: auto history --------------------------------------------------
 
     pub fn history(&self, repo: &str) -> rusqlite::Result<BTreeMap<String, Vec<Sample>>> {
@@ -322,15 +552,99 @@ impl Store {
     }
 }
 
+/// One entry of the event log (`schlange events`, `GET /repos/{owner}/{repo}/logs`). The
+/// shape follows the public event log API (`id`, `received_at`, `type`, `pull_request`,
+/// `base_ref`, `trigger`, `metadata`); the types and metadata are Schlange's own.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EventRecord {
+    pub id: u64,
+    pub repository: String,
+    /// Unix seconds.
+    pub at: u64,
+    /// `action.queue.enter`, `action.queue.leave`, `action.queue.checks_start`, …
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub pull_request: Option<u64>,
+    /// Every pull request the event belongs to (a batch has several).
+    pub pull_requests: Vec<u64>,
+    pub base_ref: Option<String>,
+    /// What caused it (`Schlange engine`, `admin API`, …).
+    pub trigger: String,
+    pub metadata: serde_json::Value,
+}
+
+/// A query of the event log.
+#[derive(Clone, Debug, Default)]
+pub struct EventQuery {
+    pub pr: Option<u64>,
+    /// Unix seconds.
+    pub since: Option<u64>,
+    /// Only ids below this one (the next page).
+    pub before: Option<u64>,
+    pub kind: Option<String>,
+    pub limit: u64,
+}
+
+/// What one side did (or would have done) with a pull request, in shadow mode.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ShadowFact {
+    pub repo: String,
+    /// `schlange` (what it would have done) or `mergify` (what was observed on GitHub).
+    pub side: String,
+    pub pr: u64,
+    /// `queued`, `batch`, `landed`, `dequeued`, `merged_elsewhere`.
+    pub kind: String,
+    /// Unix seconds.
+    pub at: u64,
+    pub data: serde_json::Value,
+    /// Order of writing (landing order).
+    #[serde(default)]
+    pub seq: u64,
+}
+
+/// The journal refuses to write once another process holds the repository's lease.
+pub const LEASE_LOST: &str = "lease lost";
+
 /// The [`Journal`] of one repository in the database.
 pub struct SqliteJournal {
     store: Store,
     repo: String,
     /// The history as last written (rewritten only when it changes).
     history_written: Option<String>,
+    /// With a lease (MQ-32): every write checks in the same transaction that this holder
+    /// still holds the repository's lease, so a process that lost it cannot overwrite the
+    /// journal of the one that took over (same data directory).
+    holder: Option<String>,
+}
+
+/// Fails the transaction when `holder` does not hold `repo`'s lease.
+fn check_holder(
+    tx: &rusqlite::Transaction<'_>,
+    repo: &str,
+    holder: Option<&str>,
+) -> rusqlite::Result<()> {
+    let Some(h) = holder else { return Ok(()) };
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT holder FROM lease WHERE repo = ?1",
+            params![repo],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if current.as_deref() == Some(h) {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::ToSqlConversionFailure(LEASE_LOST.into()))
+    }
 }
 
 impl SqliteJournal {
+    /// Writes only while `holder` holds the repository's lease.
+    pub fn fenced(mut self, holder: &str) -> Self {
+        self.holder = Some(holder.to_string());
+        self
+    }
+
     /// The highest intent sequence number on record (to continue numbering after a restart).
     pub fn max_seq(&self) -> Result<u64, JournalError> {
         self.store
@@ -353,9 +667,11 @@ impl Journal for SqliteJournal {
         let write_history = self.history_written.as_deref() != Some(history.as_str());
         let now = crate::time::unix_now() as i64;
         let repo = self.repo.clone();
+        let holder = self.holder.clone();
         self.store
             .with(|c| {
-                let tx = c.transaction()?;
+                let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                check_holder(&tx, &repo, holder.as_deref())?;
                 tx.execute(
                     "INSERT OR REPLACE INTO checkpoints (repo, state, written) VALUES (?1, ?2, ?3)",
                     params![repo, text, now],
@@ -382,14 +698,17 @@ impl Journal for SqliteJournal {
 
     fn intent(&mut self, seq: u64, decision: &Decision) -> Result<(), JournalError> {
         let text = serde_json::to_string(decision)?;
+        let holder = self.holder.clone();
         self.store
             .with(|c| {
-                c.execute(
+                let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                check_holder(&tx, &self.repo, holder.as_deref())?;
+                tx.execute(
                     "INSERT OR REPLACE INTO intents (repo, seq, decision) VALUES (?1, ?2, ?3)",
                     params![self.repo, seq as i64, text],
-                )
+                )?;
+                tx.commit()
             })
-            .map(|_| ())
             .map_err(storage)
     }
 
@@ -508,6 +827,89 @@ mod tests {
             vec![(1, "t1".to_string()), (2, "t2".to_string())]
         );
         assert!(s.journal("o/other").recover().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn one_lease_per_repository_and_the_journal_of_a_lost_lease_refuses_writes() {
+        let d = dir("lease");
+        let a = Store::open(&d).unwrap();
+        // A second process on the same data directory.
+        let b = Store::open(&d).unwrap();
+        assert!(a.lease_acquire("o/r", "a", 100, 130).unwrap());
+        assert!(!b.lease_acquire("o/r", "b", 110, 140).unwrap(), "held by a");
+        assert!(a.lease_acquire("o/r", "a", 120, 150).unwrap(), "renewal");
+        assert!(
+            b.lease_acquire("o/other", "b", 120, 150).unwrap(),
+            "per repository"
+        );
+        let mut ja = a.journal("o/r").fenced("a");
+        ja.checkpoint(&State::default()).unwrap();
+        // a stops renewing; b takes over once it expired.
+        assert!(!b.lease_acquire("o/r", "b", 149, 179).unwrap());
+        assert!(b.lease_acquire("o/r", "b", 150, 180).unwrap());
+        assert_eq!(b.lease_holder("o/r").unwrap(), Some(("b".into(), 180)));
+        let e = ja.checkpoint(&State::default()).unwrap_err();
+        assert!(e.to_string().contains(LEASE_LOST), "{e}");
+        let e = ja.intent(1, &Decision::WakeAt { at: 1 }).unwrap_err();
+        assert!(e.to_string().contains(LEASE_LOST), "{e}");
+        let mut jb = b.journal("o/r").fenced("b");
+        jb.checkpoint(&State::default()).unwrap();
+        b.lease_release("o/r", "b").unwrap();
+        assert!(a.lease_acquire("o/r", "a", 151, 181).unwrap());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn events_filter_by_pull_request_time_and_page() {
+        let d = dir("events");
+        let s = Store::open(&d).unwrap();
+        for (i, prs) in [vec![1], vec![2, 3], vec![1, 3], vec![]]
+            .into_iter()
+            .enumerate()
+        {
+            s.add_event(&EventRecord {
+                id: 0,
+                repository: "o/r".into(),
+                at: 100 + i as u64,
+                kind: if prs.is_empty() {
+                    "queue.pause.create".into()
+                } else {
+                    "action.queue.enter".into()
+                },
+                pull_request: prs.first().copied(),
+                pull_requests: prs,
+                base_ref: Some("main".into()),
+                trigger: "test".into(),
+                metadata: serde_json::json!({ "i": i }),
+            })
+            .unwrap();
+        }
+        let q = |pr, since, before| EventQuery {
+            pr,
+            since,
+            before,
+            kind: None,
+            limit: 100,
+        };
+        let ids = |v: Vec<EventRecord>| v.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(s.events("o/r", &q(None, None, None)).unwrap()),
+            vec![4, 3, 2, 1]
+        );
+        assert_eq!(
+            ids(s.events("o/r", &q(Some(3), None, None)).unwrap()),
+            vec![3, 2]
+        );
+        assert_eq!(
+            ids(s.events("o/r", &q(Some(1), Some(102), None)).unwrap()),
+            vec![3]
+        );
+        assert_eq!(
+            ids(s.events("o/r", &q(None, None, Some(3))).unwrap()),
+            vec![2, 1]
+        );
+        assert!(s.events("o/x", &q(None, None, None)).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(d);
     }
 

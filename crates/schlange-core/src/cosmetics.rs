@@ -174,7 +174,23 @@ fn status_body(state: &State, rules: &Rules, n: u64) -> Option<(String, bool)> {
         lines.push(format!("**Merge queue** · queue `{}`{by}", e.queue));
         lines.push(String::new());
         lines.push(match &e.status {
-            EntryStatus::Waiting => "Waiting for its turn.".to_string(),
+            EntryStatus::Waiting => {
+                // The short form of `schlange explain` (S-EXPLAIN): its place in the queue.
+                let ex = crate::explain::explain(state, rules, n);
+                match ex.place.as_ref().map(|p| p.ahead.clone()) {
+                    Some(ahead) if !ahead.is_empty() => format!(
+                        "Waiting for its turn: position {} in queue `{}`, behind {}.",
+                        ahead.len() + 1,
+                        e.queue,
+                        ahead
+                            .iter()
+                            .map(|x| format!("#{x}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    _ => "Waiting for its turn: first in its queue.".to_string(),
+                }
+            }
             EntryStatus::InCar { car } => {
                 let draft = state
                     .trains
@@ -220,6 +236,20 @@ fn status_body(state: &State, rules: &Rules, n: u64) -> Option<(String, bool)> {
                 .map(|q| format!("queue `{q}`"))
                 .unwrap_or_else(|| "the first matching queue".into())
         ));
+        // The short form of `schlange explain`: the conditions it waits for.
+        let waits: Vec<String> = crate::explain::explain(state, rules, n)
+            .queue_rules
+            .iter()
+            .flat_map(|q| q.queue_conditions.failing_plain())
+            .collect();
+        if !waits.is_empty() {
+            lines.push(String::new());
+            let mut text = waits.join("; ");
+            if text.chars().count() > 300 {
+                text = format!("{}…", text.chars().take(300).collect::<String>());
+            }
+            lines.push(format!("Waiting for: {text}"));
+        }
     } else {
         match state.outcomes.get(&n)? {
             Outcome::Merged { sha } => {
