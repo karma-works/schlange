@@ -256,3 +256,53 @@ fn the_report_survives_a_restart_from_the_database() {
     assert_no_writes(&t);
     t.shutdown();
 }
+
+/// The shadow app's permissions: everything Schlange reads, nothing it could write with.
+const READ_ONLY: [(&str, &str); 5] = [
+    ("metadata", "read"),
+    ("contents", "read"),
+    ("pull_requests", "read"),
+    ("checks", "read"),
+    ("statuses", "read"),
+];
+
+#[test]
+fn a_read_only_app_is_enough_for_shadow_mode() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .fake(|c| {
+            c.permissions = READ_ONLY
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        })
+        .shadow()
+        .start();
+    let a = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(a).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let d = t.gh.mergify_embark(&[a]);
+    t.settle();
+    t.gh.mergify_land(d);
+    t.advance("3m");
+    reconcile(&t);
+    assert_no_writes(&t);
+    // Tokens ask for read access to everything Schlange reads, so no read is refused.
+    let tokens = t.gh.token_requests();
+    let last = tokens.last().expect("a token was requested");
+    for (name, level) in READ_ONLY {
+        assert_eq!(last["permissions"][name], level, "token scope: {last}");
+    }
+    let refused: Vec<_> =
+        t.gh.requests()
+            .into_iter()
+            .filter(|r| r.ends_with(" 403"))
+            .collect();
+    assert!(
+        refused.is_empty(),
+        "refused requests:\n{}",
+        refused.join("\n")
+    );
+    assert_eq!(verdict(&report(&t), a), "agree");
+    t.shutdown();
+}

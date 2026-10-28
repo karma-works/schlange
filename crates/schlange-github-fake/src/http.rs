@@ -486,6 +486,31 @@ fn new_pr_body(st: &St) -> String {
     format!("{}[bot]", st.cfg.app_slug)
 }
 
+/// The permission an installation token needs for a repository endpoint the fake serves,
+/// after GitHub's table of permissions for GitHub Apps. Endpoints whose requirement we have not
+/// confirmed (activity, rulesets, branch protection, collaborators) are not checked.
+pub(crate) fn required_permission(
+    method: &str,
+    rest: &[&str],
+) -> Option<(&'static str, &'static str)> {
+    let level = if method == "GET" { "read" } else { "write" };
+    match rest {
+        // Merging and updating a branch change the repository's contents.
+        ["pulls", _, "merge" | "update-branch"] => Some(("contents", "write")),
+        ["pulls", ..] => Some(("pull_requests", level)),
+        // Comments, labels and assignees on pull requests.
+        ["issues", ..] => Some(("pull_requests", level)),
+        ["commits", _, "check-runs" | "check-suites"] | ["check-runs", ..] => {
+            Some(("checks", level))
+        }
+        ["commits", _, "status"] => Some(("statuses", "read")),
+        ["git", ..] | ["merges"] | ["compare", ..] | ["contents", ..] | ["commits", ..] => {
+            Some(("contents", level))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn repo_route(
     st: &mut St,
@@ -496,6 +521,13 @@ fn repo_route(
     rest: &[&str],
     body: &Value,
 ) -> Reply {
+    // An installation token reaches an endpoint only with the permission GitHub asks for.
+    if st.caller_token.is_some()
+        && let Some((name, level)) = required_permission(method, rest)
+        && rank(st.caller_permissions().get(name).map_or("", String::as_str)) < rank(level)
+    {
+        return err(403, "Resource not accessible by integration");
+    }
     let num = |s: &str| s.parse::<u64>().ok();
     match (method, rest) {
         ("GET", []) => reply(200, st.repo_json()),

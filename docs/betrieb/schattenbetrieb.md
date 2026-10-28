@@ -12,7 +12,7 @@
 
 The shadow has its own app, "Schlange Schatten Arztagent"
 ([manifest](../../sandbox/apps/manifests/shadow.json)), which has **read permissions only**:
-metadata, contents, pull requests, issues, checks and statuses, all `read`. With it, Schlange
+metadata, contents, pull requests, checks and statuses, all `read`. With it, Schlange
 technically cannot merge, comment or create branches on Arztagent, even if the code has a bug
 or is started without `--shadow` by mistake.
 
@@ -56,7 +56,7 @@ forge and fixed with a test (KONZEPT.md, rule 1).
 
 ## Switchover after acceptance
 
-1. The shadow app gets write permissions (contents, pull requests, issues, checks, workflows:
+1. The shadow app gets write permissions (contents, pull requests, checks, workflows:
    write). GitHub asks you, as admin, for consent.
 2. Constitution PR by a human: `pr-gate.yml` accepts the bot login of the Schlange app
    (today hard-coded `mergify[bot]`).

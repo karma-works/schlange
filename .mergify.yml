@@ -1,0 +1,31 @@
+# Mergify is this repository's merge queue, and the reference Schlange runs next to in shadow
+# mode (docs/shadow-mode.md). Close to Arztagent's configuration on purpose: squash, batches,
+# two-step CI (the pull request's checks to enter, the queue draft's checks to land).
+# The required checks are the ruleset's; "Mergify schema diff" is left out because it fails
+# when Mergify changes its docs, not when a pull request is wrong.
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 3
+    batch_max_wait_time: 5 minutes
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - check-success = fmt, clippy, test
+      - check-success = image and size budget
+      - check-success = README feature status
+    merge_conditions:
+      - check-success = fmt, clippy, test
+      - check-success = image and size budget
+      - check-success = README feature status
+
+pull_request_rules:
+  - name: Queue every ready pull request
+    conditions:
+      - base = main
+      - -draft
+      - -label = halt
+    actions:
+      queue:

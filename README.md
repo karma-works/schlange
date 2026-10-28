@@ -90,7 +90,8 @@ first, compare, then hand over, and keep the old queue as the way back.
 5. **Keep the way back.** Leave the old queue installed but paused until Schlange has landed
    reliably for a few weeks.
 
-The runbook for Arztagent, including the permission set and the cut-over checklist:
+Step by step, for any repository (app, container, webhooks, `doctor --shadow`, report):
+[docs/shadow-mode.md](docs/shadow-mode.md). The runbook for Arztagent:
 [docs/betrieb/schattenbetrieb.md](docs/betrieb/schattenbetrieb.md). The same comparison runs
 continuously in the [GitHub sandbox](docs/betrieb/sandbox.md) against Mergify.
 
@@ -123,7 +124,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (299) | – | built 255, partial 8 | 36 |
+| Sub-features (300) | – | built 256, partial 8 | 36 |
 | Sub-features Arztagent uses (162) | – | built 149, partial 4 | 9 |
 
 <details>
@@ -135,7 +136,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Complete CLI with `--json`](.agents/skills/verify-schlange/features/S-CLI.md) | partial | 4 / 1 / 0 |  |
 | [`schlange doctor`](.agents/skills/verify-schlange/features/S-DOCTOR.md) | partial | 10 / 0 / 0 |  |
 | [`schlange explain`](.agents/skills/verify-schlange/features/S-EXPLAIN.md) | partial | 6 / 0 / 2 |  |
-| [Shadow mode](.agents/skills/verify-schlange/features/S-SHADOW.md) | partial | 4 / 0 / 1 |  |
+| [Shadow mode](.agents/skills/verify-schlange/features/S-SHADOW.md) | partial | 5 / 0 / 1 |  |
 | [Scenarios in the simulated forge](.agents/skills/verify-schlange/features/S-SIM.md) | partial | 7 / 0 / 0 |  |
 | [Action `queue`](.agents/skills/verify-schlange/features/action-queue.md) | partial | 4 / 0 / 0 | yes |
 | [Commands `queue`, `dequeue`, `refresh`](.agents/skills/verify-schlange/features/commands.md) | partial | 9 / 0 / 0 | yes |
