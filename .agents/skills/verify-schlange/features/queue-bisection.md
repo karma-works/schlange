@@ -47,6 +47,8 @@ Preconditions:
 
 ## Gotchas
 
+- Found by the long property run (`SCHLANGE_PBT_CASES=2000`) and fixed, each with a regression test in `crates/schlange-forge/tests/properties.rs`: a car landing while another car's red batch was split was dropped (its reply then counted as a manual merge); a landing in flight was never resolved while a bisection planned another car to land (the queue read the same pull requests forever); a retried car's dependents (parallel mode) lost their dependency and landed first.
+
 - Flaky tests blow up batches (MQ-22): a flake in a batch makes the last pull request the "culprit" when every split passes (`scenarios/p1-flaky.yaml` shows a flake dequeuing an innocent pull request).
 - With fewer slots than tests (one parallel check), a green test would hold the only slot the next test needs. Schlange then lands the green prefix and splits the rest again in the same round. The documentation describes the one-check case only for the last round; this is our choice for the other rounds (found by the property test, regression `bisection_with_one_check_and_a_held_pull_request_settles`).
 - The code for pull requests sent back to the queue after a split (`BATCH_AHEAD_FAILED`) is assumed; the documentation only says they "go back to the queue".
