@@ -16,27 +16,27 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/pull_request_rules/1/conditions",
-      "line": 29,
-      "column": 5,
+      "pointer": "/pull_request_rules/1/conditions/0",
+      "line": 30,
+      "column": 9,
       "message": "`attr:body` is not supported by Schlange yet (feature conditions-pr-metadata, P2, partial: not built in this partial feature (`attr:body`))",
       "feature": "conditions-pr-metadata"
     },
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/queue_rules/1/queue_conditions",
-      "line": 11,
-      "column": 5,
+      "pointer": "/queue_rules/1/queue_conditions/0",
+      "line": 12,
+      "column": 9,
       "message": "`attr:conflict` is not supported by Schlange yet (feature queue-conflicts, P1, partial: not built in this partial feature (`attr:conflict`))",
       "feature": "queue-conflicts"
     },
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/queue_rules/1/queue_conditions",
-      "line": 11,
-      "column": 5,
+      "pointer": "/queue_rules/1/queue_conditions/1",
+      "line": 13,
+      "column": 9,
       "message": "`attr:dependabot-dependency-name` is not supported by Schlange yet (feature conditions-dependabot, P1, partial: not built in this partial feature (`attr:dependabot-dependency-name`))",
       "feature": "conditions-dependabot"
     },
@@ -162,7 +162,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/pull_request_rules/0/conditions"
+      "pointer": "/pull_request_rules/0/conditions/0"
     },
     {
       "id": "attr:body",
@@ -174,7 +174,7 @@
         "kind": "not_built",
         "pattern": "attr:body"
       },
-      "pointer": "/pull_request_rules/1/conditions"
+      "pointer": "/pull_request_rules/1/conditions/0"
     },
     {
       "id": "attr:check-success",
@@ -182,7 +182,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/merge_conditions"
+      "pointer": "/queue_rules/0/merge_conditions/0"
     },
     {
       "id": "attr:conflict",
@@ -194,7 +194,7 @@
         "kind": "not_built",
         "pattern": "attr:conflict"
       },
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/0"
     },
     {
       "id": "attr:dependabot-dependency-name",
@@ -206,7 +206,7 @@
         "kind": "not_built",
         "pattern": "attr:dependabot-dependency-name"
       },
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/1"
     },
     {
       "id": "attr:label",
@@ -214,7 +214,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/priority_rules/0/conditions"
+      "pointer": "/priority_rules/0/conditions/0"
     },
     {
       "id": "config:priority_rules",

@@ -139,3 +139,16 @@ fn strict_exits_2_only_for_real_gaps() {
         none.to_text()
     );
 }
+
+/// Critic e8a0022 M3: an unsupported attribute is reported at its condition's own line (also
+/// inside `or`), not at the line of the list's key.
+#[test]
+fn unsupported_attributes_point_at_their_condition() {
+    let schema = schema();
+    let features = FeatureMap::embedded().unwrap();
+    let src = "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - check-success = ci\n      - schedule = Mon-Fri 09:00-17:00\n      - or:\n          - check-success = a\n          - \"#approved-reviews-by >= 1\"\n";
+    let report = validate("t.yml", src, &schema, &features, true);
+    let text = report.to_text();
+    assert!(text.contains("attr:schedule (6:9)"), "{text}");
+    assert!(text.contains("attr:approved-reviews-by (9:13)"), "{text}");
+}

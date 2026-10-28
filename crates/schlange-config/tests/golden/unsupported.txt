@@ -1,9 +1,9 @@
 unsupported.yml: unsupported[support] feature action-label (P2, missing): action:label (24:7), config:pull_request_rules.actions.label (24:7), config:pull_request_rules.actions.label.add (25:9)
-unsupported.yml: unsupported[support] feature conditions-dependabot (P1, partial): attr:dependabot-dependency-name (11:5)
-unsupported.yml: unsupported[support] feature conditions-pr-metadata (P2, partial): attr:body (29:5)
+unsupported.yml: unsupported[support] feature conditions-dependabot (P1, partial): attr:dependabot-dependency-name (13:9)
+unsupported.yml: unsupported[support] feature conditions-pr-metadata (P2, partial): attr:body (30:9)
 unsupported.yml: unsupported[support] feature config-shared (P2, missing): config:shared (3:1)
 unsupported.yml: unsupported[support] feature queue-branch-protection (P1, missing): default:queue_rules.branch_protection_injection_mode
-unsupported.yml: unsupported[support] feature queue-conflicts (P1, partial): attr:conflict (11:5)
+unsupported.yml: unsupported[support] feature queue-conflicts (P1, partial): attr:conflict (12:9)
 unsupported.yml: unsupported[support] feature queue-merge-method-squash (P1, partial): default:queue_rules.merge_method
 unsupported.yml: unsupported[support] feature queue-merge-methods-other (P2, missing): enum:merge_method:rebase (8:5)
 unsupported.yml: unsupported[support] feature queue-priority (P2, missing): config:priority_rules (14:1), config:priority_rules.conditions (16:5), config:priority_rules.name (15:5), config:priority_rules.priority (18:5), enum:priority:high (18:5)

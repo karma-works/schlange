@@ -45,7 +45,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/pull_request_rules/0/conditions"
+      "pointer": "/pull_request_rules/0/conditions/0"
     },
     {
       "id": "attr:check-success",
@@ -53,7 +53,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/0"
     },
     {
       "id": "attr:depends-on",
@@ -61,7 +61,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/2"
     },
     {
       "id": "attr:from-fork",
@@ -69,7 +69,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/rebase/conditions"
+      "pointer": "/commands_restrictions/rebase/conditions/0/or/1/and/1"
     },
     {
       "id": "attr:label",
@@ -77,7 +77,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/0"
     },
     {
       "id": "attr:mergify-configuration-changed",
@@ -85,7 +85,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/1/queue_conditions"
+      "pointer": "/queue_rules/1/queue_conditions/1"
     },
     {
       "id": "attr:queue-dequeue-reason",
@@ -93,7 +93,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/queue_conditions"
+      "pointer": "/queue_rules/0/queue_conditions/1"
     },
     {
       "id": "attr:queue-position",
@@ -101,7 +101,7 @@
       "priority": "P2",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/merge_conditions"
+      "pointer": "/queue_rules/0/merge_conditions/1"
     },
     {
       "id": "attr:queued-at",
@@ -109,7 +109,7 @@
       "priority": "P2",
       "status": "partial",
       "supported": true,
-      "pointer": "/queue_rules/0/merge_conditions"
+      "pointer": "/queue_rules/0/merge_conditions/2"
     },
     {
       "id": "attr:sender",
@@ -117,7 +117,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/rebase/conditions"
+      "pointer": "/commands_restrictions/rebase/conditions/0/or/1/and/0"
     },
     {
       "id": "attr:sender-permission",
@@ -125,7 +125,7 @@
       "priority": "P1",
       "status": "partial",
       "supported": true,
-      "pointer": "/commands_restrictions/queue/conditions"
+      "pointer": "/commands_restrictions/queue/conditions/0"
     },
     {
       "id": "config:commands_restrictions",

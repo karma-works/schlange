@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::conditions::{self, Condition};
+use crate::conditions;
 use crate::features::{FeatureMap, Priority, Status, Unsupported};
 
 /// Sections whose defaults apply even when the configuration does not mention them.
@@ -157,10 +157,7 @@ fn walk(
                     continue; // free-form anchors
                 }
                 if condition_keys.contains(key) {
-                    let mut errors = Vec::new();
-                    for cond in conditions::parse_list(child, &child_ptr, &mut errors) {
-                        add_attributes(&cond, &child_ptr, map, uses);
-                    }
+                    condition_attributes(child, &child_ptr, map, uses);
                     continue;
                 }
                 walk(child, &child_path, &child_ptr, condition_keys, map, uses);
@@ -182,14 +179,32 @@ fn walk(
     }
 }
 
-fn add_attributes(
-    cond: &Condition,
+/// The attributes of a condition list, each at the pointer of the condition that names it
+/// (also inside `and`, `or` and `not`), so a report points at the condition's own line.
+fn condition_attributes(
+    value: &Value,
     pointer: &str,
     map: &FeatureMap,
     uses: &mut BTreeMap<String, Option<String>>,
 ) {
-    for atom in cond.atoms() {
-        add(uses, map, format!("attr:{}", atom.attribute), pointer);
+    match value {
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                condition_attributes(item, &format!("{pointer}/{i}"), map, uses);
+            }
+        }
+        Value::Object(obj) => {
+            for (k, v) in obj {
+                let ptr = format!("{pointer}/{}", crate::yaml::escape(k));
+                condition_attributes(v, &ptr, map, uses);
+            }
+        }
+        Value::String(s) => {
+            if let Ok(atom) = conditions::parse_atom(s) {
+                add(uses, map, format!("attr:{}", atom.attribute), pointer);
+            }
+        }
+        _ => {}
     }
 }
 
