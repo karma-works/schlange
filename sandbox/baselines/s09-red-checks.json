@@ -1,0 +1,26 @@
+{
+  "batches": [],
+  "landed": [],
+  "prs": {
+    "a": {
+      "dequeue_codes": [],
+      "end": "open",
+      "enter_count": 0,
+      "queued": false
+    },
+    "b": {
+      "dequeue_codes": [],
+      "end": "open",
+      "enter_count": 0,
+      "queued": false
+    },
+    "c": {
+      "dequeue_codes": [],
+      "end": "open",
+      "enter_count": 0,
+      "queued": false
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S09"
+}

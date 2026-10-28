@@ -1,0 +1,82 @@
+{
+  "batches": [
+    {
+      "ci_ok": "failure",
+      "prs": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    {
+      "ci_ok": "success",
+      "prs": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    {
+      "ci_ok": "failure",
+      "prs": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    {
+      "ci_ok": "failure",
+      "prs": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    {
+      "ci_ok": "success",
+      "prs": [
+        "c",
+        "d"
+      ]
+    }
+  ],
+  "landed": [
+    "a",
+    "c",
+    "d"
+  ],
+  "prs": {
+    "a": {
+      "dequeue_codes": [],
+      "end": "merged",
+      "enter_count": 1,
+      "queued": true
+    },
+    "b": {
+      "dequeue_codes": [
+        "CHECKS_FAILED"
+      ],
+      "end": "open",
+      "enter_count": 1,
+      "queued": true
+    },
+    "c": {
+      "dequeue_codes": [],
+      "end": "merged",
+      "enter_count": 1,
+      "queued": true
+    },
+    "d": {
+      "dequeue_codes": [],
+      "end": "merged",
+      "enter_count": 1,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S03"
+}
