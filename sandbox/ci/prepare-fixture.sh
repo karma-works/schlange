@@ -4,6 +4,7 @@ set -euo pipefail
 [ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo 'refused: only schlange-sandbox' >&2; exit 1; }
 case "${1:-}" in
   schlange-e2e) setup=fixture-e2e ;;
+  schlange-e2e-isolated) setup=fixture-isolated ;;
   queue-lab) setup=fixture-lab ;;
   *) echo 'refused: unknown sandbox repository' >&2; exit 1 ;;
 esac

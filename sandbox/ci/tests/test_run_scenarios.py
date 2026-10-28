@@ -37,6 +37,26 @@ class ScenarioRunnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.marker.exists())
 
+    def test_isolated_repo_requires_reference_baseline(self):
+        result = self.run_scenario('schlange-e2e-isolated')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.marker.exists())
+        (self.root / 'sandbox' / 'baselines' / 's01.json').write_text('{}')
+        self.assertEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
+        self.assertTrue(self.marker.exists())
+
+    def test_arbitrary_same_org_repo_is_rejected(self):
+        self.assertNotEqual(self.run_scenario('other-sandbox-repo').returncode, 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_arbitrary_scenario_path_is_rejected(self):
+        (self.root / 'sandbox' / 'outside.json').write_text('{}')
+        result = subprocess.run(['bash', str(self.root / 'sandbox' / 'ci' / 'run-scenarios.sh'),
+                                 'schlange-e2e-isolated', '../outside'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.marker.exists())
+
     def test_missing_baseline_is_recorded_on_reference(self):
         result = self.run_scenario('queue-lab')
         self.assertEqual(result.returncode, 0)

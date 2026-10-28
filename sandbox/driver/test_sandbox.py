@@ -12,6 +12,111 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_isolated_repo_is_explicitly_allowed_but_other_repo_is_not(self):
+        with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'schlange-e2e-isolated']), \
+             patch.object(driver, 'wait_idle') as wait:
+            driver.main()
+        wait.assert_called_once_with('schlange-sandbox', 'schlange-e2e-isolated', 1800, all_open=False)
+        with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'unrelated']):
+            with self.assertRaises(SystemExit):
+                driver.main()
+
+    def test_disposable_repo_cannot_skip_idle_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / 'scenario.json'
+            scenario.write_text(json.dumps({'id': 'S99', 'title': 'test', 'steps': []}))
+            args = unittest.mock.Mock(scenario=str(scenario), repo='schlange-e2e-isolated', no_wait=True)
+            with patch.object(driver, 'Run') as run:
+                with self.assertRaises(SystemExit):
+                    driver.cmd_run(args)
+                run.assert_not_called()
+
+    def test_driver_installation_token_is_scoped_to_selected_repo(self):
+        jwt = unittest.mock.Mock()
+        jwt.call.side_effect = [{'id': 9}, {'token': 'test-token'}]
+        with patch.object(driver, 'app_meta', return_value={'owner': 'schlange-sandbox', 'owner_type': 'org'}), \
+             patch.object(driver, 'Client', return_value=jwt), patch.object(driver, 'app_jwt', return_value='test-jwt'):
+            driver.installation_client('driver', 'schlange-sandbox', 'schlange-e2e-isolated')
+            fetch = driver.Client.call_args.args[0]
+            self.assertEqual(fetch(), ('test-token', 3000))
+        jwt.call.assert_any_call('POST', '/app/installations/9/access_tokens',
+                                 {'repositories': ['schlange-e2e-isolated']})
+
+    def test_isolated_app_installation_is_exact_and_never_retried(self):
+        human = unittest.mock.Mock()
+        scoped = unittest.mock.Mock()
+        scoped.call.return_value = {'full_name': 'schlange-sandbox/schlange-e2e-isolated'}
+        installation = {'id': 9, 'app_id': 10, 'account': {'login': 'schlange-sandbox'},
+                        'repository_selection': 'selected'}
+        with patch.object(driver, 'installation_client', return_value=scoped):
+            driver.install_isolated_app(human, 'queue', 42, 10, installation)
+        human.call.assert_called_once_with('PUT', '/user/installations/9/repositories/42', retry=False)
+        scoped.call.assert_called_once_with('GET', '/repos/schlange-sandbox/schlange-e2e-isolated')
+        human.reset_mock()
+        installation['account']['login'] = 'other-org'
+        with self.assertRaises(RuntimeError):
+            driver.install_isolated_app(human, 'queue', 42, 10, installation)
+        human.call.assert_not_called()
+
+    def test_install_isolated_fails_closed_on_permission_error(self):
+        human = unittest.mock.Mock()
+        human.call.side_effect = RuntimeError('HTTP 403')
+        installation = {'id': 9, 'app_id': 10, 'account': {'login': 'schlange-sandbox'},
+                        'repository_selection': 'selected'}
+        with patch.object(driver, 'installation_client') as scoped:
+            with self.assertRaisesRegex(RuntimeError, 'installation repository access write'):
+                driver.install_isolated_app(human, 'queue', 42, 10, installation)
+            scoped.assert_not_called()
+        human.call.assert_called_once()
+
+    def test_install_existing_all_access_does_not_expand_selection(self):
+        human = unittest.mock.Mock()
+        scoped = unittest.mock.Mock()
+        scoped.call.return_value = {'full_name': 'schlange-sandbox/schlange-e2e-isolated'}
+        installation = {'id': 9, 'app_id': 10, 'account': {'login': 'schlange-sandbox'},
+                        'repository_selection': 'all'}
+        with patch.object(driver, 'installation_client', return_value=scoped):
+            driver.install_isolated_app(human, 'queue', 42, 10, installation)
+        human.call.assert_not_called()
+
+    def test_unchanged_installation_is_accepted_only_after_scoped_read(self):
+        human = unittest.mock.Mock()
+        human.call.side_effect = RuntimeError('HTTP 304')
+        scoped = unittest.mock.Mock()
+        scoped.call.return_value = {'full_name': 'schlange-sandbox/schlange-e2e-isolated'}
+        installation = {'id': 9, 'app_id': 10, 'account': {'login': 'schlange-sandbox'},
+                        'repository_selection': 'selected'}
+        with patch.object(driver, 'installation_client', return_value=scoped):
+            driver.install_isolated_app(human, 'queue', 42, 10, installation)
+        scoped.call.assert_called_once()
+
+    def test_doctor_fails_when_app_cannot_access_selected_repo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)
+            (config / 'apps').mkdir()
+            for role in ('queue', 'driver'):
+                (config / 'apps' / f'{role}.json').write_text('{}')
+            client = unittest.mock.Mock()
+            client.call.side_effect = lambda method, path, *args, **kwargs: (
+                {'id': 9} if path.endswith('/installation') else
+                {'repositories': [{'name': 'schlange-e2e'}]} if path == '/installation/repositories' else
+                {'token': 'test-token'})
+            client.paged.return_value = [{'name': 'schlange-e2e'}]
+            with patch.object(driver, 'CONFIG_DIR', config), patch.object(driver, 'Client', return_value=client), \
+                 patch.object(driver, 'app_jwt', return_value='test-jwt'):
+                with self.assertRaises(SystemExit) as result:
+                    driver.cmd_doctor(unittest.mock.Mock(org='schlange-sandbox', repo='schlange-e2e-isolated'))
+            self.assertEqual(result.exception.code, 1)
+
+    def test_human_client_requires_sandbox_scoped_token(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(driver, 'CONFIG_DIR', Path(directory)), \
+             patch.dict(driver.os.environ, {}, clear=True), \
+             patch.object(driver.subprocess, 'run') as run:
+            with self.assertRaises(RuntimeError):
+                driver.human_client().token()
+            run.assert_not_called()
+
     def test_open_pr_inventory_reports_only_structured_sandbox_facts(self):
         client = unittest.mock.Mock()
         client.paged.return_value = [

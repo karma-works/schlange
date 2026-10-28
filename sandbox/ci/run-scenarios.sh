@@ -11,16 +11,19 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 repo="${1:?repo}"; shift
-case "$repo" in queue-lab|schlange-e2e) ;; *) echo "::error::refused: $repo is not a sandbox repository"; exit 1;; esac
+case "$repo" in queue-lab|schlange-e2e|schlange-e2e-isolated) ;; *) echo "::error::refused: $repo is not a sandbox repository"; exit 1;; esac
 [ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo "::error::refused: only the organisation schlange-sandbox"; exit 1; }
 if [ "${1:-all}" = all ]; then
   set --
   for f in "$HERE"/scenarios/*.json; do set -- "$@" "$(basename "$f" .json)"; done
 fi
+for s in "$@"; do
+  [[ "$s" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::invalid scenario name"; exit 1; }
+done
 
 # A compatibility run without reference evidence is not a passing comparison. Check all
 # selected baselines before starting any scenarios; queue-lab remains the recording path.
-if [ "$repo" = schlange-e2e ]; then
+if [ "$repo" = schlange-e2e ] || [ "$repo" = schlange-e2e-isolated ]; then
   missing=0
   for s in "$@"; do
     if [ ! -f "$HERE/baselines/$s.json" ]; then
@@ -33,7 +36,7 @@ fi
 
 # schlange-e2e is Schlange's compatibility test: `schlange serve` must be running
 # (sandbox/ci/start-schlange.sh in the workflow, or by hand with SCHLANGE_URL set).
-if [ "$repo" = schlange-e2e ] && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8080}/healthz" >/dev/null 2>&1; then
+if { [ "$repo" = schlange-e2e ] || [ "$repo" = schlange-e2e-isolated ]; } && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8080}/healthz" >/dev/null 2>&1; then
   echo "::error::schlange-e2e needs schlange serve running with the queue app (sandbox/ci/start-schlange.sh)."
   exit 1
 fi

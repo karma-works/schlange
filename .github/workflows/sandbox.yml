@@ -19,7 +19,7 @@ on:
       repo:
         description: Sandbox repo
         type: choice
-        options: [queue-lab, schlange-e2e]
+        options: [queue-lab, schlange-e2e, schlange-e2e-isolated]
         default: queue-lab
       scenarios:
         description: Scenarios (file names without .json, separated by spaces) or all
@@ -33,6 +33,11 @@ on:
         description: Report structured open-PR facts without changing the sandbox
         type: boolean
         default: false
+      isolated_setup:
+        description: Provision only the disposable E2E repo, or resume a verified partial setup
+        type: choice
+        options: [none, create, resume]
+        default: none
   schedule:
     # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.
     - cron: '17 2 * * 0'
@@ -61,34 +66,54 @@ jobs:
           SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
         run: bash sandbox/ci/write-config.sh
+      - name: Provision disposable E2E repository only
+        if: ${{ inputs.isolated_setup && inputs.isolated_setup != 'none' }}
+        env:
+          GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          REPO: ${{ inputs.repo }}
+          SETUP: ${{ inputs.isolated_setup }}
+          INSPECT: ${{ inputs.inspect_only }}
+          UPDATE: ${{ inputs.update_fixture }}
+        run: bash sandbox/ci/provision-isolated.sh "$REPO" "$SETUP" "$INSPECT" "$UPDATE"
       - name: Reset selected sandbox fixture
-        if: ${{ inputs.update_fixture && !inputs.inspect_only }}
+        if: ${{ inputs.update_fixture && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
           GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo }}
         run: bash sandbox/ci/prepare-fixture.sh "$REPO"
       - name: Inspect open pull requests
-        if: ${{ inputs.inspect_only }}
+        if: ${{ inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
         run: python3 -I sandbox/driver/sandbox.py inspect-open --repo "$REPO"
       - name: Rust toolchain and cache (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
       - name: Build schlange (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: |
           tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see CI job mergify-drift)"
           cargo build --release --locked -p schlange
+      - name: Ensure disposable repository has no open pull requests
+        if: ${{ inputs.repo == 'schlange-e2e-isolated' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+        run: python3 -I sandbox/driver/sandbox.py wait-idle --repo schlange-e2e-isolated --all-open
+      - name: Verify apps can access disposable repository
+        if: ${{ inputs.repo == 'schlange-e2e-isolated' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        run: python3 -I sandbox/driver/sandbox.py doctor --repo schlange-e2e-isolated
       - name: Start schlange serve (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        env:
+          SANDBOX_REPO: ${{ inputs.repo }}
         run: bash sandbox/ci/start-schlange.sh target/release/schlange
       - name: State of the sandbox
-        if: ${{ !inputs.inspect_only }}
+        if: ${{ !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
         run: python3 -I sandbox/driver/sandbox.py doctor
@@ -97,7 +122,7 @@ jobs:
           python3 -I -m unittest discover -s sandbox/driver -p 'test_*.py'
           python3 -I -m unittest discover -s sandbox/ci/tests -p 'test_*.py'
       - name: Scenarios
-        if: ${{ !inputs.inspect_only }}
+        if: ${{ !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
@@ -108,7 +133,7 @@ jobs:
           read -ra names <<<"$SCENARIOS"
           bash sandbox/ci/run-scenarios.sh "$REPO" "${names[@]}"
       - name: Stop schlange serve, show the end of its log
-        if: ${{ always() && inputs.repo == 'schlange-e2e' }}
+        if: ${{ always() && (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') }}
         run: |
           if [ -f "$RUNNER_TEMP/schlange.pids" ]; then xargs -r kill < "$RUNNER_TEMP/schlange.pids" || true; fi
           # The log mentions pull request titles and bodies: the public job log gets only

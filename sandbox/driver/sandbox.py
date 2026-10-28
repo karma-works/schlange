@@ -57,6 +57,8 @@ QUEUE_PREFIX = "mergify/merge-queue/"
 # organisation is fixed; SANDBOX_ORG and --org can only repeat it.
 ALLOWED_ORG = "schlange-sandbox"
 DEFAULT_ORG = os.environ.get("SANDBOX_ORG", ALLOWED_ORG)
+ALLOWED_REPOS = ("queue-lab", "schlange-e2e", "schlange-e2e-isolated")
+ACTIVE_REPOS = ("schlange-e2e", "schlange-e2e-isolated")
 
 
 def die(msg):
@@ -187,7 +189,7 @@ class Client:
             page += 1
 
 
-def installation_client(role, owner=None):
+def installation_client(role, owner=None, repo=None):
     meta = app_meta(role)
     owner = owner or meta["owner"]
     kind = "orgs" if meta["owner_type"] == "org" else "users"
@@ -197,7 +199,8 @@ def installation_client(role, owner=None):
         inst = jwt.call("GET", f"/{kind}/{owner}/installation", ok404=True)
         if not inst:
             die(f'App "{role}" is not installed at {owner}: {meta["html_url"]}/installations/new')
-        tok = jwt.call("POST", f"/app/installations/{inst['id']}/access_tokens")
+        body = {"repositories": [repo]} if repo else None
+        tok = jwt.call("POST", f"/app/installations/{inst['id']}/access_tokens", body)
         return tok["token"], 3000
 
     return Client(fetch, role)
@@ -213,12 +216,10 @@ def secret(env, filename):
 
 def human_client():
     # Fine-grained token of karma-works, valid only for repos of schlange-sandbox.
-    # Falling back to the gh login happens only locally and with a warning: it may do more than the sandbox.
     def fetch():
         tok = secret("SANDBOX_HUMAN_TOKEN", "human-token")
         if not tok:
-            print("Warning: no sandbox token (human-token), using the gh login", file=sys.stderr)
-            tok = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True).stdout.strip()
+            raise RuntimeError("sandbox-scoped human token is required")
         return tok, 10 ** 9
 
     return Client(fetch, "human")
@@ -289,7 +290,7 @@ class Run:
         self.scenario = scenario
         self.run_id = out_dir.name
         self.out = out_dir
-        self.actors = {"driver": installation_client("driver", org), "human": human_client()}
+        self.actors = {"driver": installation_client("driver", org, repo), "human": human_client()}
         self.prs = {}  # key -> {"number", "branch"}
         self.prepared = {}  # branches created before opening their pull requests
         self.checkpoints = []
@@ -604,6 +605,8 @@ def public_record_summary(summary):
 
 def record(out):
     state = json.loads((out / "run.json").read_text())
+    if state.get("org") != ALLOWED_ORG or state.get("repo") not in ALLOWED_REPOS:
+        raise RuntimeError("recording is outside the allowed sandbox repositories")
     c = human_client()
     r = f"/repos/{state['org']}/{state['repo']}"
     trace = {"run": state, "recorded": now_iso(), "prs": {}, "queue_prs": [], "main": []}
@@ -642,7 +645,7 @@ def record(out):
                f"&received_from={state['started']}")
         trace["mergify_events"] = fetch_events(m, url)
     # Schlange's event log (schlange-e2e): the same format, from its admin API in the runner.
-    sc, base = schlange_client() if state["repo"] == "schlange-e2e" else (None, None)
+    sc, base = schlange_client() if state["repo"] in ACTIVE_REPOS else (None, None)
     if sc:
         url = (f"{base}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
                f"&received_from={state['started']}")
@@ -711,9 +714,9 @@ def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_ob
     if not isinstance(exp, dict) or not isinstance(act, dict):
         print("DEVIATION\n  outcome is not an object")
         return 1
-    strict_observation = strict_observation or act.get("repo") == "schlange-e2e"
+    strict_observation = strict_observation or act.get("repo") in ACTIVE_REPOS
     if strict_observation:
-        if (act.get("repo") != "schlange-e2e" or not isinstance(exp.get("prs"), dict)
+        if (act.get("repo") not in ACTIVE_REPOS or not isinstance(exp.get("prs"), dict)
                 or not exp["prs"] or not isinstance(act.get("prs"), dict) or not act["prs"]
                 or not all(isinstance(k, str) and isinstance(v, dict)
                            for prs in (exp["prs"], act["prs"]) for k, v in prs.items())
@@ -816,9 +819,11 @@ def wait_idle(org, repo, timeout, all_open=False):
 
 
 def cmd_run(a):
+    if a.repo == "schlange-e2e-isolated" and a.no_wait:
+        die("the disposable repository always requires an all-open idle check")
     scenario = json.loads(Path(a.scenario).read_text())
     if not a.no_wait:
-        wait_idle(a.org, a.repo, a.idle_timeout)
+        wait_idle(a.org, a.repo, a.idle_timeout, all_open=a.repo == "schlange-e2e-isolated")
     run_id = f"{scenario['id'].lower()}-{a.repo}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     out = RUNS / run_id
     out.mkdir(parents=True)
@@ -838,7 +843,7 @@ def cmd_run(a):
     if a.baseline:
         expected_prs = {step["open"] for step in scenario["steps"] if "open" in step}
         sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json",
-                                  strict_observation=a.repo == "schlange-e2e", expected_prs=expected_prs))
+                                  strict_observation=a.repo in ACTIVE_REPOS, expected_prs=expected_prs))
 
 
 def cleanup(org, repo, prefix="sbx/"):
@@ -874,9 +879,12 @@ def cmd_doctor(a):
                 ok = False
                 continue
             tok = jwt.call("POST", f"/app/installations/{inst['id']}/access_tokens")["token"]
-            repos = Client(lambda t=tok: (t, 3000), role).call("GET", "/installation/repositories")
-            names = sorted(x["name"] for x in repos["repositories"])
+            repos = Client(lambda t=tok: (t, 3000), role).paged("/installation/repositories")
+            names = sorted(x["name"] for x in repos)
             print(f"→ App {role} installed, repos: {', '.join(names) or '–'}")
+            if getattr(a, "repo", None) and a.repo not in names:
+                print(f"☐ App {role} cannot access {a.repo}")
+                ok = False
         except Exception as e:  # noqa: BLE001
             print(f"☐ App {role}: {e}")
             ok = False
@@ -887,13 +895,46 @@ def cmd_token(a):
     print(installation_client(a.role, a.org).token())
 
 
+def install_isolated_app(human, role, repo_id, app_id, installation):
+    """Grant one named disposable repository to one verified sandbox app installation."""
+    if (not isinstance(repo_id, int) or repo_id <= 0 or not isinstance(app_id, int)
+            or installation.get("app_id") != app_id
+            or (installation.get("account") or {}).get("login") != ALLOWED_ORG
+            or not isinstance(installation.get("id"), int)
+            or installation.get("repository_selection") not in ("selected", "all")):
+        raise RuntimeError(f"{role}: unexpected sandbox installation identity")
+    if installation["repository_selection"] == "selected":
+        try:
+            human.call("PUT", f"/user/installations/{installation['id']}/repositories/{repo_id}", retry=False)
+        except RuntimeError as e:
+            if "HTTP 304" not in str(e):
+                raise RuntimeError(f"{role}: cannot grant the isolated repository; token needs installation repository access write and repository admin: {e}") from None
+    scoped = installation_client(role, ALLOWED_ORG, "schlange-e2e-isolated")
+    repo = scoped.call("GET", "/repos/schlange-sandbox/schlange-e2e-isolated")
+    if repo.get("full_name") != "schlange-sandbox/schlange-e2e-isolated":
+        raise RuntimeError(f"{role}: scoped installation token cannot access the isolated repository")
+
+
+def cmd_install_isolated(a):
+    human = human_client()
+    repo = human.call("GET", "/repos/schlange-sandbox/schlange-e2e-isolated")
+    if repo.get("full_name") != "schlange-sandbox/schlange-e2e-isolated":
+        raise RuntimeError("unexpected isolated repository identity")
+    for role in ("queue", "driver"):
+        meta = app_meta(role)
+        jwt = Client(lambda r=role: (app_jwt(r), 500), role)
+        installation = jwt.call("GET", "/orgs/schlange-sandbox/installation")
+        install_isolated_app(human, role, repo["id"], meta["id"], installation)
+        print(f"→ App {role} can access the isolated repository")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--org", default=DEFAULT_ORG)
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("scenario")
-    r.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
+    r.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
     r.add_argument("--baseline", help="outcome.json as the baseline; exit 1 on deviation")
     r.add_argument("--no-wait", action="store_true", help="do not wait until the repo is free")
     r.add_argument("--keep", action="store_true", help="do not close open scenario PRs after the run")
@@ -907,12 +948,14 @@ def main():
     c.add_argument("--strict-observation", action="store_true", help="require complete Schlange compatibility evidence")
     sub.add_parser("reset").add_argument("--repo", required=True)
     idle = sub.add_parser("wait-idle")
-    idle.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
+    idle.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
     idle.add_argument("--timeout", type=int, default=1800)
     idle.add_argument("--all-open", action="store_true", help="wait for every open pull request")
     inspect = sub.add_parser("inspect-open")
-    inspect.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
-    sub.add_parser("doctor")
+    inspect.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
+    doctor = sub.add_parser("doctor")
+    doctor.add_argument("--repo", choices=ALLOWED_REPOS)
+    sub.add_parser("install-isolated")
     sub.add_parser("token").add_argument("role", choices=["queue", "driver", "shadow"])
     # also allow --org after the subcommand
     for sp in sub.choices.values():
@@ -920,14 +963,14 @@ def main():
     a = p.parse_args()
     if getattr(a, "org", ALLOWED_ORG) != ALLOWED_ORG:
         sys.exit(f"Refused: only the organisation {ALLOWED_ORG} may be used, not {a.org}")
-    if getattr(a, "repo", None) not in (None, "queue-lab", "schlange-e2e"):
+    if getattr(a, "repo", None) not in (None, *ALLOWED_REPOS):
         sys.exit(f"Refused: unknown sandbox repository {a.repo}")
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "wait-idle": lambda a: wait_idle(a.org, a.repo, a.timeout, all_open=a.all_open),
      "inspect-open": lambda a: print(json.dumps(open_pr_inventory(a.org, a.repo))),
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),
-     "doctor": cmd_doctor, "token": cmd_token}[a.cmd](a)
+     "doctor": cmd_doctor, "token": cmd_token, "install-isolated": cmd_install_isolated}[a.cmd](a)
 
 
 if __name__ == "__main__":
