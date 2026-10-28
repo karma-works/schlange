@@ -1,0 +1,25 @@
+# Dependabot: a major update is not queued by a rule; a minor one is (no KI-Review needed).
+name: a2-dependabot
+description: dependabot major waits, minor lands
+config: /home/ubuntu/Projects/schlange/.claude/worktrees/agent-ae7a951a5462d5f29/crates/schlange-config/tests/golden/arztagent.yml
+ci:
+  - { check: Risk class and data protection, duration: 1m }
+  - { check: ci-ok, duration: 3m, runs_on: pull_request }
+  - { check: ci-ok, duration: 20m, runs_on: queue }
+pull_requests:
+  - number: 1
+    author: "dependabot[bot]"
+    title: "Bump x from 1.0.0 to 2.0.0"
+    dependabot_update_type: version-update:semver-major
+    files: { package.json: "x2\n" }
+  - number: 2
+    author: "dependabot[bot]"
+    title: "Bump y from 1.0.0 to 1.1.0"
+    dependabot_update_type: version-update:semver-minor
+    files: { package-lock.json: "y\n" }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+expect:
+  - { pr: 1, state: open }
+  - { pr: 2, state: merged }
