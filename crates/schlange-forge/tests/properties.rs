@@ -268,13 +268,6 @@ fn settings() -> impl Strategy<Value = Settings> {
                 } else {
                     mode
                 };
-                // An accepted `allow_queue_branch_edit` (only with a method that lands the batch
-                // branch) is not modelled by the simulation's invariant checker: the engine
-                // lands the edited head, whose tree the car record does not know (the long
-                // run found the false alarm). The option is deprecated and Arztagent does not
-                // use it; with the other methods the engine refuses the edit, which stays
-                // generated (`queue-branch-edit`, `allow-true`).
-                let branch_edit = branch_edit && !matches!(method, "fast-forward" | "merge-batch");
                 Settings {
                     batch,
                     max_parallel,
@@ -1308,4 +1301,82 @@ fn a_landing_in_flight_is_resolved_while_another_batch_is_split() {
         v.join("\n"),
         &log[log.len().saturating_sub(3000)..]
     );
+}
+
+/// `allow_queue_branch_edit` with `fast-forward`: someone pushes to the queue branch, the
+/// engine accepts the edit (the option is on and the method lands the batch branch), the full
+/// suite runs on the pushed head and the base moves onto that head. Found by the long run as
+/// a false alarm because the checker did not model the accepted edit; it now judges the
+/// conditions on the pushed head (the tested one) and still rejects any other head.
+#[test]
+fn an_accepted_queue_branch_edit_lands_the_tested_pushed_head() {
+    let p = Plan {
+        settings: Settings {
+            batch: (1, None),
+            max_parallel: 1,
+            limit: None,
+            timeout: false,
+            single_step: false,
+            wip: false,
+            never: false,
+            retries: 0,
+            branch_edit: true,
+            auto: false,
+            actions: vec![(2, 15)],
+            method: "fast-forward",
+            mode: "serial",
+            priority: false,
+            interrupt: false,
+            skip: false,
+            two_queues: false,
+        },
+        prs: vec![
+            PrPlan {
+                path: 3,
+                marker: 4,
+                open_at: 190,
+            },
+            PrPlan {
+                path: 1,
+                marker: 0,
+                open_at: 526,
+            },
+        ],
+        humans: vec![
+            (2131, Human::Label(0, false)),
+            (2127, Human::Ready(5)),
+            (1723, Human::MergeByHand(0)),
+            (1806, Human::PushQueueBranch(5)),
+        ],
+        flake: false,
+        faults: Faults {
+            seed: 6000974952711176985,
+            drop: 0.3857031041458116,
+            duplicate: 0.0,
+            delay: 0.5210667255342157,
+            max_delay: 29,
+            reconcile_every: 82,
+        },
+    };
+    let f = ForgeFaults {
+        seed: 451488571871557764,
+        reply_drop: 0.26284221292196364,
+        reply_duplicate: 0.26977338074667145,
+        reply_delay: 0.5553156868602491,
+        max_reply_delay: 17,
+        error: 0.07158703147447104,
+        lie: 0.1734150347886952,
+        base_race: 0.22457049035173582,
+        stale_read: 0.4090975662630477,
+        max_lag: 4,
+        ci: schlange_forge::sim::CiTiming {
+            seed: 451488571871557764,
+            jitter: 0.3352934974795721,
+            max_create_delay: 18,
+            max_cancel_delay: 61,
+        },
+    };
+    let crash = CrashPlan::random(f.seed, 0.0, 4);
+    let (v, _sim, log) = outcome_of(&scenario(&p), p.faults.clone(), Some(f), Some(crash));
+    assert!(v.is_empty(), "{}\n{}", v.join("\n"), log);
 }
