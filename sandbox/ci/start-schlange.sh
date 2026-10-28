@@ -52,16 +52,28 @@ fi
 # Diagnostics for a run that does not queue anything: what the queue and `explain` say a few
 # minutes into the scenario, for the pull requests that exist then. Printed by the stop step.
 (
-  for round in 1 2; do
-    sleep 240
+  for round in 1 2 3; do
+    sleep 150
     {
-      echo "== probe $round: GET /status"
-      curl -fsS -H "Authorization: Bearer $(cat "$TMP/admin-token")" "http://127.0.0.1:$PORT/status" | head -c 4000
-      echo
+      echo "== probe $round"
+      curl -sS -H "Authorization: Bearer $(cat "$TMP/admin-token")" "http://127.0.0.1:$PORT/status" \
+        | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+for repo, w in d.items():
+    st = w.get("state", {})
+    prs = st.get("pull_requests", {})
+    print(repo, "queued", w.get("queued"), "cars", w.get("cars"), "config_error", w.get("config_error"))
+    print("holds", json.dumps(st.get("holds"))[:800])
+    if prs:
+        n = max(prs, key=int)
+        print("newest pull request", n, json.dumps(prs[n])[:2500])
+' 2>&1
       for n in $(seq 1 40); do
-        out=$(curl -fsS -H "Authorization: Bearer $(cat "$TMP/admin-token")" \
-          "http://127.0.0.1:$PORT/repos/$REPO/pulls/$n/explain" 2>/dev/null) || continue
-        echo "-- explain #$n"; echo "$out" | head -c 1500; echo
+        code=$(curl -sS -o "$TMP/explain.out" -w '%{http_code}' -H "Authorization: Bearer $(cat "$TMP/admin-token")" \
+          "http://127.0.0.1:$PORT/repos/$REPO/pulls/$n/explain" 2>&1) || continue
+        [ "$code" = 200 ] || continue
+        echo "-- explain #$n"; head -c 1800 "$TMP/explain.out"; echo
       done
     } >> "$TMP/probe.log" 2>&1
   done
