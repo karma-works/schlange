@@ -26,6 +26,9 @@ Scenario format (JSON), steps in order:
   {"wait": "merged"|"closed"|"done"|"queued", "prs": ["a"], "timeout": 2400}
   {"wait": "quiet", "seconds": 300, "timeout": 2400}   no activity on the PRs
   {"assert_unqueued": "a"}                            open and never entered the queue
+  {"dispatch_workflow": "name.yml", "pr": "a", "ref": "pr"|"main", "inputs": {"pr": "{pr}"}}
+  {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "after_checkpoint": true}
+  {"assert_check_pair": "a", "name": "ci-ok", "distinct_suites": true}
 Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
 
@@ -64,6 +67,45 @@ def log(msg):
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def workflow_check_identity(client, repo_path, check, workflow, event, head, started):
+    """Verify an Actions job's check association; never retain a supplied URL."""
+    prefix = repo_path.removeprefix('/repos/')
+    match = re.fullmatch(r"https://github\.com/" + re.escape(prefix)
+                         + r"/actions/runs/(\d+)/job/(\d+)", check.get("details_url") or "")
+    if not match:
+        return None
+    run_id, job_id = map(int, match.groups())
+    job = client.call("GET", f"{repo_path}/actions/jobs/{job_id}")
+    if job.get("run_id") != run_id or job.get("check_run_url") != f"{API}{repo_path}/check-runs/{check['id']}":
+        return None
+    run = client.call("GET", f"{repo_path}/actions/runs/{run_id}")
+    if (run.get("id") != run_id or run.get("path") != f".github/workflows/{workflow}"
+            or run.get("event") != event or run.get("head_sha") != head
+            or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run.get("created_at") or "")
+            or run["created_at"] < started):
+        return None
+    return run_id
+
+
+def custom_workflow_hint(client, repo_path, check, workflow, started):
+    """Validate the fixture's run link as a hint; it cannot prove check provenance."""
+    prefix = repo_path.removeprefix('/repos/')
+    match = re.fullmatch(r"https://github\.com/" + re.escape(prefix)
+                         + r"/actions/runs/(\d+)", check.get("details_url") or "")
+    if not match:
+        return None
+    run_id = int(match.group(1))
+    run = client.call("GET", f"{repo_path}/actions/runs/{run_id}")
+    if (run.get("id") != run_id or run.get("path") != f".github/workflows/{workflow}"
+            or run.get("event") != "workflow_dispatch"
+            or run.get("head_branch") != "main"
+            or (run.get("head_repository") or {}).get("full_name") != prefix
+            or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run.get("created_at") or "")
+            or run["created_at"] < started):
+        return None
+    return run_id
 
 
 # --- Access -----------------------------------------------------------------------------
@@ -105,7 +147,7 @@ class Client:
             self._expires = time.time() + ttl
         return self._token
 
-    def call(self, method, path, body=None, ok404=False, accept="application/vnd.github+json"):
+    def call(self, method, path, body=None, ok404=False, accept="application/vnd.github+json", retry=True):
         url = path if path.startswith("http") else API + path
         data = json.dumps(body).encode() if body is not None else None
         for attempt in range(5):
@@ -123,7 +165,7 @@ class Client:
                 text = e.read().decode(errors="replace")
                 if e.code == 404 and ok404:
                     return None
-                if e.code in (502, 503, 504) or (e.code in (403, 429) and "rate limit" in text.lower()):
+                if retry and (e.code in (502, 503, 504) or (e.code in (403, 429) and "rate limit" in text.lower())):
                     time.sleep(2 ** attempt * 5)
                     continue
                 raise RuntimeError(f"{self.label}: {method} {path} → HTTP {e.code}") from None
@@ -355,6 +397,74 @@ class Run:
         self.save_state()
         log("Commit directly on main (admin bypass)")
 
+    def step_dispatch_workflow(self, s):
+        workflow = s["dispatch_workflow"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow):
+            raise ValueError("invalid workflow filename")
+        pr = self.prs[s["pr"]]
+        ref = {"pr": pr["branch"], "main": "main"}[s["ref"]]
+        inputs = {k: v.replace("{pr}", str(pr["number"])) for k, v in s.get("inputs", {}).items()}
+        started = now_iso()
+        self.actor(s).call("POST", f"{self.r}/actions/workflows/{workflow}/dispatches",
+                           {"ref": ref, "inputs": inputs}, retry=False)
+        self.checkpoints.append({"kind": "dispatch", "at": started, "workflow": workflow, "pr": s["pr"]})
+        log(f"Dispatched {workflow} for PR #{pr['number']}")
+
+    def step_wait_check(self, s):
+        key, name = s["wait_check"], s["name"]
+        previous = max((c["id"] for c in self.checkpoints if c.get("kind") == "check"
+                        and c.get("pr") == key and c.get("name") == name), default=0)
+        floor = previous if s.get("after_checkpoint") else 0
+        client = self.actors["human"]
+        deadline = time.time() + s.get("timeout", 2400)
+        while time.time() < deadline:
+            pr = client.call("GET", f"{self.r}/pulls/{self.prs[key]['number']}")
+            head = pr["head"]["sha"]
+            checks = client.paged(f"{self.r}/commits/{head}/check-runs?filter=all")
+            matches = [c for c in checks if c.get("name") == name and c.get("head_sha") == head and c.get("id", 0) > floor
+                       and c.get("status") == "completed" and c.get("conclusion") == s["conclusion"]]
+            for check in sorted(matches, key=lambda c: c["id"], reverse=True):
+                run_id = None
+                if s.get("workflow"):
+                    dispatches = [c for c in self.checkpoints if c.get("kind") == "dispatch"
+                                  and c.get("pr") == key and c.get("workflow") == s["workflow"]]
+                    if not dispatches:
+                        raise RuntimeError("workflow check requires a dispatch checkpoint")
+                    if s.get("custom"):
+                        run_id = custom_workflow_hint(client, self.r, check, s["workflow"], dispatches[-1]["at"])
+                    else:
+                        run_id = workflow_check_identity(client, self.r, check, s["workflow"],
+                                                         "workflow_dispatch", head, dispatches[-1]["at"])
+                    if run_id is None:
+                        continue
+                self.checkpoints.append({"kind": "check", "at": now_iso(), "pr": key, "name": name,
+                    "id": check["id"], "head": head, "conclusion": check["conclusion"],
+                    "app": "github-actions" if (check.get("app") or {}).get("slug") == "github-actions" else None,
+                    "suite_id": (check.get("check_suite") or {}).get("id"),
+                    "workflow_run_id": run_id})
+                log(f"Check {name} on PR {key}: {check['conclusion']} (id {check['id']})")
+                return
+            time.sleep(10)
+        self.timed_out = True
+        self.save_state()
+        raise RuntimeError(f"timeout waiting for {name} on {key}; subsequent steps were not run")
+
+    def step_assert_check_pair(self, s):
+        checks = [c for c in self.checkpoints if c.get("kind") == "check"
+                  and c.get("pr") == s["assert_check_pair"] and c.get("name") == s["name"]]
+        if len(checks) < 2:
+            raise RuntimeError("two check checkpoints are required")
+        red, green = checks[-2:]
+        if (red.get("conclusion"), green.get("conclusion")) != ("failure", "success") or \
+           not red.get("head") or red.get("head") != green.get("head") or \
+           red.get("app") != "github-actions" or green.get("app") != "github-actions" or \
+           green["id"] <= red["id"]:
+            raise RuntimeError("check pair does not establish failure then success from the same app and head")
+        if s.get("distinct_suites") and (not red.get("suite_id") or not green.get("suite_id")
+                                          or red["suite_id"] == green["suite_id"]):
+            raise RuntimeError("check pair does not establish distinct suites")
+        log(f"Check pair confirmed on {red['head']}: {red['id']} then {green['id']}")
+
     def queue_activity(self):
         h = self.actors["human"]
         pulls = h.call("GET", f"{self.r}/pulls?state=open&per_page=100")
@@ -434,7 +544,8 @@ class Run:
         (self.out / "scenario.json").write_text(json.dumps(self.scenario, indent=2, ensure_ascii=False))
         for s in self.scenario["steps"]:
             kind = next(k for k in ("open", "push", "comment", "label", "ready", "draft", "edit_body",
-                                    "close", "main_commit", "sleep", "wait", "assert_unqueued") if k in s)
+                                    "close", "main_commit", "sleep", "wait", "assert_unqueued",
+                                    "dispatch_workflow", "wait_check", "assert_check_pair") if k in s)
             if kind == "sleep":
                 time.sleep(s["sleep"])
             else:

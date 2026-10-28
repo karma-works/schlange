@@ -91,9 +91,9 @@ then install) → `setup.sh repos` → install Mergify → `setup.sh check`.
 label `halt`, `QUEUE_BOT_LOGIN` and the ruleset. `setup.sh fixture` rewrites the fixture on
 `main`; this resets the content.
 
-For the Actions `update_fixture` input, the workflow first waits for `schlange-e2e` to be
-idle and then replaces all tracked files on its `main` branch with the fixture. This removes
-previously merged scenario files; it is only for that disposable repository. The workflow's
+For the Actions `update_fixture` input, the workflow first waits for the selected sandbox
+repository to be idle and then replaces all tracked files on its `main` branch with the fixture.
+This removes previously merged scenario files; it is only for these disposable repositories. The workflow's
 concurrency group prevents overlapping Actions runs on the same repository, but the idle
 check and push are not atomic against a separately started local run.
 

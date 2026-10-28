@@ -7,6 +7,7 @@
 #   bash sandbox/setup.sh repos       # create repos, fixture, labels, variables, rulesets
 #   bash sandbox/setup.sh fixture     # rewrite the fixture on main (after changes)
 #   bash sandbox/setup.sh fixture-e2e # rewrite only schlange-e2e's fixture
+#   bash sandbox/setup.sh fixture-lab # rewrite only queue-lab's fixture
 #   bash sandbox/setup.sh all         # smee, apps, repos in turn
 #
 # Options: --dry-run (only show). Environment: SANDBOX_ORG (default schlange-sandbox).
@@ -247,6 +248,7 @@ main() {
     repos) preflight; cmd_repos ;;
     fixture) preflight; cmd_fixture ;;
     fixture-e2e) preflight; push_fixture "$E2E" "Update sandbox fixture" ;;
+    fixture-lab) preflight; push_fixture "$LAB" "Update sandbox fixture" ;;
     all) preflight; cmd_smee; cmd_apps; cmd_repos ;;
     *) sed -n '2,13p' "$0"; exit 2 ;;
   esac

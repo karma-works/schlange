@@ -26,7 +26,7 @@ on:
         required: false
         default: s01-single-pr
       update_fixture:
-        description: Reset tracked schlange-e2e main files to the fixture after it is idle
+        description: Reset tracked sandbox main files to the fixture after it is idle
         type: boolean
         default: false
   schedule:
@@ -57,7 +57,7 @@ jobs:
           SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
         run: bash sandbox/ci/write-config.sh
-      - name: Update schlange-e2e fixture
+      - name: Reset selected sandbox fixture
         if: ${{ inputs.update_fixture }}
         env:
           GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}

@@ -34,6 +34,13 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('private upstream response', str(caught.exception))
         self.assertIn('400', str(caught.exception))
 
+    def test_dispatch_http_failure_is_not_retried(self):
+        error = driver.urllib.error.HTTPError('https://example.invalid', 502, 'bad', {}, io.BytesIO(b''))
+        with patch.object(driver.urllib.request, 'urlopen', side_effect=error) as urlopen:
+            with self.assertRaises(RuntimeError):
+                driver.Client(lambda: ('token', 100), 'test').call('POST', '/dispatch', {}, retry=False)
+        self.assertEqual(urlopen.call_count, 1)
+
     def test_public_record_summary_excludes_comment_text(self):
         summary = {'prs': {'a': {'number': 1, 'end': 'open', 'labels': [],
                                  'bot_comments': ['private upstream text']}},
@@ -152,6 +159,95 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run.step_assert_unqueued({'assert_unqueued': 'a'})
 
+    def test_dispatch_uses_pr_branch_or_main_and_resolves_pr_number(self):
+        run = object.__new__(driver.Run)
+        run.prs = {'a': {'number': 42, 'branch': 'sbx/test/a'}}
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.checkpoints = []
+        client = unittest.mock.Mock()
+        run.actor = lambda _: client
+        run.step_dispatch_workflow({'dispatch_workflow': 'check-red.yml', 'pr': 'a', 'ref': 'pr'})
+        client.call.assert_called_with('POST', run.r + '/actions/workflows/check-red.yml/dispatches',
+                                       {'ref': 'sbx/test/a', 'inputs': {}}, retry=False)
+        run.step_dispatch_workflow({'dispatch_workflow': 'ai-review.yml', 'pr': 'a', 'ref': 'main',
+                                    'inputs': {'pr': '{pr}'}})
+        client.call.assert_called_with('POST', run.r + '/actions/workflows/ai-review.yml/dispatches',
+                                       {'ref': 'main', 'inputs': {'pr': '42'}}, retry=False)
+
+    def test_wait_check_records_id_and_rejects_old_result(self):
+        run = object.__new__(driver.Run)
+        run.prs = {'a': {'number': 42}}
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.checkpoints = [{'kind': 'check', 'name': 'KI-Review', 'pr': 'a', 'id': 5}]
+        run.timed_out = False
+        run.save_state = unittest.mock.Mock()
+        client = unittest.mock.Mock()
+        client.call.return_value = {'head': {'sha': 'abc'}}
+        run.actors = {'human': client}
+        client.paged.return_value = [
+            {'id': 5, 'name': 'KI-Review', 'head_sha': 'abc', 'status': 'completed', 'conclusion': 'success'},
+            {'id': 6, 'name': 'KI-Review', 'head_sha': 'abc', 'status': 'completed', 'conclusion': 'success'},
+        ]
+        run.step_wait_check({'wait_check': 'a', 'name': 'KI-Review', 'conclusion': 'success',
+                             'after_checkpoint': True, 'timeout': 1})
+        self.assertEqual(run.checkpoints[-1]['id'], 6)
+        client.paged.return_value = client.paged.return_value[:1]
+        with self.assertRaises(RuntimeError):
+            run.step_wait_check({'wait_check': 'a', 'name': 'KI-Review', 'conclusion': 'success',
+                                 'after_checkpoint': True, 'timeout': 0})
+        self.assertTrue(run.timed_out)
+
+    def test_check_pair_requires_same_head_and_app_and_distinct_suites(self):
+        run = object.__new__(driver.Run)
+        run.checkpoints = [
+            {'kind': 'check', 'pr': 'a', 'name': 'ci-ok', 'id': 5, 'head': 'abc',
+             'app': 'github-actions', 'suite_id': 7, 'conclusion': 'failure'},
+            {'kind': 'check', 'pr': 'a', 'name': 'ci-ok', 'id': 6, 'head': 'abc',
+             'app': 'github-actions', 'suite_id': 8, 'conclusion': 'success'},
+        ]
+        run.step_assert_check_pair({'assert_check_pair': 'a', 'name': 'ci-ok', 'distinct_suites': True})
+        run.checkpoints[-1]['head'] = 'other'
+        with self.assertRaises(RuntimeError):
+            run.step_assert_check_pair({'assert_check_pair': 'a', 'name': 'ci-ok', 'distinct_suites': True})
+        run.checkpoints[-1]['head'] = 'abc'
+        run.checkpoints[-1]['suite_id'] = 7
+        with self.assertRaises(RuntimeError):
+            run.step_assert_check_pair({'assert_check_pair': 'a', 'name': 'ci-ok', 'distinct_suites': True})
+
+    def test_workflow_check_identity_requires_real_job_and_workflow(self):
+        client = unittest.mock.Mock()
+        client.call.side_effect = [
+            {'run_id': 123, 'check_run_url': 'https://api.github.com/repos/schlange-sandbox/queue-lab/check-runs/6'},
+            {'id': 123, 'path': '.github/workflows/collision-red.yml', 'event': 'workflow_dispatch',
+             'head_sha': 'abc', 'created_at': '2026-01-01T00:00:01Z'},
+        ]
+        check = {'id': 6, 'details_url': 'https://github.com/schlange-sandbox/queue-lab/actions/runs/123/job/456'}
+        self.assertEqual(driver.workflow_check_identity(client, '/repos/schlange-sandbox/queue-lab', check,
+                         'collision-red.yml', 'workflow_dispatch', 'abc', '2026-01-01T00:00:00Z'), 123)
+        check['details_url'] = 'https://evil.invalid/schlange-sandbox/queue-lab/actions/runs/123/job/456'
+        self.assertIsNone(driver.workflow_check_identity(client, '/repos/schlange-sandbox/queue-lab', check,
+                          'collision-red.yml', 'workflow_dispatch', 'abc', '2026-01-01T00:00:00Z'))
+        check['details_url'] = 'https://github.com/schlange-sandbox/queue-lab/actions/runs/123/job/456'
+        client.call.side_effect = [
+            {'run_id': 123, 'check_run_url': 'https://api.github.com/repos/schlange-sandbox/queue-lab/check-runs/6'},
+            {'id': 123, 'path': '.github/workflows/collision-green.yml', 'event': 'workflow_dispatch',
+             'head_sha': 'abc', 'created_at': '2026-01-01T00:00:01Z'},
+        ]
+        self.assertIsNone(driver.workflow_check_identity(client, '/repos/schlange-sandbox/queue-lab', check,
+                          'collision-red.yml', 'workflow_dispatch', 'abc', '2026-01-01T00:00:00Z'))
+
+    def test_custom_check_records_only_validated_manual_run_hint(self):
+        client = unittest.mock.Mock()
+        client.call.return_value = {'id': 123, 'path': '.github/workflows/ai-review.yml',
+                                    'event': 'workflow_dispatch', 'head_branch': 'main',
+                                    'head_repository': {'full_name': 'schlange-sandbox/queue-lab'},
+                                    'created_at': '2026-01-01T00:00:01Z'}
+        check = {'id': 6, 'details_url': 'https://github.com/schlange-sandbox/queue-lab/actions/runs/123'}
+        self.assertEqual(driver.custom_workflow_hint(client, '/repos/schlange-sandbox/queue-lab', check,
+                         'ai-review.yml', '2026-01-01T00:00:00Z'), 123)
+        check['details_url'] = 'https://evil.invalid/schlange-sandbox/queue-lab/actions/runs/123'
+        self.assertIsNone(driver.custom_workflow_hint(client, '/repos/schlange-sandbox/queue-lab', check,
+                          'ai-review.yml', '2026-01-01T00:00:00Z'))
     def test_file_contents_are_unique_per_run(self):
         run = object.__new__(driver.Run)
         run.run_id = 'run-123'
