@@ -74,7 +74,7 @@
   <img src="logo.svg" alt="Schlange logo: a snake whose segmented body is a queue of pull requests">
   <h1>Schlange</h1>
   <p class="tagline">An open-source, self-hosted merge queue that reads your existing <code>.mergify.yml</code>, so <code>main</code> stays green.</p>
-  <span class="badge">Early development · not production ready</span>
+  <span class="badge">Alpha · run it in shadow mode first</span>
   <div class="buttons">
     <a class="btn primary" href="https://github.com/karma-works/schlange">Source on GitHub</a>
     <a class="btn" href="https://github.com/karma-works/schlange#implementation-status">Implementation status</a>
@@ -119,6 +119,16 @@
   </section>
 
   <section>
+    <h2>Switch without risk</h2>
+    <p class="lead">Schlange is alpha. Adopt it the way we do for our own project: watch first, compare, then hand over.</p>
+    <ol class="steps">
+      <li><b>Shadow</b><span>A read-only GitHub App runs <code>schlange serve --shadow</code> next to your current queue. It decides, writes nothing, and records what the other queue did.</span></li>
+      <li><b>Compare</b><span><code>schlange shadow report</code> lists every pull request where the decisions differ. Fix each difference with a test; switch only after weeks without one.</span></li>
+      <li><b>Switch, keep the way back</b><span>Grant write access and pause the old queue, without uninstalling it, until Schlange has landed reliably for a while.</span></li>
+    </ol>
+  </section>
+
+  <section>
     <h2>Try it</h2>
 <pre><code>git clone https://github.com/karma-works/schlange && cd schlange
 tools/fetch-mergify-sources
@@ -129,7 +139,8 @@ target/release/schlange sim run scenarios/p1-bisection.yaml</code></pre>
 </main>
 
 <footer class="wrap">
-  Schlange is not affiliated with Mergify. Its behaviour is rebuilt from public documentation, the published schema and observed behaviour; no Mergify code or text is included. "Mergify" is a trademark of its owner.
+  Schlange is open source under the <a href="https://github.com/karma-works/schlange/blob/main/LICENSE">Apache License 2.0</a>.
+  It is not affiliated with Mergify. Its behaviour is rebuilt from public documentation, the published schema and observed behaviour; no Mergify code or text is included. "Mergify" is a trademark of its owner.
 </footer>
 </body>
 </html>

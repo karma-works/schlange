@@ -16,11 +16,14 @@
 
 **Schlange** (German for both *snake* and *queue*) tests pull requests together with the
 current `main` before they land, so `main` stays green. It is built as a drop-in replacement for
-Mergify's merge queue for one concrete project, [Arztagent](https://github.com/karma-works/arzt-agent):
-its `.mergify.yml` must keep working byte for byte.
+Mergify's merge queue for one concrete project, Arztagent, whose `.mergify.yml` must keep
+working byte for byte.
 
-> **Status: early development.** Nothing is production ready. Schlange has not yet merged a
-> pull request in a real repository; shadow mode next to Mergify is the next step.
+> **Status: alpha.** The engine, the simulated and fake-GitHub test layers and shadow mode are
+> built; no feature is accepted as conformant yet, and Schlange has not merged a pull request in
+> a production repository. Do not let it land changes on a branch you care about. Run it in
+> shadow mode next to your current merge queue first, as described in
+> [Adopting Schlange](#adopting-schlange).
 
 ## Why
 
@@ -64,6 +67,32 @@ target/release/schlange doctor
 
 Running against GitHub as an app (`schlange serve`, flags and security notes) and shadow mode
 (`--shadow`, `schlange shadow report`) are described in [AGENTS.md](AGENTS.md#schlange-serve).
+
+## Adopting Schlange
+
+A merge queue decides what reaches `main`, so switch the way we do it for Arztagent: watch
+first, compare, then hand over, and keep the old queue as the way back.
+
+1. **Validate your configuration.** `schlange config validate --strict .mergify.yml`. Exit 2
+   names every option Schlange does not support yet; resolve those before going further.
+2. **Shadow mode.** Install a GitHub App with *read-only* permissions and run
+   `schlange serve --shadow` next to your current merge queue. Schlange decides as it would,
+   writes nothing, and records what the other queue actually did. Read-only permissions make
+   this safe even if a bug or a missing flag tried to write. Nothing in your repository changes.
+3. **Compare.** `schlange shadow report` lists every pull request where Schlange decided
+   differently: queued or not, landed or not, landing order, the batch it landed in, the
+   dequeue reason (exit 1 on any disagreement).
+   Reproduce each difference as a scenario, fix it with a test, and keep comparing. Our bar:
+   two weeks of normal traffic without a differing decision.
+4. **Switch.** Grant the app write permissions, add it as a bypass actor of the branch
+   rulesets, let workflows that recognise the queue's bot accept Schlange's, then pause the
+   old queue.
+5. **Keep the way back.** Leave the old queue installed but paused until Schlange has landed
+   reliably for a few weeks.
+
+The runbook for Arztagent, including the permission set and the cut-over checklist:
+[docs/betrieb/schattenbetrieb.md](docs/betrieb/schattenbetrieb.md). The same comparison runs
+continuously in the [GitHub sandbox](docs/betrieb/sandbox.md) against Mergify.
 
 ## Testing
 
@@ -223,4 +252,4 @@ critic acceptance) apply to people and agents alike. Work on a branch and open a
 
 ## License
 
-Not decided yet. `Cargo.toml` declares `Apache-2.0`; a `LICENSE` file will follow.
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
