@@ -789,6 +789,15 @@ def slim_check(x):
 
 # --- Commands ----------------------------------------------------------------------------
 
+def open_pr_inventory(org, repo):
+    prs = human_client().paged(f"/repos/{org}/{repo}/pulls?state=open")
+    return [{"number": p["number"], "draft": bool(p["draft"]),
+             "actor": "dependabot" if (p.get("user") or {}).get("login") == "dependabot[bot]" else "other",
+             "head_kind": ("scenario" if p["head"]["ref"].startswith("sbx/") else
+                           "queue" if p["head"]["ref"].startswith(QUEUE_PREFIX) else "other")}
+            for p in prs]
+
+
 def busy(org, repo, all_open=False):
     """Open scenario or queue PRs: then something is running there (local, CI or another agent)."""
     open_prs = human_client().paged(f"/repos/{org}/{repo}/pulls?state=open")
@@ -901,6 +910,8 @@ def main():
     idle.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
     idle.add_argument("--timeout", type=int, default=1800)
     idle.add_argument("--all-open", action="store_true", help="wait for every open pull request")
+    inspect = sub.add_parser("inspect-open")
+    inspect.add_argument("--repo", required=True, choices=["queue-lab", "schlange-e2e"])
     sub.add_parser("doctor")
     sub.add_parser("token").add_argument("role", choices=["queue", "driver", "shadow"])
     # also allow --org after the subcommand
@@ -913,6 +924,7 @@ def main():
         sys.exit(f"Refused: unknown sandbox repository {a.repo}")
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "wait-idle": lambda a: wait_idle(a.org, a.repo, a.timeout, all_open=a.all_open),
+     "inspect-open": lambda a: print(json.dumps(open_pr_inventory(a.org, a.repo))),
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),
      "doctor": cmd_doctor, "token": cmd_token}[a.cmd](a)

@@ -29,6 +29,10 @@ on:
         description: Reset tracked sandbox main files to the fixture after it is idle
         type: boolean
         default: false
+      inspect_only:
+        description: Report structured open-PR facts without changing the sandbox
+        type: boolean
+        default: false
   schedule:
     # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.
     - cron: '17 2 * * 0'
@@ -58,26 +62,33 @@ jobs:
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
         run: bash sandbox/ci/write-config.sh
       - name: Reset selected sandbox fixture
-        if: ${{ inputs.update_fixture }}
+        if: ${{ inputs.update_fixture && !inputs.inspect_only }}
         env:
           GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo }}
         run: bash sandbox/ci/prepare-fixture.sh "$REPO"
+      - name: Inspect open pull requests
+        if: ${{ inputs.inspect_only }}
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          REPO: ${{ inputs.repo || 'queue-lab' }}
+        run: python3 -I sandbox/driver/sandbox.py inspect-open --repo "$REPO"
       - name: Rust toolchain and cache (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' }}
+        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        if: ${{ inputs.repo == 'schlange-e2e' }}
+        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
       - name: Build schlange (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' }}
+        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
         run: |
           tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see CI job mergify-drift)"
           cargo build --release --locked -p schlange
       - name: Start schlange serve (schlange-e2e)
-        if: ${{ inputs.repo == 'schlange-e2e' }}
+        if: ${{ inputs.repo == 'schlange-e2e' && !inputs.inspect_only }}
         run: bash sandbox/ci/start-schlange.sh target/release/schlange
       - name: State of the sandbox
+        if: ${{ !inputs.inspect_only }}
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
         run: python3 -I sandbox/driver/sandbox.py doctor
@@ -86,6 +97,7 @@ jobs:
           python3 -I -m unittest discover -s sandbox/driver -p 'test_*.py'
           python3 -I -m unittest discover -s sandbox/ci/tests -p 'test_*.py'
       - name: Scenarios
+        if: ${{ !inputs.inspect_only }}
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}

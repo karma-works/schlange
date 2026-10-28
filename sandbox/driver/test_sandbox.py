@@ -12,6 +12,18 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_open_pr_inventory_reports_only_structured_sandbox_facts(self):
+        client = unittest.mock.Mock()
+        client.paged.return_value = [
+            {'number': 1, 'draft': False, 'user': {'login': 'dependabot[bot]'}, 'head': {'ref': 'dependabot/x'}},
+            {'number': 2, 'draft': True, 'user': {'login': 'other'}, 'head': {'ref': 'sbx/run/a'}},
+        ]
+        with patch.object(driver, 'human_client', return_value=client):
+            self.assertEqual(driver.open_pr_inventory('schlange-sandbox', 'schlange-e2e'), [
+                {'number': 1, 'draft': False, 'actor': 'dependabot', 'head_kind': 'other'},
+                {'number': 2, 'draft': True, 'actor': 'other', 'head_kind': 'scenario'},
+            ])
+
     def test_wait_idle_cli_targets_only_selected_sandbox_repo(self):
         with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'schlange-e2e', '--all-open']), \
              patch.object(driver, 'wait_idle') as wait:
