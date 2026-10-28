@@ -24,6 +24,7 @@
 //! [`tester`] has a small DSL that starts the fake and `schlange serve` against it.
 
 pub mod http;
+pub mod mergify;
 pub mod tester;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,7 +111,6 @@ pub struct FakePr {
     pub assignees: Vec<String>,
     pub requested_reviewers: Vec<String>,
     pub requested_teams: Vec<String>,
-    pub merged_by: Option<String>,
 }
 
 /// A review of a pull request.
@@ -406,6 +406,11 @@ pub(crate) struct St {
     /// Pushes to branches, oldest first (`GET /activity`): GitHub records when and by whom
     /// a branch moved, which no commit metadata can fake.
     pub activity: Vec<Activity>,
+    /// Who merged each merged pull request, and when (comment clock): `merged_by`,
+    /// `merged_at`.
+    pub merged_info: BTreeMap<u64, (String, u64)>,
+    /// References outside `refs/heads/` (`refs/schlange/lease`), full name → commit.
+    pub custom_refs: BTreeMap<String, Sha>,
 }
 
 /// One entry of the repository activity (`GET /repos/{o}/{r}/activity`).
@@ -816,8 +821,9 @@ impl St {
             "assignees": pr.assignees.iter().map(|l| json!({ "login": l })).collect::<Vec<_>>(),
             "requested_reviewers": pr.requested_reviewers.iter().map(|l| json!({ "login": l })).collect::<Vec<_>>(),
             "requested_teams": pr.requested_teams.iter().map(|t| json!({ "slug": t })).collect::<Vec<_>>(),
-            "merged_by": pr.merged_by.as_ref().map(|l| json!({ "login": l })),
             "changed_files": self.pr_files(&pr).len(),
+            "merged_at": self.merged_info.get(&n).filter(|_| pr.merged).map(|(_, at)| format_rfc3339(*at)),
+            "merged_by": self.merged_info.get(&n).filter(|_| pr.merged).map(|(by, _)| json!({ "login": by })),
         }))
     }
 
@@ -1087,6 +1093,8 @@ impl FakeGithub {
             squash_message_setting: "COMMIT_MESSAGES".into(),
             files_cap: 3000,
             activity: Vec::new(),
+            merged_info: BTreeMap::new(),
+            custom_refs: BTreeMap::new(),
         };
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
@@ -1274,7 +1282,6 @@ impl FakeGithub {
                     assignees: vec![],
                     requested_reviewers: vec![],
                     requested_teams: vec![],
-                    merged_by: None,
                 },
             );
             s.emit_pr("opened", n, json!({}));

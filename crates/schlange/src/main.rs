@@ -1,5 +1,7 @@
-//! `schlange`: one static binary for the merge queue: configuration validation, scenarios in
-//! the simulated forge, the support matrix, the doctor, and `serve` (the GitHub App).
+//! `schlange`: one static binary for the merge queue: configuration validation and simulation,
+//! scenarios in the simulated forge, the support matrix, the doctor, `serve` (the GitHub App,
+//! also in shadow mode), and the clients of its API: `queue`, `explain`, `events`, `audit`,
+//! `shadow report`.
 //!
 //! Exit codes: 0 ok, 1 invalid or failed, 2 valid for Mergify but not supported (`--strict`),
 //! 3 environment problem (missing schema, unreadable file), 64 usage error.
@@ -27,6 +29,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once per process; the size of `serve`'s flags does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Work with a configuration file.
@@ -59,6 +63,50 @@ enum Command {
         admin_token_file: Option<PathBuf>,
         #[arg(long, global = true)]
         json: bool,
+    },
+    /// Why a pull request is (not) queued, not merged, or was dequeued: conditions with the
+    /// failing sub-conditions, holds, its place in the queue, its batch, the last dequeue reason
+    /// (S-EXPLAIN). From a running `serve`, or from the end of a scenario (`--scenario`).
+    Explain {
+        pr: u64,
+        /// Explain from the end state of this scenario in the simulated forge.
+        #[arg(long)]
+        scenario: Option<PathBuf>,
+        #[command(flatten)]
+        api: ApiArgs,
+    },
+    /// The event log: queue and action events, newest first (`GET …/logs` of a running
+    /// `serve`, or its data directory with `--data-dir`).
+    Events {
+        /// Only events of this pull request (also as part of a batch).
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Only events at or after this time (RFC 3339 or Unix seconds).
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+        /// Read the SQLite database in this data directory instead of calling `serve`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[command(flatten)]
+        api: ApiArgs,
+    },
+    /// The evidence of every landing (S-AUDIT): tested head and tree, expected base, landed
+    /// commit, tree and parent.
+    Audit {
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Read the SQLite database in this data directory instead of calling `serve`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[command(flatten)]
+        api: ApiArgs,
+    },
+    /// Shadow mode (`serve --shadow`): what Schlange would have done next to Mergify.
+    Shadow {
+        #[command(subcommand)]
+        command: ShadowCommand,
     },
     /// Which features Schlange supports, from the feature map's status.
     SupportMatrix {
@@ -123,6 +171,55 @@ enum Command {
             default_value = "Schlange merge queue"
         )]
         check_name: String,
+        /// Shadow mode: decide as usual, write nothing to GitHub, compare with Mergify
+        /// (`schlange shadow report`).
+        #[arg(long, env = "SCHLANGE_SHADOW")]
+        shadow: bool,
+        /// Shadow mode: Mergify's bot login.
+        #[arg(long, env = "SCHLANGE_MERGIFY_LOGIN", default_value = "mergify[bot]")]
+        mergify_login: String,
+        /// Shadow mode: Mergify's app slug (its check runs).
+        #[arg(long, env = "SCHLANGE_MERGIFY_APP", default_value = "mergify")]
+        mergify_app: String,
+        /// Seconds a repository's lease lasts without renewal (MQ-32: one writer per
+        /// repository; renewed after half of it).
+        #[arg(long, env = "SCHLANGE_LEASE_TTL", default_value_t = 60)]
+        lease_ttl: u64,
+        /// This process's name in the lease (default: host name, process id).
+        #[arg(long, env = "SCHLANGE_LEASE_HOLDER")]
+        lease_holder: Option<String>,
+        /// No lease: only when exactly one process serves the repositories.
+        #[arg(long, env = "SCHLANGE_NO_LEASE")]
+        no_lease: bool,
+    },
+}
+
+/// How to reach a running `serve` (its admin API).
+#[derive(clap::Args, Debug, Clone)]
+struct ApiArgs {
+    /// Base URL of `schlange serve` (its `--listen` address, or the URL in front of it).
+    #[arg(long, env = "SCHLANGE_URL", default_value = "http://127.0.0.1:8080")]
+    url: String,
+    /// The repository, `owner/name`.
+    #[arg(long, env = "SCHLANGE_REPO", default_value = "")]
+    repo: String,
+    /// File holding the admin token (or SCHLANGE_ADMIN_TOKEN).
+    #[arg(long, env = "SCHLANGE_ADMIN_TOKEN_FILE")]
+    admin_token_file: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Subcommand)]
+enum ShadowCommand {
+    /// Agreements and disagreements with Mergify per pull request: queued, landed, landing
+    /// order, batch, dequeue reason. Exit 0 without disagreements, 1 with.
+    Report {
+        /// Read the SQLite database in this data directory instead of calling `serve`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[command(flatten)]
+        api: ApiArgs,
     },
 }
 
@@ -216,6 +313,24 @@ enum ConfigCommand {
         /// Exit 2 when the configuration uses features Schlange does not support yet.
         #[arg(long)]
         strict: bool,
+    },
+    /// Evaluates a new configuration against a pull request without acting: would it be
+    /// queued, under which rule, which conditions fail (S-SIMULATE). Against a running `serve`
+    /// (its engine state), or the end of a scenario (`--scenario`). Exit 0, 1 when the
+    /// configuration is invalid.
+    Simulate {
+        file: PathBuf,
+        #[arg(long)]
+        pr: u64,
+        /// Evaluate against the end state of this scenario in the simulated forge.
+        #[arg(long)]
+        scenario: Option<PathBuf>,
+        /// Mergify JSON schema (with `--scenario`; default: $SCHLANGE_SCHEMA or
+        /// .research/mergify/schema.json).
+        #[arg(long)]
+        schema: Option<PathBuf>,
+        #[command(flatten)]
+        api: ApiArgs,
     },
 }
 
@@ -644,7 +759,30 @@ fn doctor(
     }
 }
 
+fn default_holder() -> String {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|h| h.trim().to_string())
+        })
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "host".into());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("{host}/{}/{nanos:08x}", std::process::id())
+}
+
 struct ServeArgs {
+    shadow: bool,
+    mergify_login: String,
+    mergify_app: String,
+    lease_ttl: u64,
+    lease_holder: Option<String>,
+    no_lease: bool,
     github: GithubArgs,
     secret: Option<String>,
     secret_file: Option<PathBuf>,
@@ -742,11 +880,26 @@ fn serve(a: ServeArgs) -> ExitCode {
         admin_token,
         http: Default::default(),
         crash: None,
+        shadow: a.shadow.then(|| schlange_github::shadow::ShadowConfig {
+            mergify_login: a.mergify_login.clone(),
+            mergify_app: a.mergify_app.clone(),
+            panic_on_write: false,
+        }),
+        lease: (!a.no_lease && !a.shadow).then(|| schlange_github::lease::LeaseConfig {
+            holder: a.lease_holder.clone().unwrap_or_else(default_holder),
+            ttl: a.lease_ttl.max(10),
+        }),
+        pause_before_land: None,
     };
     let clock = std::sync::Arc::new(schlange_github::time::SystemClock);
     match schlange_github::Service::start(cfg, clock) {
         Ok(s) => {
             eprintln!("schlange serve: webhooks on {}", s.webhook_url());
+            if s.shadow_gate.is_some() {
+                eprintln!(
+                    "schlange serve: SHADOW MODE: deciding without writing to GitHub; `schlange shadow report` compares with Mergify"
+                );
+            }
             s.wait();
             ExitCode::SUCCESS
         }
@@ -895,6 +1048,358 @@ fn queue_text(v: &serde_json::Value) -> String {
     out
 }
 
+/// The admin token from `--admin-token-file` or `SCHLANGE_ADMIN_TOKEN`.
+fn admin_token(api: &ApiArgs) -> Result<String, String> {
+    match &api.admin_token_file {
+        Some(p) => read_secret_file(p),
+        None => match std::env::var("SCHLANGE_ADMIN_TOKEN") {
+            Ok(t) if !t.is_empty() => Ok(t),
+            _ => Err("no admin token: --admin-token-file or SCHLANGE_ADMIN_TOKEN".into()),
+        },
+    }
+}
+
+/// One call of `serve`'s admin API under `/repos/{owner}/{name}/`: the status and the JSON
+/// answer (text answers become `{"message": …}`). Environment problems exit 3.
+fn api_call(
+    api: &ApiArgs,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<(u16, serde_json::Value), ExitCode> {
+    let token = admin_token(api).map_err(|e| env_error(api.json, &e))?;
+    if !api.repo.contains('/') {
+        return Err(env_error(
+            api.json,
+            "--repo owner/name (or SCHLANGE_REPO) is required",
+        ));
+    }
+    let url = format!(
+        "{}/repos/{}/{path}",
+        api.url.trim_end_matches('/'),
+        api.repo
+    );
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
+            .build(),
+    );
+    let auth = format!("Bearer {token}");
+    let resp = match (method, body) {
+        ("POST", Some(b)) => agent
+            .post(&url)
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .send(b.to_string()),
+        _ => agent.get(&url).header("authorization", &auth).call(),
+    };
+    let (status, text) = match resp {
+        Ok(mut r) => (
+            r.status().as_u16(),
+            r.body_mut().read_to_string().unwrap_or_default(),
+        ),
+        Err(e) => {
+            return Err(env_error(
+                api.json,
+                &format!("cannot reach {}: {e}", api.url),
+            ));
+        }
+    };
+    let value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "message": text.trim() }));
+    Ok((status, value))
+}
+
+/// A refusal of `serve` (not 200): printed, exit 1.
+fn refused(api: &ApiArgs, status: u16, value: &serde_json::Value) -> ExitCode {
+    if api.json {
+        print_json(&json!({ "status": status, "response": value }));
+    } else {
+        eprintln!(
+            "schlange: serve answered {status}: {}",
+            value["message"].as_str().unwrap_or(&value.to_string())
+        );
+    }
+    ExitCode::from(exit::INVALID)
+}
+
+/// The end state of a scenario's run in the simulated forge, with its rules.
+fn scenario_end(
+    path: &Path,
+) -> Result<(schlange_core::State, schlange_config::rules::Rules), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let s = schlange_forge::scenario::parse(&text, path).map_err(|e| e.to_string())?;
+    Ok((schlange_forge::runner::end_state(&s), s.rules.clone()))
+}
+
+fn explain_cli(pr: u64, scenario: Option<&Path>, api: &ApiArgs) -> ExitCode {
+    let value = match scenario {
+        Some(path) => match scenario_end(path) {
+            Ok((state, rules)) => {
+                let ex = schlange_core::explain::explain(&state, &rules, pr);
+                let mut v = serde_json::to_value(&ex).unwrap_or_default();
+                v["text"] = json!(ex.to_text());
+                v
+            }
+            Err(e) => return env_error(api.json, &e),
+        },
+        None => match api_call(api, "GET", &format!("pulls/{pr}/explain"), None) {
+            Ok((200, v)) => v,
+            Ok((status, v)) => return refused(api, status, &v),
+            Err(code) => return code,
+        },
+    };
+    if api.json {
+        let mut v = value;
+        if let Some(o) = v.as_object_mut() {
+            o.remove("text");
+        }
+        print_json(&v);
+    } else {
+        print!("{}", value["text"].as_str().unwrap_or(""));
+    }
+    ExitCode::SUCCESS
+}
+
+fn open_store(dir: &Path, json_out: bool) -> Result<schlange_github::store::Store, ExitCode> {
+    if !dir.join(schlange_github::store::DB_FILE).is_file() {
+        return Err(env_error(
+            json_out,
+            &format!(
+                "no {} in {}",
+                schlange_github::store::DB_FILE,
+                dir.display()
+            ),
+        ));
+    }
+    schlange_github::store::Store::open(dir).map_err(|e| env_error(json_out, &e.to_string()))
+}
+
+fn parse_since(s: &str) -> Option<u64> {
+    s.parse::<u64>()
+        .ok()
+        .or_else(|| schlange_github::time::parse_rfc3339(s))
+}
+
+fn events_cli(
+    pr: Option<u64>,
+    since: Option<&str>,
+    limit: u64,
+    data_dir: Option<&Path>,
+    api: &ApiArgs,
+) -> ExitCode {
+    let since = match since.map(|s| (s, parse_since(s))) {
+        Some((s, None)) => return env_error(api.json, &format!("--since `{s}` is not a time")),
+        Some((_, t)) => t,
+        None => None,
+    };
+    let events: Vec<serde_json::Value> = match data_dir {
+        Some(dir) => {
+            if !api.repo.contains('/') {
+                return env_error(api.json, "--repo owner/name is required");
+            }
+            let store = match open_store(dir, api.json) {
+                Ok(s) => s,
+                Err(c) => return c,
+            };
+            let q = schlange_github::store::EventQuery {
+                pr,
+                since,
+                before: None,
+                kind: None,
+                limit,
+            };
+            match store.events(&api.repo, &q) {
+                Ok(l) => l.iter().map(schlange_github::events::api_json).collect(),
+                Err(e) => return env_error(api.json, &e.to_string()),
+            }
+        }
+        None => {
+            let mut path = format!("logs?per_page={}", limit.clamp(1, 100));
+            if let Some(n) = pr {
+                path.push_str(&format!("&pull_request={n}"));
+            }
+            if let Some(t) = since {
+                path.push_str(&format!("&received_from={t}"));
+            }
+            match api_call(api, "GET", &path, None) {
+                Ok((200, v)) => v["events"].as_array().cloned().unwrap_or_default(),
+                Ok((status, v)) => return refused(api, status, &v),
+                Err(code) => return code,
+            }
+        }
+    };
+    if api.json {
+        print_json(&json!({ "events": events }));
+    } else {
+        for e in &events {
+            let prs: Vec<String> = e["pull_requests"]
+                .as_array()
+                .map(|a| a.iter().map(|n| format!("#{n}")).collect())
+                .unwrap_or_default();
+            println!(
+                "{} {} {} {}",
+                e["received_at"].as_str().unwrap_or(""),
+                e["type"].as_str().unwrap_or(""),
+                if prs.is_empty() {
+                    "-".to_string()
+                } else {
+                    prs.join(",")
+                },
+                e["metadata"]
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn audit_cli(pr: Option<u64>, data_dir: Option<&Path>, api: &ApiArgs) -> ExitCode {
+    let records: Vec<serde_json::Value> = match data_dir {
+        Some(dir) => {
+            if !api.repo.contains('/') {
+                return env_error(api.json, "--repo owner/name is required");
+            }
+            let store = match open_store(dir, api.json) {
+                Ok(s) => s,
+                Err(c) => return c,
+            };
+            match store.audits(&api.repo) {
+                Ok(l) => l
+                    .into_iter()
+                    .filter(|r| pr.is_none_or(|n| r.number == n))
+                    .map(|r| serde_json::to_value(r).unwrap_or_default())
+                    .collect(),
+                Err(e) => return env_error(api.json, &e.to_string()),
+            }
+        }
+        None => {
+            let path = match pr {
+                Some(n) => format!("audit?pull_request={n}"),
+                None => "audit".into(),
+            };
+            match api_call(api, "GET", &path, None) {
+                Ok((200, v)) => v["records"].as_array().cloned().unwrap_or_default(),
+                Ok((status, v)) => return refused(api, status, &v),
+                Err(code) => return code,
+            }
+        }
+    };
+    if api.json {
+        print_json(&json!({ "records": records }));
+    } else if records.is_empty() {
+        println!("no landings recorded");
+    } else {
+        for r in &records {
+            let short = |k: &str| {
+                let s = r[k].as_str().unwrap_or("");
+                s[..s.len().min(10)].to_string()
+            };
+            println!(
+                "#{} car {} tested {} tree {} on {} -> landed {} tree {} parent {}{}",
+                r["number"],
+                r["car"],
+                short("tested_head"),
+                short("tested_tree"),
+                short("base_before"),
+                short("landed_sha"),
+                short("landed_tree"),
+                short("landed_parent"),
+                r["note"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .map(|n| format!(" ({n})"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn shadow_report_cli(data_dir: Option<&Path>, api: &ApiArgs) -> ExitCode {
+    let report: schlange_github::shadow::ShadowReport = match data_dir {
+        Some(dir) => {
+            if !api.repo.contains('/') {
+                return env_error(api.json, "--repo owner/name is required");
+            }
+            let store = match open_store(dir, api.json) {
+                Ok(s) => s,
+                Err(c) => return c,
+            };
+            match store.shadow_facts(&api.repo) {
+                Ok(f) => schlange_github::shadow::report(&api.repo, &f),
+                Err(e) => return env_error(api.json, &e.to_string()),
+            }
+        }
+        None => match api_call(api, "GET", "shadow/report", None) {
+            Ok((200, v)) => match serde_json::from_value(v) {
+                Ok(r) => r,
+                Err(e) => return env_error(api.json, &format!("unexpected answer: {e}")),
+            },
+            Ok((status, v)) => return refused(api, status, &v),
+            Err(code) => return code,
+        },
+    };
+    if api.json {
+        print_json(&report);
+    } else {
+        print!("{}", report.to_text());
+    }
+    if report.disagreements == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(exit::INVALID)
+    }
+}
+
+fn simulate_cli(
+    file: &Path,
+    pr: u64,
+    scenario: Option<&Path>,
+    schema_path: Option<&Path>,
+    api: &ApiArgs,
+) -> ExitCode {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => return env_error(api.json, &format!("cannot read {}: {e}", file.display())),
+    };
+    let value = match scenario {
+        Some(path) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let check = match schlange_github::config::ConfigCheck::locate(schema_path, &cwd) {
+                Ok(c) => c,
+                Err(e) => return env_error(api.json, &e),
+            };
+            let (state, _) = match scenario_end(path) {
+                Ok(s) => s,
+                Err(e) => return env_error(api.json, &e),
+            };
+            match schlange_github::service::simulate(&state, &check, &text, pr) {
+                Ok(v) => v,
+                Err(e) => return refused(api, 422, &json!({ "message": e })),
+            }
+        }
+        None => match api_call(
+            api,
+            "POST",
+            &format!("pulls/{pr}/simulator"),
+            Some(json!({ "mergify_yml": text })),
+        ) {
+            Ok((200, v)) => v,
+            Ok((status, v)) => return refused(api, status, &v),
+            Err(code) => return code,
+        },
+    };
+    if api.json {
+        print_json(&value);
+    } else {
+        println!("{}", value["title"].as_str().unwrap_or(""));
+        println!();
+        print!("{}", value["summary"].as_str().unwrap_or(""));
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let cli = match parse_cli() {
         Ok(cli) => cli,
@@ -910,9 +1415,31 @@ fn main() -> ExitCode {
                     strict,
                 },
         } => validate(&file, schema.as_deref(), json, strict),
+        Command::Config {
+            command:
+                ConfigCommand::Simulate {
+                    file,
+                    pr,
+                    scenario,
+                    schema,
+                    api,
+                },
+        } => simulate_cli(&file, pr, scenario.as_deref(), schema.as_deref(), &api),
         Command::Sim {
             command: SimCommand::Run { file, json, forge },
         } => sim_run(&file, json, forge),
+        Command::Explain { pr, scenario, api } => explain_cli(pr, scenario.as_deref(), &api),
+        Command::Events {
+            pr,
+            since,
+            limit,
+            data_dir,
+            api,
+        } => events_cli(pr, since.as_deref(), limit, data_dir.as_deref(), &api),
+        Command::Audit { pr, data_dir, api } => audit_cli(pr, data_dir.as_deref(), &api),
+        Command::Shadow {
+            command: ShadowCommand::Report { data_dir, api },
+        } => shadow_report_cli(data_dir.as_deref(), &api),
         Command::Queue {
             command,
             url,
@@ -939,7 +1466,19 @@ fn main() -> ExitCode {
             data_dir,
             schema,
             admin_token_file,
+            shadow,
+            mergify_login,
+            mergify_app,
+            lease_ttl,
+            lease_holder,
+            no_lease,
         } => serve(ServeArgs {
+            shadow,
+            mergify_login,
+            mergify_app,
+            lease_ttl,
+            lease_holder,
+            no_lease,
             github,
             secret: webhook_secret,
             secret_file: webhook_secret_file,

@@ -9,11 +9,11 @@
 +0:05:00  webhook   #1 check `KI-Review` completed on 219df9a: success
 +0:05:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:05:00  decision  labels #1 +queued
-+0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn.
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:05:00  webhook   #2 check `KI-Review` completed on f2573df: success
 +0:05:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:05:00  decision  labels #2 +queued
-+0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
 +0:10:00  webhook   timer
 +0:10:00  decision  build car 3 on mergify/merge-queue/6353138441: base 5a8b940 + #1 #2 (checks #1 #2)
 +0:10:00  reply     car 3 built at 22ae1a7, draft #1000
@@ -48,7 +48,7 @@
 +1:00:00  webhook   #1 unlabeled
 +1:00:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +1:00:00  decision  labels #1 +queued -dequeued
-+1:00:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn.
++1:00:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +1:05:00  webhook   timer
 +1:05:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base f2573df + #1 (checks #1)
 +1:05:00  reply     car 7 built at bac8edd, draft #1002

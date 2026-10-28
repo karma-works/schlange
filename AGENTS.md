@@ -12,11 +12,11 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | Path | What |
 |---|---|
 | `crates/schlange-config` | loading, validation stages (YAML, schema, conditions, support), condition parser, feature map, configuration file names and the "configuration changed" check (`config_file`), typed rule actions with `defaults` (`actions`), `extends` (`extends`) |
-| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), queue controls and P2 gates: pause, freezes, merge protections, priorities, required checks (`gates`), the queue status view (`status`), the actions of `pull_request_rules` and the commands that run them as `Decision::Act` (`actions`), templates (`template`) |
+| `crates/schlange-core` | state machine without I/O: `(state, event) → (state, decisions)`, condition evaluation, comment commands (`commands` parser, `control`), built-in protections as holds (`protections`), cosmetic decisions: labels, status and checkbox comments, replies (`cosmetics`), squash commit messages (`message`), queue controls and P2 gates: pause, freezes, merge protections, priorities, required checks (`gates`), the queue status view (`status`), the actions of `pull_request_rules` and the commands that run them as `Decision::Act` (`actions`), templates (`template`), `explain` (why a pull request is where it is) |
 | `crates/schlange-forge` | `Forge` trait, simulated forge (in-memory git, scripted CI, webhook faults), `localgit` forge (real git repositories on disk, checks as processes in checkouts; cargo feature `localgit`), invariant checker I0–I5, scenario runner, Rust DSL, property tests |
-| `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit), configuration validation, doctor checks, permission list |
-| `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, end-to-end tests |
-| `crates/schlange` | the binary and its CLI (`config`, `sim`, `support-matrix`, `doctor`, `serve`) |
+| `crates/schlange-github` | GitHub App adapter: REST client (rustls, ring), webhooks, a bounded HTTP listener, `GithubForge`, the `serve` loop with reconciliation, SQLite persistence (journal, snapshots, dedup, audit, event log, shadow facts, lease), configuration validation, doctor checks, permission list, shadow mode (`shadow`), lease and fence (`lease`), event log (`events`) |
+| `crates/schlange-github-fake` | test support: fake GitHub over HTTP (simulated git, signed webhooks, API and webhook faults), tester DSL, a scripted other merge queue (`mergify.rs`, for shadow mode), end-to-end tests |
+| `crates/schlange` | the binary and its CLI (`config validate|simulate`, `sim`, `support-matrix`, `doctor`, `serve`, `queue`, `explain`, `events`, `audit`, `shadow report`) |
 | `tools/inventory` | builds the feature inventory from the pinned Mergify sources |
 | `tools/fetch-mergify-sources`, `tools/mergify-sources.lock` | downloads and pins the sources |
 | `.agents/skills/verify-schlange/` | verification skill; `features/` is the feature map |
@@ -87,12 +87,20 @@ cargo test -p schlange-core --test commands --test command_parser       # engine
 cargo test -p schlange-core --test actions                               # rule actions: triggering, idempotence, answers, restarts
 cargo test -p schlange-forge --test action_crashes                       # a crash at every side effect of the action scenarios posts nothing twice
 cargo test -p schlange-github-fake --test e2e_actions                    # rule actions and their commands against the fake GitHub
+cargo test -p schlange-core --test explain                              # `schlange explain` golden files
+cargo test -p schlange-github-fake --test shadow                        # shadow mode: no writes, report against a scripted other queue
+cargo test -p schlange-github-fake --test lease                         # MQ-32: two serve processes, lease and fence
+cargo run -q -p schlange -- explain 2 --scenario scenarios/p0-queue-conditions.yaml
+cargo run -q -p schlange -- config simulate <file> --pr <n> --scenario <scenario>
+schlange explain|events|audit|shadow report --repo owner/name [--url …] [--json]   # against serve's admin API
+schlange events|audit|shadow report --repo owner/name --data-dir /data             # offline from the database
 docker build -t schlange:dev . && scripts/image-size.sh
 ```
 
 Golden files: `UPDATE_GOLDEN=1 cargo test -p schlange-config --test golden` (validator),
 `UPDATE_GOLDEN=1 cargo test -p schlange-forge --test scenarios` (scenario event logs),
-`UPDATE_GOLDEN=1 cargo test -p schlange-core --test commit_messages` (squash messages) and
+`UPDATE_GOLDEN=1 cargo test -p schlange-core --test commit_messages` (squash messages),
+`UPDATE_GOLDEN=1 cargo test -p schlange-core --test explain` (explanations) and
 `UPDATE_GOLDEN=1 cargo test -p schlange-github-fake --test golden_decisions` (the engine's
 decisions against the fake GitHub), then review the diff.
 
@@ -109,6 +117,8 @@ decisions against the fake GitHub), then review the diff.
 | `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |
 | `--insecure-test-api` | `SCHLANGE_INSECURE_TEST_API` | off | allows `http://` API URLs; tests against the fake GitHub only |
+| `--shadow` | `SCHLANGE_SHADOW` | off | decide, never write; compare with Mergify (`--mergify-login`, `--mergify-app`); `schlange shadow report` |
+| `--lease-ttl`, `--lease-holder`, `--no-lease` | `SCHLANGE_LEASE_TTL` … | 60 s, host/pid | one writer per repository (MQ-32): SQLite lease plus the fence `refs/schlange/lease` on GitHub, checked before every write |
 | `--reconcile-every`, `--config`, `--check-name`, `--installation-id` | … | | see `schlange serve --help` |
 
 Security notes:
@@ -121,6 +131,13 @@ Security notes:
   TLS in front of it.
 - Landing on GitHub is not a true compare-and-swap (the merge API has no expected base); see
   `crates/schlange-github/src/api.rs` for the guards and the trade-off.
+- Shadow mode cannot write: the worker answers write decisions itself and the client's write
+  gate refuses every request but a read (tests: panics). A process that lost its lease is
+  refused the same way before any write is sent (the fence on GitHub moved); a remaining
+  window is one read and one write (bounded by the lease's time-to-live, `lease.rs`).
+- The admin API (`/repos/{owner}/{repo}/…`: queue status and controls, `pulls/{n}/explain`,
+  `pulls/{n}/simulator`, `logs`, `audit`, `shadow/report`) needs the admin token; explanations
+  and events show pull request data.
 - Tests never use real tokens; the fake GitHub's test key is in
   `crates/schlange-github-fake/fixtures/`.
 - Threat model (Arztagent): an agent with write access may push, comment, label and edit

@@ -21,20 +21,20 @@
 +0:05:00  decision  checks of #1 ended, stays queued: PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE: the merge queue is paused: CI incident
 +0:05:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
 +0:05:00  decision  checks of #2 ended, stays queued: PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE: the merge queue is paused: CI incident
-+0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
-+0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
 +0:08:00  action    #3 opened by bot on main, files: c.txt
 +0:09:00  ci        #3 check `quick` completed on ffa0eec: success
 +0:09:00  webhook   #3 check `quick` completed on ffa0eec: success
 +0:09:00  decision  enqueue #3 into `default` (rule `queue bot pull requests`)
 +0:09:00  decision  labels #3 +queued
-+0:09:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
++0:09:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #1, #2. — The merge queue is paused (CI incident): nothing is checked or merged until it resumes.
 +0:30:00  action    the queue is unpaused
 +0:30:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 5a8b940 + #1 (checks #1)
 +0:30:00  reply     car 6 built at ecd3e04, draft #1002
 +0:30:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
-+0:30:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
-+0:30:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
++0:30:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
++0:30:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #1, #2.
 +0:30:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base 5a8b940 + #1 #2 (checks #2)
 +0:30:00  reply     car 7 built at 405b1bd, draft #1003
 +0:30:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1002.

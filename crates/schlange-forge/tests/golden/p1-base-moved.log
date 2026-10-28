@@ -25,7 +25,7 @@
 +0:05:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base 02fd98e + #1 (checks #1)
 +0:05:00  reply     car 5 built at e8df987, draft #1002
 +0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
-+0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
 +0:05:00  decision  build car 6 on mergify/merge-queue/744dfff868: base 02fd98e + #1 #2 (checks #2)
 +0:05:00  reply     car 6 built at fa09f71, draft #1003
 +0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1002.

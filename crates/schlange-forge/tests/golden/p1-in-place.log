@@ -11,7 +11,7 @@
 +0:02:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
 +0:02:00  decision  read #1 main before acting
 +0:02:00  decision  labels #2 +queued
-+0:02:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:02:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
 +0:02:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
 +0:02:00  message   #1: Pull request 1 (#1)
 +0:02:00  reply     car 2 landed #1 as 84886d8

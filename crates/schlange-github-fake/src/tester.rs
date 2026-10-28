@@ -23,7 +23,9 @@ use schlange_github::RepoName;
 use schlange_github::client::{BudgetConfig, Client, ClientConfig, RetryPolicy};
 use schlange_github::config::ConfigCheck;
 use schlange_github::jwt::AppKey;
-use schlange_github::service::{ConfigSource, CrashPoint, ServeConfig, Service};
+use schlange_github::lease::LeaseConfig;
+use schlange_github::service::{ConfigSource, CrashPoint, PauseHook, ServeConfig, Service};
+use schlange_github::shadow::ShadowConfig;
 use schlange_github::time::ManualClock;
 
 use crate::{
@@ -47,6 +49,9 @@ pub struct Tester {
     merge_guard: Option<MergeGuard>,
     persistent: bool,
     crash: Option<CrashPoint>,
+    shadow: bool,
+    lease: Option<LeaseConfig>,
+    pause_before_land: Option<Arc<PauseHook>>,
 }
 
 pub struct Running {
@@ -113,7 +118,31 @@ impl Tester {
             merge_guard: None,
             persistent: false,
             crash: None,
+            shadow: false,
+            lease: None,
+            pause_before_land: None,
         }
+    }
+
+    /// `serve --shadow`: decide, never write; a write attempt panics (S-SHADOW).
+    pub fn shadow(mut self) -> Self {
+        self.shadow = true;
+        self
+    }
+
+    /// `serve` with a lease (MQ-32) under this holder name and time-to-live.
+    pub fn lease(mut self, holder: &str, ttl: u64) -> Self {
+        self.lease = Some(LeaseConfig {
+            holder: holder.into(),
+            ttl,
+        });
+        self
+    }
+
+    /// The first `serve` process pauses before its first landing until the hook is released.
+    pub fn pause_before_land(mut self, hook: Arc<PauseHook>) -> Self {
+        self.pause_before_land = Some(hook);
+        self
     }
 
     /// `serve` with a data directory (SQLite journal, snapshots, dedup, audit).
@@ -224,6 +253,12 @@ impl Tester {
             admin_token: Some("test-admin-token".into()),
             http: Default::default(),
             crash: self.crash,
+            shadow: self.shadow.then(|| ShadowConfig {
+                panic_on_write: true,
+                ..ShadowConfig::default()
+            }),
+            lease: self.lease.clone(),
+            pause_before_land: self.pause_before_land.clone(),
         };
         let service = Service::start(serve_cfg.clone(), clock.clone()).expect("serve starts");
         gh.set_webhook_target(Some(service.webhook_url()));
@@ -236,6 +271,7 @@ impl Tester {
         };
         // A restart does not crash again.
         r.serve_cfg.crash = None;
+        r.serve_cfg.pause_before_land = None;
         // The start-up reconciliation has run once the worker published its status.
         r.wait_until("start-up reconciliation", |r| {
             r.status()
@@ -598,6 +634,25 @@ impl Running {
             r.status()
                 .is_some_and(|s| s.reconciliations > 0 || s.config_error.is_some())
         });
+    }
+
+    /// Another `serve` process against the same fake GitHub, with its own client and clock
+    /// (another host's clock may run ahead), the same configuration, and `holder` as its lease name (MQ-32). Webhooks keep going to
+    /// the first process; the second one reconciles.
+    pub fn second_service(
+        &self,
+        holder: &str,
+        data_dir: Option<std::path::PathBuf>,
+        clock: Arc<ManualClock>,
+    ) -> Service {
+        let mut cfg = self.serve_cfg.clone();
+        cfg.client = Client::new(self.client.config().clone());
+        if let Some(l) = &mut cfg.lease {
+            l.holder = holder.into();
+        }
+        cfg.data_dir = data_dir;
+        cfg.pause_before_land = None;
+        Service::start(cfg, clock).expect("second serve starts")
     }
 
     /// I0, I1, MQ-35 and (at quiescence) I3 on the fake's git state, and I1 against the

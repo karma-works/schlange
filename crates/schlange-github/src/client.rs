@@ -30,6 +30,14 @@
 //! a transport error is *not* repeated here: the effect may have happened (MQ-35). It comes
 //! back as [`Error::Ambiguous`] and the caller reads the state before deciding.
 //!
+//! **Write gate.** A [`WriteGate`] set on the client ([`Client::set_write_gate`]) is asked
+//! before every request that may change GitHub (every method but `GET`; installation tokens
+//! excepted). Shadow mode sets one that refuses everything (S-SHADOW); the lease sets one that
+//! lets a write through only while this process holds the repository's lease and its fence on
+//! GitHub is still the one it wrote (MQ-32). A refused request is never sent
+//! ([`Error::Refused`]). The lease's own compare-and-swap goes through
+//! [`Client::send_unfenced`].
+//!
 //! **ETags.** `GET` responses with an ETag are cached; the next read sends `If-None-Match`
 //! and a 304 (which GitHub does not count against the rate limit) returns the cached body.
 
@@ -41,6 +49,12 @@ use serde::de::DeserializeOwned;
 
 use crate::jwt::AppKey;
 use crate::time::{parse_rfc3339, unix_now};
+
+/// Decides, before a request that may change GitHub is sent, whether it may be sent.
+pub trait WriteGate: Send + Sync {
+    /// `Err(why)` refuses the request; it is not sent.
+    fn permit(&self, method: &str, path: &str) -> Result<(), String>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
@@ -258,6 +272,8 @@ impl Budget {
 /// Counters for doctor and tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Stats {
+    /// Writes the write gate refused (shadow mode, a lost lease); never sent.
+    pub writes_refused: u64,
     pub requests: u64,
     pub retries: u64,
     pub rate_limited: u64,
@@ -338,6 +354,7 @@ struct Inner {
     etags: Mutex<HashMap<String, (String, Response)>>,
     stats: Mutex<Stats>,
     rng: Mutex<u64>,
+    gate: std::sync::RwLock<Option<Arc<dyn WriteGate>>>,
 }
 
 /// A GitHub REST client. Cheap to clone; all clones share one budget and one token cache.
@@ -418,9 +435,15 @@ impl Client {
                 etags: Mutex::new(HashMap::new()),
                 stats: Mutex::new(Stats::default()),
                 rng: Mutex::new(seed),
+                gate: std::sync::RwLock::new(None),
                 cfg,
             }),
         }
+    }
+
+    /// Sets (or clears) the gate every write must pass (shadow mode, the lease's fence).
+    pub fn set_write_gate(&self, gate: Option<Arc<dyn WriteGate>>) {
+        *self.inner.gate.write().unwrap_or_else(|p| p.into_inner()) = gate;
     }
 
     pub fn config(&self) -> &ClientConfig {
@@ -493,6 +516,7 @@ impl Client {
             Priority::Landing,
             Some(body.into_bytes()),
             true,
+            false,
         )?;
         let tok: Token = resp.json(&path)?;
         let exp = parse_rfc3339(&tok.expires_at).unwrap_or(now + 3000);
@@ -680,9 +704,25 @@ impl Client {
     ) -> Result<Response, Error> {
         let body = body.map(|b| b.to_string().into_bytes());
         let idempotent = matches!(method, "GET" | "DELETE");
-        self.send_inner(method, path, auth, prio, body, idempotent)
+        self.send_inner(method, path, auth, prio, body, idempotent, true)
     }
 
+    /// As [`Client::send`], without asking the write gate: only for the lease's own
+    /// compare-and-swap on its fence ref (`crate::lease`).
+    pub fn send_unfenced(
+        &self,
+        method: &str,
+        path: &str,
+        auth: Auth,
+        prio: Priority,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Response, Error> {
+        let body = body.map(|b| b.to_string().into_bytes());
+        let idempotent = matches!(method, "GET" | "DELETE");
+        self.send_inner(method, path, auth, prio, body, idempotent, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn send_inner(
         &self,
         method: &str,
@@ -691,7 +731,22 @@ impl Client {
         prio: Priority,
         body: Option<Vec<u8>>,
         retry_errors: bool,
+        fenced: bool,
     ) -> Result<Response, Error> {
+        if fenced && method != "GET" && method != "HEAD" {
+            let gate = self
+                .inner
+                .gate
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(g) = gate {
+                g.permit(method, path).map_err(|why| {
+                    self.bump(|s| s.writes_refused += 1);
+                    Error::Refused(format!("{method} {path} not sent: {why}"))
+                })?;
+            }
+        }
         let mut url = self.url(path)?;
         let policy = self.inner.cfg.retry.clone();
         let mut cache_key = format!("{auth:?} {url}");

@@ -53,8 +53,8 @@
 +0:11:00  decision  labels #1 +dequeued -queued
 +0:11:00  decision  status comment #1: **Merge queue** · left the queue — Reason: CHECKS_FAILED: merge conditions are false on #1000; failed: full — - [ ] Put this pull request back into the queue
 +0:11:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
-+0:11:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
-+0:11:00  decision  status comment #4: **Merge queue** · queue `default` — Waiting for its turn.
++0:11:00  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #2.
++0:11:00  decision  status comment #4: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #2, #3.
 +0:11:00  decision  build car 11 on mergify/merge-queue/7d7b1cef54: base 5a8b940 + #2 #3 (checks #3)
 +0:11:00  reply     car 11 built at 56e9789, draft #1005
 +0:11:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1004.

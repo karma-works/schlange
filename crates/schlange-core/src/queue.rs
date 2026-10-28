@@ -912,7 +912,7 @@ fn uses_checks(c: &Condition) -> bool {
 
 /// The pull request as the merge conditions see it: its own attributes, the checks of the
 /// car's head (the draft pull request, or the pull request itself in place).
-fn car_view(state: &State, car: &Car, number: u64) -> Option<PullRequest> {
+pub(crate) fn car_view(state: &State, car: &Car, number: u64) -> Option<PullRequest> {
     let mut pr = state.pull_requests.get(&number)?.clone();
     let head = car.head_sha.clone()?;
     let draft = car.draft.and_then(|d| state.pull_requests.get(&d));

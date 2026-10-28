@@ -12,7 +12,7 @@
 +0:01:00  webhook   #2 check `quick` completed on bba8845: success
 +0:01:00  decision  enqueue #2 into `default` (rule `q`)
 +0:01:00  decision  labels #2 +queued
-+0:01:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn.
++0:01:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
 +0:11:00  webhook   timer
 +0:11:00  decision  read #1 #1000 mergify/merge-queue/c0afd78982 before acting
 +0:11:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
@@ -27,6 +27,7 @@
 +0:21:00  decision  dequeue #1 from `default`: CHECKS_TIMEOUT: checks did not pass within 600s; still running: [full]; never reported: []
 +0:21:00  decision  labels #1 +dequeued -queued
 +0:21:00  decision  status comment #1: **Merge queue** · left the queue — Reason: CHECKS_TIMEOUT: checks did not pass within 600s; still running: [full]; never reported: [] — - [ ] Put this pull request back into the queue
++0:21:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:21:00  decision  build car 7 on mergify/merge-queue/a7693b7b9b: base 5a8b940 + #2 (checks #2)
 +0:21:00  reply     car 7 built at b7d5f0b, draft #1002
 +0:21:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.

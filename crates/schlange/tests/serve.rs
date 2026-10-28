@@ -132,6 +132,59 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
     let (code, out) = queue(&["unpause"], "serve-test-admin-token");
     assert_eq!((code, out.trim()), (Some(0), "not paused"));
 
+    // `explain`, `events`, `audit`, `config simulate`, `shadow report` against serve's API.
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_schlange"))
+            .args(args)
+            .args(["--url", &format!("http://127.0.0.1:{port}")])
+            .args(["--repo", &gh.config().full_name()])
+            .env("SCHLANGE_ADMIN_TOKEN", "serve-test-admin-token")
+            .env_remove("SCHLANGE_ADMIN_TOKEN_FILE")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    let num = n.to_string();
+    let (code, out) = cli(&["explain", &num]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains(&format!("#{n} Add a: merged")), "{out}");
+    let (code, out) = cli(&["events", "--pr", &num, "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    for t in [
+        "action.queue.enter",
+        "action.queue.checks_start",
+        "action.queue.merged",
+    ] {
+        assert!(out.contains(t), "{t} missing: {out}");
+    }
+    let (code, out) = cli(&["events"]);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("queue.pause.create"), "{out}");
+    let (code, out) = cli(&["audit", "--pr", &num]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.starts_with(&format!("#{n} car ")), "{out}");
+    let strict = dir.join("strict.yml");
+    std::fs::write(
+        &strict,
+        "queue_rules:\n  - name: default\n    queue_conditions:\n      - label = ready\n\
+         pull_request_rules:\n  - name: all\n    conditions: []\n    actions:\n      queue:\n",
+    )
+    .unwrap();
+    let (code, out) = cli(&["config", "simulate", strict.to_str().unwrap(), "--pr", &num]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("merged"), "{out}");
+    std::fs::write(&strict, "queue_rules: 3\n").unwrap();
+    let (code, _) = cli(&["config", "simulate", strict.to_str().unwrap(), "--pr", &num]);
+    assert_eq!(code, Some(1), "an invalid configuration is refused");
+    let (code, out) = cli(&["shadow", "report"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("0 agree, 0 disagree"), "{out}");
+    // The lease: one leader (serve takes it by default).
+    assert!(status.contains("\"role\": \"leader\""), "{status}");
+
     // Doctor with the same environment: the GitHub checks run and none fails. It validates the
     // repository's `.mergify.yml` from the default branch.
     gh.push_base(&[(

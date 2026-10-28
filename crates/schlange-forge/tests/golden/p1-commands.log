@@ -4,7 +4,7 @@
 +0:00:10  action    alice commented on #1: @mergifyio queue
 +0:00:10  webhook   #1 comment 1 by alice
 +0:00:10  decision  react +1 to comment 1 on #1
-+0:00:10  decision  status comment #1: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:00:10  decision  status comment #1: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold. — Waiting for: check-success = quick; check-success = quick; label = urgent
 +0:00:30  action    bob commented on #1: @Mergifyio queue
 +0:00:30  webhook   #1 comment 3 by bob
 +0:00:30  decision  react +1 to comment 3 on #1
@@ -12,7 +12,7 @@
 +0:00:50  action    bob commented on #2: @mergify queue
 +0:00:50  webhook   #2 comment 5 by bob
 +0:00:50  decision  react +1 to comment 5 on #2
-+0:00:50  decision  status comment #2: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:00:50  decision  status comment #2: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters the first matching queue once its queue conditions hold. — Waiting for: check-success = quick; check-success = quick; label = urgent
 +0:01:00  action    #2 pushed by mallory, head 6f19f94
 +0:01:00  webhook   #2 synchronize
 +0:01:00  decision  reply #2: The queue command by @bob is cancelled: @mallory pushed new commits (6f19f94) after it. The command vouched for the commits it saw; review the new ones and comment `@mergifyio queue` again.
@@ -101,12 +101,12 @@
 +0:40:10  action    alice commented on #5: @mergifyio queue
 +0:40:10  webhook   #5 comment 23 by alice
 +0:40:10  decision  react +1 to comment 23 on #5
-+0:40:10  decision  status comment #5: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold.
++0:40:10  decision  status comment #5: **Merge queue** · waiting to enter — @alice asked to queue this pull request; it enters the first matching queue once its queue conditions hold. — Waiting for: check-success = quick; check-success = quick
 +0:40:30  action    bob commented on #5: @mergifyio queue urgent
 +0:40:30  webhook   #5 comment 25 by bob
 +0:40:30  decision  react +1 to comment 25 on #5
 +0:40:30  decision  reply #5: @bob, the waiting queue command now targets queue `urgent`.
-+0:40:30  decision  status comment #5: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters queue `urgent` once its queue conditions hold.
++0:40:30  decision  status comment #5: **Merge queue** · waiting to enter — @bob asked to queue this pull request; it enters queue `urgent` once its queue conditions hold. — Waiting for: check-success = quick
 +0:42:00  ci        #5 check `quick` completed on 7c0e03b: success
 +0:42:00  webhook   #5 check `quick` completed on 7c0e03b: success
 +0:42:00  decision  enqueue #5 into `urgent` (rule `queue command by @bob`)

@@ -8,6 +8,7 @@ pub mod control;
 pub mod cosmetics;
 pub mod engine;
 pub mod eval;
+pub mod explain;
 pub mod gates;
 pub mod journal;
 pub mod message;

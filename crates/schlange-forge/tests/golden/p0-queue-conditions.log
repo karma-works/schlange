@@ -25,7 +25,7 @@
 +0:03:30  webhook   #3 check `ci-ok` completed on 243bdbc: success
 +0:03:30  decision  enqueue #3 into `default` (rule `Dependabot Patch und Minor einreihen`)
 +0:03:30  decision  labels #3 +queued
-+0:03:30  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn.
++0:03:30  decision  status comment #3: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:03:30  webhook   #4 check `ci-ok` completed on 42ce23f: success
 +0:03:30  decision  controls comment #4: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
 +0:04:00  ci        #5 check `ci-ok` completed on 6546e96: success
@@ -39,7 +39,7 @@
 +0:05:00  webhook   #1 check `KI-Review` completed on d47a63c: success
 +0:05:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:05:00  decision  labels #1 +queued
-+0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn.
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #3.
 +0:05:00  webhook   #2 check `KI-Review` completed on 78e2f71: success
 +0:05:00  decision  controls comment #2: **Merge queue** — This pull request meets the conditions of a queue, but no rule queues it on its own. — - [ ] Add this pull request to the merge queue
 +0:06:00  ci        #5 check `KI-Review` completed on 6546e96: success
@@ -47,7 +47,7 @@
 +0:06:00  webhook   #5 check `KI-Review` completed on 6546e96: success
 +0:06:00  decision  enqueue #5 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:06:00  decision  labels #5 +queued
-+0:06:00  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn.
++0:06:00  decision  status comment #5: **Merge queue** · queue `default` — Waiting for its turn: position 3 in queue `default`, behind #3, #1.
 +0:07:00  ci        #7 check `KI-Review` completed on ffe9569: success
 +0:07:00  ci        #8 check `KI-Review` completed on 1f89ea9: success
 +0:07:00  ci        #9 check `KI-Review` completed on 1c1603e: success
@@ -57,7 +57,7 @@
 +0:07:00  webhook   #9 check `KI-Review` completed on 1c1603e: success
 +0:07:00  decision  enqueue #9 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:07:00  decision  labels #9 +queued
-+0:07:00  decision  status comment #9: **Merge queue** · queue `default` — Waiting for its turn.
++0:07:00  decision  status comment #9: **Merge queue** · queue `default` — Waiting for its turn: position 4 in queue `default`, behind #3, #1, #5.
 +0:08:30  webhook   timer
 +0:08:30  decision  build car 5 on mergify/merge-queue/f2f5067500: base 5a8b940 + #3 #1 #5 #9 (checks #3 #1 #5 #9)
 +0:08:30  reply     car 5 built at 36436a2, draft #1000
@@ -110,7 +110,7 @@
 +0:20:00  webhook   #6 ready_for_review
 +0:20:00  decision  enqueue #6 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
 +0:20:00  decision  labels #6 +queued
-+0:20:00  decision  status comment #6: **Merge queue** · queue `default` — Waiting for its turn.
++0:20:00  decision  status comment #6: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
 +0:25:00  webhook   timer
 +0:25:00  decision  build car 9 on mergify/merge-queue/8cd12edb01: base 5f0ade6 + #6 (checks #6)
 +0:25:00  reply     car 9 built at 47ddd08, draft #1002

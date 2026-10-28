@@ -86,11 +86,11 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 
 | Priority | Feature | Status | Arztagent |
 |---|---|---|---|
-| P1 | [Evidence per merge](S-AUDIT.md) | missing |  |
+| P1 | [Evidence per merge](S-AUDIT.md) | partial |  |
 | P1 | [Complete CLI with `--json`](S-CLI.md) | partial |  |
 | P1 | [`schlange doctor`](S-DOCTOR.md) | partial |  |
-| P1 | [`schlange pr explain`](S-EXPLAIN.md) | missing |  |
-| P1 | [Shadow mode](S-SHADOW.md) | missing |  |
+| P1 | [`schlange explain`](S-EXPLAIN.md) | partial |  |
+| P1 | [Shadow mode](S-SHADOW.md) | partial |  |
 | P1 | [Scenarios in the simulated forge](S-SIM.md) | partial |  |
 | P1 | [Action `queue`](action-queue.md) | partial | yes |
 | P1 | [Commands `queue`, `dequeue`, `refresh`](commands.md) | partial | yes |
@@ -123,7 +123,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Serial, cumulative speculation](queue-speculation.md) | partial | yes |
 | P1 | [Two-step CI (`queue_conditions` and `merge_conditions`)](queue-two-step.md) | partial | yes |
 | P2 | [MCP server](S-MCP.md) | missing |  |
-| P2 | [`schlange config simulate`](S-SIMULATE.md) | missing |  |
+| P2 | [`schlange config simulate`](S-SIMULATE.md) | partial |  |
 | P2 | [Action `assign`](action-assign.md) | missing |  |
 | P2 | [Action `backport`](action-backport.md) | missing |  |
 | P2 | [Action `close`](action-close.md) | missing |  |
@@ -152,9 +152,9 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P2 | [Shared defaults (`defaults`)](config-defaults.md) | missing |  |
 | P2 | [Inherit a configuration (`extends`)](config-extends.md) | missing |  |
 | P2 | [Shared anchors (`shared`)](config-shared.md) | missing |  |
-| P2 | [Configuration simulator](config-simulator.md) | missing |  |
+| P2 | [Configuration simulator](config-simulator.md) | partial |  |
 | P2 | [Conflict resolvers (experimental)](conflict-resolvers.md) | missing |  |
-| P2 | [Event log](events.md) | missing |  |
+| P2 | [Event log](events.md) | partial |  |
 | P2 | [Merge protections and auto-merge](merge-protections.md) | partial |  |
 | P2 | [Built-in protection `Merge-After`](merge-after.md) | partial |  |
 | P2 | [Direct merge without queue CI](direct-merge.md) | missing |  |
