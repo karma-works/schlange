@@ -17,8 +17,9 @@
 //!   command; either way the pull request does not rejoin on its own until a new `queue`.
 //!   Otherwise it answers that nothing is queued.
 //! - `refresh` reads the pull request again and re-evaluates it.
-//! - `backport`, `copy`, `rebase`, `squash` and `update` are recognised and answered as not
-//!   supported yet.
+//! - `backport <branches>`, `copy <branches>`, `rebase`, `squash [mode]` and `update` run the
+//!   operations of the actions of the same name (see `actions::command`); the reply comes once
+//!   the forge answered. A `backport` on an open pull request waits for the merge.
 //! - Every command is acknowledged with a 👍 reaction. Replies follow the documentation: a
 //!   `queue` or `dequeue` that takes effect reports in the status comment, everything else
 //!   (refusals, errors, a pull request left out of the queue) gets a reply.
@@ -178,8 +179,8 @@ fn run(state: &mut State, rules: &Rules, c: &Comment, parsed: Parsed, out: &mut 
                 n,
                 to,
                 format!(
-                    "@{sender}, {what}. The queue understands `queue [name]`, `dequeue` and \
-                     `refresh`."
+                    "@{sender}, {what}. The queue understands `queue [name]`, `dequeue`, \
+                     `refresh`, `update`, `rebase`, `squash`, `backport` and `copy`."
                 ),
             );
             return;
@@ -209,19 +210,6 @@ fn run(state: &mut State, rules: &Rules, c: &Comment, parsed: Parsed, out: &mut 
             to,
             format!(
                 "@{sender}, you may not run `{}` on this pull request: {why}.",
-                name.as_str()
-            ),
-        );
-        return;
-    }
-    if name.not_built() {
-        reply(
-            out,
-            n,
-            to,
-            format!(
-                "@{sender}, `{}` is a known command, but Schlange does not support it yet; \
-                 nothing was done.",
                 name.as_str()
             ),
         );
@@ -282,7 +270,9 @@ fn run(state: &mut State, rules: &Rules, c: &Comment, parsed: Parsed, out: &mut 
                 format!("@{sender}, this pull request is read again and re-evaluated."),
             );
         }
-        _ => {}
+        Name::Backport | Name::Copy | Name::Rebase | Name::Squash | Name::Update => {
+            crate::actions::command(state, c, name, args, out)
+        }
     }
 }
 

@@ -1,0 +1,56 @@
+# Copies onto other branches (action-backport, action-copy, commands backport/copy/update).
+# #1 is labeled for backport while open: the backport waits for the queue to merge it, then
+# cherry-picks the squash commit onto `stable` and every `release/…` branch, each as a new pull
+# request with the labels and the author assigned, and reports in a check and a comment. #2 is
+# copied to `old` before any merge; `old` changed the same file, so the copy carries conflict
+# markers and the `conflicts` label. Commands: `copy` and `backport` on #3 (the backport waits
+# for the merge), `update` on the behind #4.
+name: p2-actions-copies
+description: backport after merge, copy with conflicts, the copy, backport and update commands.
+config: configs/actions-copies.yml
+permissions: { maintainer: write }
+
+repo:
+  files: { README.md: "repo\n", shared.txt: "v1\n" }
+  branches: [stable, old, release/1.0, release/2.0, unrelated]
+
+ci:
+  - check: quick
+    duration: 1m
+
+pull_requests:
+  - { number: 1, author: alice, title: "Fix crash", labels: [backport, queue], files: { fix.txt: "fixed\n" } }
+  - { number: 2, author: bob, title: "Try it", labels: [experiment], files: { shared.txt: "v2\n" } }
+  - { number: 3, author: carol, title: "Small fix", files: { small.txt: "s\n" } }
+  - { number: 4, author: dana, files: { four.txt: "4\n" } }
+
+events:
+  - { at: 0s, push_base: { branch: old, files: { shared.txt: "old\n" } } }
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 2m, comment: { pr: 3, by: maintainer, body: "@mergifyio copy stable" } }
+  - { at: 3m, comment: { pr: 3, by: maintainer, body: "@mergifyio backport release/1.0" } }
+  - { at: 4m, label: { pr: 3, name: queue } }
+  - { at: 10m, comment: { pr: 4, by: maintainer, body: "@mergifyio update" } }
+
+expect:
+  - pr: 1
+    state: merged
+    checks: { "Rule: backport fixes (backport)": success }
+    comments: { "- `stable`: #": 1 }
+  - { pr: 2, state: open }
+  - { pr: 3, state: merged }
+  - { pr: 4, state: open, up_to_date: true }
+expect_pull_requests:
+  - { head: mergify/bp/stable/pr-1, base: stable, title: "Fix crash (backport of #1)", labels: [backport], assignees: [alice], files: { fix.txt: "fixed" } }
+  - { head: mergify/bp/release/1.0/pr-1, base: release/1.0 }
+  - { head: mergify/bp/release/2.0/pr-1, base: release/2.0 }
+  - { head: mergify/bp/unrelated/pr-1, exists: false }
+  - { head: mergify/copy/old/pr-2, base: old, labels: [conflicts], files: { shared.txt: "<<<<<<< old" } }
+  - { head: mergify/copy/stable/pr-3, base: stable, files: { small.txt: "s" } }
+  - { head: mergify/bp/release/1.0/pr-3, base: release/1.0 }
+expect_log:
+  - "the pull request will be backported to `release/1.0` once it is merged"
+  - "`update`: done: update #4 with its base"

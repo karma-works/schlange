@@ -672,12 +672,17 @@ impl Worker {
                 }
             }
         };
-        let key = format!("{path}\n{text}");
+        let remote = crate::config::extended_text(&self.forge.api, &text, Priority::Normal);
+        let key = format!("{path}\n{text}\n{remote:?}");
         if self.config_key.as_deref() == Some(key.as_str()) {
             return;
         }
         self.config_key = Some(key);
-        match self.check.check(&path, &text) {
+        let own = self.forge.api.repo.full();
+        let loaded = self.check.check_extended(&path, &text, Some(&own), |name| {
+            remote.unwrap_or_else(|| Err(format!("repository `{name}` was not read")))
+        });
+        match loaded {
             Ok(loaded) => {
                 let changed = self.rules.is_some();
                 for w in &loaded.warnings {
@@ -688,6 +693,18 @@ impl Worker {
                     q.commit_message_format.as_ref().is_some_and(|f| {
                         f.trailers
                             .contains(&schlange_config::rules::Trailer::ApprovedBy)
+                    })
+                }) || r.pull_request_rules.iter().any(|p| {
+                    p.actions.iter().any(|a| {
+                        use schlange_config::actions::RuleAction as A;
+                        matches!(
+                            a,
+                            A::Review { .. }
+                                | A::DismissReviews { .. }
+                                | A::RequestReviews { .. }
+                                | A::Comment { .. }
+                                | A::Close { .. }
+                        )
                     })
                 });
                 self.rules = Some(r);

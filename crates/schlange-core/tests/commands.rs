@@ -286,16 +286,28 @@ fn restrictions_refuse_with_a_reply_and_defaults_need_write() {
 }
 
 #[test]
-fn other_commands_are_recognised_but_not_supported_and_unknown_ones_answered() {
+fn action_commands_run_or_explain_and_unknown_ones_are_answered() {
     let mut d = Driver::new(CONFIG);
     d.read(vec![pr(1, "human", "h1", false)]);
-    for c in ["backport stable", "copy x", "rebase", "squash", "update"] {
+    // An up-to-date pull request with one commit: nothing to update, rebase or squash.
+    for (c, says) in [
+        ("rebase", "up to date"),
+        ("update", "up to date"),
+        ("squash", "nothing to squash"),
+        ("backport stable", "once it is merged"),
+        ("copy", "needs the branches"),
+    ] {
         let out = d.comment(1, "writer", &format!("@mergifyio {c}"));
-        assert!(
-            replies(&out)[0].contains("does not support it yet"),
-            "{c}: {out:?}"
-        );
+        assert!(replies(&out)[0].contains(says), "{c}: {out:?}");
     }
+    let out = d.comment(1, "writer", "@mergifyio copy stable");
+    assert!(
+        has(
+            &out,
+            |x| matches!(x, Decision::Act { op: schlange_core::actions::Op::Copy { branches, .. }, .. } if branches == &vec!["stable".to_string()])
+        ),
+        "{out:?}"
+    );
     let out = d.comment(1, "writer", "@mergifyio frobnicate");
     assert!(replies(&out)[0].contains("not a command"));
     let out = d.comment(1, "writer", "LGTM, @mergifyio queue later");

@@ -58,14 +58,6 @@ impl Name {
             _ => return None,
         })
     }
-
-    /// Commands whose action Schlange does not have yet.
-    pub fn not_built(self) -> bool {
-        matches!(
-            self,
-            Name::Backport | Name::Copy | Name::Rebase | Name::Squash | Name::Update
-        )
-    }
 }
 
 /// What a comment says.

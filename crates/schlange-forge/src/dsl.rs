@@ -92,6 +92,7 @@ impl Sim {
                 expect_merged_order: None,
                 expect_base: BTreeMap::new(),
                 expect_log: vec![],
+                expect_prs: vec![],
                 faults: Some(Faults::standard(1)),
                 forge_faults: None,
                 flake_seed: 0,
@@ -104,6 +105,12 @@ impl Sim {
 
     pub fn check(mut self, script: CiScript) -> Self {
         self.s.queue_scripts.push(script);
+        self
+    }
+
+    /// Another branch at the initial commit (a destination for copies).
+    pub fn branch(mut self, name: &str) -> Self {
+        self.s.setup.branches.push(name.into());
         self
     }
 

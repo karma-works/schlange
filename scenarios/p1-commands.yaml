@@ -1,9 +1,9 @@
 # Comment commands (MQ-50): `queue` waits for the queue conditions, a second one is ignored,
 # another queue name replaces it, a foreign push cancels it with a reply naming the pusher,
 # `dequeue` takes a pull request out for good (PR_MANUALLY_DEQUEUED) until a new `queue`,
-# `refresh` re-reads, the commands Schlange lacks are answered, restrictions refuse.
+# `refresh` re-reads, `rebase` on an up-to-date pull request is answered, restrictions refuse.
 name: p1-commands
-description: queue, dequeue, refresh and the unsupported commands, with their replies.
+description: queue, dequeue, refresh and rebase, with their replies.
 config: configs/commands.yml
 permissions: { alice: write, bob: maintain, carol: write, mallory: read }
 
@@ -58,7 +58,7 @@ expect_log:
   - "@mallory pushed new commits"
   - "dequeue #3 from `default`: PR_MANUALLY_DEQUEUED"
   - "you may not run `queue`"
-  - "Schlange does not support it yet"
+  - "@carol, this pull request is up to date with its base."
   - "read #4 before acting"
   - "this pull request is not queued"
   - "`frobnicate` is not a command"

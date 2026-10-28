@@ -1018,6 +1018,7 @@ dependencies = [
 name = "schlange-forge"
 version = "0.0.1"
 dependencies = [
+ "fancy-regex 0.20.0",
  "proptest",
  "schlange-config",
  "schlange-core",
@@ -1032,6 +1033,7 @@ dependencies = [
 name = "schlange-github"
 version = "0.0.1"
 dependencies = [
+ "fancy-regex 0.20.0",
  "ring",
  "rusqlite",
  "rustls-pki-types",

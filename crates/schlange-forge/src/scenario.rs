@@ -230,6 +230,15 @@ struct EditBodySpec {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReviewSpec {
+    pr: u64,
+    by: String,
+    /// `approved`, `changes_requested` or `commented`.
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LabelSpec {
     pr: u64,
     name: String,
@@ -269,6 +278,7 @@ enum StepAction {
     Comment(CommentSpec),
     Tick(TickSpec),
     EditBody(EditBodySpec),
+    Review(ReviewSpec),
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,6 +295,9 @@ struct RepoSpec {
     base: String,
     #[serde(default)]
     files: BTreeMap<String, String>,
+    /// More branches, created at the initial commit (destinations of copies).
+    #[serde(default)]
+    branches: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -344,6 +357,11 @@ struct ScenarioSpec {
     permissions: BTreeMap<String, String>,
     #[serde(default)]
     config_in_repo: bool,
+    /// Configurations of other repositories that `extends` can name: name → file.
+    #[serde(default)]
+    extends: BTreeMap<String, String>,
+    #[serde(default)]
+    expect_pull_requests: Vec<crate::runner::ExpectPr>,
 }
 
 /// Content a pull request writes to a path given only by name.
@@ -373,7 +391,15 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             path: config_path.clone(),
             source,
         })?;
-    let rules = Rules::from_yaml(&config_text).map_err(|e| ScenarioError::Config {
+    let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let rules = Rules::from_yaml_extended(&config_text, Some("sim/repo"), |name| {
+        let file = spec
+            .extends
+            .get(name)
+            .ok_or_else(|| format!("repository `{name}` is not in the scenario's `extends`"))?;
+        std::fs::read_to_string(dir.join(file)).map_err(|e| format!("{file}: {e}"))
+    })
+    .map_err(|e| ScenarioError::Config {
         path: config_path.clone(),
         message: e.to_string(),
     })?;
@@ -461,6 +487,11 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
     let setup = crate::runner::Setup {
         permissions: spec.permissions.clone(),
         config_in_repo: spec.config_in_repo,
+        branches: spec
+            .repo
+            .as_ref()
+            .map(|r| r.branches.clone())
+            .unwrap_or_default(),
     };
 
     let mut steps = Vec::new();
@@ -508,6 +539,21 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             StepAction::EditBody(e) => Action::EditBody {
                 number: known(e.pr)?,
                 body: e.body.clone(),
+            },
+            StepAction::Review(r) => Action::Review {
+                number: known(r.pr)?,
+                by: r.by.clone(),
+                state: match r.state.as_str() {
+                    "approved" => "APPROVED",
+                    "changes_requested" => "CHANGES_REQUESTED",
+                    "commented" => "COMMENTED",
+                    o => {
+                        return Err(fmt(format!(
+                            "unknown review state `{o}` (approved, changes_requested, commented)"
+                        )));
+                    }
+                }
+                .into(),
             },
             StepAction::Label(l) => Action::Label {
                 number: known(l.pr)?,
@@ -586,6 +632,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         expect_merged_order: spec.expect_merged_order,
         expect_base: spec.expect_base,
         expect_log: spec.expect_log,
+        expect_prs: spec.expect_pull_requests,
         faults,
         forge_faults,
         flake_seed: spec.seed,

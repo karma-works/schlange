@@ -1,0 +1,75 @@
++0:00:00  action    direct push to old: 6c28ec7
++0:00:00  action    #1 opened by alice on main, files: fix.txt
++0:00:00  action    #2 opened by bob on main, files: shared.txt
++0:00:00  action    #3 opened by carol on main, files: small.txt
++0:00:00  action    #4 opened by dana on main, files: four.txt
++0:00:00  webhook   #2 opened
++0:00:00  decision  action of `copy experiments`: copy #2 to old
++0:00:00  reply     copied: old as #2001 with conflicts
++0:00:00  decision  action of `copy experiments`: check `Rule: copy experiments (copy)` on #2: success (copy done)
++0:00:00  reply     action done
++0:01:00  ci        #1 check `quick` completed on 908ef93: success
++0:01:00  ci        #2 check `quick` completed on d593988: success
++0:01:00  ci        #3 check `quick` completed on 0302ca4: success
++0:01:00  ci        #4 check `quick` completed on 33d85e0: success
++0:01:00  webhook   #1 check `quick` completed on 908ef93: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue`)
++0:01:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base ae795c9 + #1 (checks #1)
++0:01:00  reply     car 4 built at b03b05f, draft #1000
++0:01:00  decision  labels #1 +queued
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:02:00  action    maintainer commented on #3: @mergifyio copy stable
++0:02:00  ci        #1000 check `quick` completed on b03b05f: success
++0:02:00  webhook   #3 comment 2 by maintainer
++0:02:00  decision  react +1 to comment 2 on #3
++0:02:00  decision  action of `command `copy` by @maintainer`: copy #3 to stable
++0:02:00  reply     copied: stable as #2002
++0:02:00  decision  reply #3: @maintainer, `copy`: - `stable`: #2002
++0:02:00  webhook   #1000 check `quick` completed on b03b05f: success
++0:02:00  decision  read #1 #1000 main mergify/merge-queue/34fd968ed0 before acting
++0:02:00  decision  land car 4: squash #1 onto main if it is still ae795c9
++0:02:00  message   #1: Fix crash (#1)
++0:02:00  reply     car 4 landed #1 as 908ef93
++0:02:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1000
++0:02:00  decision  #1 merged as 908ef93
++0:02:00  decision  action of `backport fixes`: backport #1 to stable, /release//
++0:02:00  reply     copied: stable as #2003, release/1.0 as #2004, release/2.0 as #2005
++0:02:00  decision  labels #1 -queued
++0:02:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 908ef93.
++0:02:00  decision  action of `backport fixes`: check `Rule: backport fixes (backport)` on #1: success (backport done)
++0:02:00  reply     action done
++0:02:00  decision  action of `backport fixes`: comment on #1: - `stable`: #2003
++0:02:00  reply     action done
++0:03:00  action    maintainer commented on #3: @mergifyio backport release/1.0
++0:03:00  webhook   #3 comment 5 by maintainer
++0:03:00  decision  react +1 to comment 5 on #3
++0:03:00  decision  reply #3: @maintainer, the pull request will be backported to `release/1.0` once it is merged.
++0:04:00  action    #3 labeled queue
++0:04:00  webhook   #3 labeled
++0:04:00  decision  enqueue #3 into `default` (rule `queue`)
++0:04:00  decision  build car 11 on mergify/merge-queue/7d7b1cef54: base 908ef93 + #3 (checks #3)
++0:04:00  reply     car 11 built at b7076d6, draft #1001
++0:04:00  decision  labels #3 +queued
++0:04:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked.
++0:04:00  decision  status comment #3: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:05:00  ci        #1001 check `quick` completed on b7076d6: success
++0:05:00  webhook   #1001 check `quick` completed on b7076d6: success
++0:05:00  decision  read #3 #1001 main mergify/merge-queue/7d7b1cef54 before acting
++0:05:00  decision  land car 11: squash #3 onto main if it is still 908ef93
++0:05:00  message   #3: Small fix (#3)
++0:05:00  reply     car 11 landed #3 as 4851bf9
++0:05:00  decision  close car 11, delete mergify/merge-queue/7d7b1cef54, close #1001
++0:05:00  decision  #3 merged as 4851bf9
++0:05:00  decision  action of `command `backport` by @maintainer`: backport #3 to release/1.0
++0:05:00  reply     copied: release/1.0 as #2006
++0:05:00  decision  labels #3 -queued
++0:05:00  decision  status comment #3: **Merge queue** · merged — Merged by the queue as 4851bf9.
++0:05:00  decision  reply #3: @maintainer, `backport`: - `release/1.0`: #2006
++0:10:00  action    maintainer commented on #4: @mergifyio update
++0:10:00  webhook   #4 comment 9 by maintainer
++0:10:00  decision  react +1 to comment 9 on #4
++0:10:00  decision  action of `command `update` by @maintainer`: update #4 with its base
++0:10:00  reply     action done
++0:10:00  decision  reply #4: @maintainer, `update`: done: update #4 with its base.
++0:11:00  ci        #4 check `quick` completed on ccb0895: success

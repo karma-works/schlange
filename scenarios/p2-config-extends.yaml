@@ -1,0 +1,32 @@
+# `extends`, `defaults` and `shared` (config-extends, config-defaults, config-shared; MQ-52,
+# MQ-19). The local configuration extends `org-config`: the org's `welcome` and `close` rules
+# apply, its `label bugs` rule is replaced by the local one of the same name, and `defaults` are
+# merged key by key with the local value winning (the welcome comment uses the local default
+# message, the close message comes from the org). The queue conditions reuse an anchor from
+# `shared`.
+name: p2-config-extends
+description: extends with rules merged by name, defaults merged by key, shared anchors.
+config: configs/extends-local.yml
+extends: { org-config: configs/extends-org.yml }
+
+ci:
+  - check: quick
+    duration: 1m
+
+pull_requests:
+  - { number: 1, author: alice, title: "Fix bug in parser", labels: [queue], files: { a.txt: "a\n" } }
+  - { number: 2, author: bob, title: "junk", files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+
+expect:
+  - pr: 1
+    state: merged
+    labels: [bug, local]
+    no_labels: [org-bug]
+    comments: { "Local default: thanks @alice.": 1, "Org default": 0 }
+  - pr: 2
+    state: closed
+    comments: { "Closed by the organisation's rules: junk.": 1, "Local default: thanks @bob.": 1 }

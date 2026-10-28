@@ -1,0 +1,55 @@
+# Actions about people and the pull request's state: `assign`, `request_reviews`, `review`,
+# `dismiss_reviews`, `edit` and `post_check`.
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - check-success = quick
+      - label = ship
+    merge_conditions:
+      - check-success = quick
+
+pull_request_rules:
+  - name: owners
+    conditions:
+      - files ~= ^api/
+    actions:
+      assign:
+        add_users: ["{{ author }}", lead]
+      request_reviews:
+        users: [alice, bob, carol]
+        teams: [api-team]
+
+  - name: approve docs
+    conditions:
+      - files ~= ^docs/
+    actions:
+      review:
+        type: APPROVE
+        message: "Docs only, approved by rule."
+
+  - name: stale approvals
+    conditions: []
+    actions:
+      dismiss_reviews:
+        message: "New commits: please review again."
+
+  - name: failing checks make a draft
+    conditions:
+      - check-failure = quick
+    actions:
+      edit:
+        draft: true
+
+  - name: has a description
+    conditions:
+      - label = documented
+    actions:
+      post_check:
+        title: "{% if check_succeeded %}Description present{% else %}Description missing{% endif %}"
+
+  - name: ship
+    conditions:
+      - label = ship
+    actions:
+      queue:

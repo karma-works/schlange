@@ -1,0 +1,53 @@
+# Actions that change branches (action-update, action-rebase, action-squash, action-close,
+# action-delete-head-branch, action-merge, action-github-actions). A direct push makes #1 and
+# #2 fall behind: `update` merges the base into #1, `rebase` replays #2 on top of it, and again
+# each time the base moves (the merges of #5 and #7): #1 ends with four commits. #3 has
+# two commits and gets squashed into one. #4 touches vendor/ and is closed with a message; its
+# head branch is then deleted, as is #5's after `merge` merged it directly (outside the queue,
+# like a merge by hand). #6 dispatches a workflow once. #7 goes through the queue meanwhile.
+name: p2-actions-branches
+description: update, rebase, squash, close, delete_head_branch, merge, github_actions.
+config: configs/actions-branches.yml
+
+ci:
+  - check: quick
+    duration: 1m
+
+pull_requests:
+  - { number: 1, author: dev, labels: [keep-updated], files: { one.txt: "1\n" } }
+  - { number: 2, author: dev, labels: [keep-rebased], files: { two.txt: "2\n" } }
+  - { number: 3, author: dev, title: "Tidy", body: "Why it matters.", files: { three.txt: "3\n" } }
+  - { number: 4, author: dev, files: { vendor/lib.c: "patched\n" } }
+  - { number: 5, author: dev, labels: [docs], files: { docs/a.md: "a\n" } }
+  - { number: 6, author: dev, labels: [preview], files: { six.txt: "6\n" } }
+  - { number: 7, author: dev, labels: [queue], files: { seven.txt: "7\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+  - { at: 0s, open: 4 }
+  - { at: 0s, open: 6 }
+  - { at: 30s, push: { pr: 3, files: { three.txt: "3 again\n" } } }
+  - { at: 2m, push_base: { files: { base.txt: "moved\n" } } }
+  - { at: 3m, label: { pr: 3, name: squash-me } }
+  - { at: 4m, open: 5 }
+  - { at: 10m, open: 7 }
+
+expect:
+  - { pr: 1, state: open, up_to_date: true, commits: 4 }
+  - { pr: 2, state: open, up_to_date: true, commits: 1 }
+  - { pr: 3, state: open, commits: 1 }
+  - { pr: 4, state: closed, comments: { "changes to vendor/ are not accepted here": 1 } }
+  - { pr: 5, state: closed }
+  - { pr: 6, state: open }
+  - { pr: 7, state: merged }
+expect_log:
+  - "action of `keep up to date`: update #1 with its base"
+  - "action of `keep rebased`: rebase #2 onto its base"
+  - "action of `one commit`: squash the commits of #3"
+  - "action of `no vendor changes`: close #4"
+  - "action of `tidy branches`: delete head branch pr-4 of #4"
+  - "action of `merge docs directly`: merge #5 directly (squash)"
+  - "action of `tidy branches`: delete head branch pr-5 of #5"
+  - "action of `deploy preview`: dispatch workflow preview.yml for #6"

@@ -95,7 +95,7 @@ fn arztagent_constitution_pull_request_waits_for_a_listed_human() {
 }
 
 #[test]
-fn queue_dequeue_refresh_and_unsupported_commands() {
+fn queue_dequeue_refresh_squash_and_restrictions() {
     // No CI responder: the test reports the checks, so the queue waits where it should.
     let t = Tester::new(SIMPLE).start();
     for (u, p) in [("alice", "write"), ("bob", "write"), ("carol", "write")] {
@@ -137,7 +137,7 @@ fn queue_dequeue_refresh_and_unsupported_commands() {
     t.pr(a).comment("carol", "@mergifyio refresh");
     t.pr(a).wait_comment("read again and re-evaluated");
     t.pr(a).comment("carol", "@mergifyio squash");
-    t.pr(a).wait_comment("does not support it yet");
+    t.pr(a).wait_comment("`squash`: done: squash the commits");
     t.pr(a).comment("mallory", "@mergifyio queue");
     t.pr(a).wait_comment("@mallory, you may not run `queue`");
     t.pr(a).comment("bob", "@mergifyio requeue");

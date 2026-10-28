@@ -1,0 +1,36 @@
+# A configuration that extends `org-config` (scenario `extends`), uses `defaults` for actions
+# and YAML anchors kept under `shared`.
+extends: org-config
+
+shared:
+  ci: &ci
+    - check-success = quick
+
+defaults:
+  actions:
+    comment:
+      message: "Local default: thanks @{{ author }}."
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - and: *ci
+      - label = queue
+    merge_conditions:
+      - and: *ci
+
+pull_request_rules:
+  # Same name as a rule in org-config: this one replaces it.
+  - name: label bugs
+    conditions:
+      - title ~= (?i)bug
+    actions:
+      label:
+        add: [bug, local]
+
+  - name: queue
+    conditions:
+      - label = queue
+    actions:
+      queue:

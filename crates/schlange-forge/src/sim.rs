@@ -27,6 +27,10 @@ use schlange_core::{Decision, Event};
 use crate::ci::{CiScript, Rng, keyed_unit};
 use crate::git::{GitStore, Repo, Sha, Tree};
 
+#[path = "sim_actions.rs"]
+pub mod actions;
+pub use actions::{PostedCheck, PostedChecks, is_copy};
+
 /// A virtual clock that only moves when the simulation advances it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VirtualClock {
@@ -164,6 +168,12 @@ pub enum Action {
     EditBody {
         number: u64,
         body: String,
+    },
+    /// Someone reviews the pull request (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`).
+    Review {
+        number: u64,
+        by: String,
+        state: String,
     },
 }
 
@@ -364,6 +374,14 @@ pub struct SimForge<G: GitStore = Repo> {
     pushers: BTreeMap<u64, String>,
     /// Squash commit messages the forge wrote, for the log: time, number, message.
     pub landed_messages: Vec<(Time, u64, String)>,
+    /// Checks reported by rule actions.
+    pub posted_checks: PostedChecks,
+    /// Workflow dispatches: pull request, workflow, ref, inputs.
+    pub dispatches: Vec<(u64, String, String, BTreeMap<String, String>)>,
+    /// Branches deleted by `delete_head_branch`.
+    pub deleted_branches: Vec<String>,
+    next_copy: u64,
+    next_review: u64,
 }
 
 /// `Name <email>` of a simulated account.
@@ -426,7 +444,18 @@ impl<G: GitStore> SimForge<G> {
             commit_log: BTreeMap::new(),
             pushers: BTreeMap::new(),
             landed_messages: Vec::new(),
+            posted_checks: PostedChecks::default(),
+            dispatches: Vec::new(),
+            deleted_branches: Vec::new(),
+            next_copy: 2000,
+            next_review: 0,
         }
+    }
+
+    /// Another branch at the initial commit (a destination for copies).
+    pub fn add_branch(&mut self, name: &str) {
+        let root = self.initial_commit.clone();
+        self.repo.create_ref(name, &root).ok();
     }
 
     /// A comment as the engine sees it (with the sender's permission now).
@@ -788,7 +817,7 @@ impl<G: GitStore> SimForge<G> {
     pub fn drafts_with_ci(&self, base: &str) -> usize {
         self.prs
             .values()
-            .filter(|p| p.author == BOT && p.base == base)
+            .filter(|p| p.author == BOT && p.base == base && !is_copy(p))
             .filter(|p| !p.closed || p.checks.iter().any(|c| c.conclusion.is_none()))
             .count()
     }
@@ -941,6 +970,16 @@ impl<G: GitStore> SimForge<G> {
                 pr.body = def.body.clone();
                 pr.from_fork = def.fork;
                 pr.approved_by = def.approvals.clone();
+                for a in &def.approvals {
+                    self.next_review += 1;
+                    pr.reviews.push(schlange_core::model::Review {
+                        id: self.next_review,
+                        author: a.clone(),
+                        state: "APPROVED".into(),
+                        commit: Some(head.clone()),
+                        body: String::new(),
+                    });
+                }
                 self.prs.insert(n, pr);
                 self.commit_log.insert(
                     n,
@@ -1055,6 +1094,24 @@ impl<G: GitStore> SimForge<G> {
                     format!("#{number} comment {id} edited by {by}"),
                 );
                 format!("{by} ticked the {checkbox:?} checkbox on #{number}")
+            }
+            Action::Review { number, by, state } => {
+                self.next_review += 1;
+                let id = self.next_review;
+                let Some(p) = self.prs.get_mut(&number) else {
+                    return format!("review of unknown #{number}");
+                };
+                p.requested_reviewers.retain(|r| *r != by);
+                let commit = Some(p.head_sha.clone());
+                p.reviews.push(schlange_core::model::Review {
+                    id,
+                    author: by.clone(),
+                    state: state.clone(),
+                    commit,
+                    body: String::new(),
+                });
+                self.emit(Hint::PullRequest(number), format!("#{number} reviewed"));
+                format!("{by} reviewed #{number}: {state}")
             }
             Action::EditBody { number, body } => {
                 if let Some(p) = self.prs.get_mut(&number) {
@@ -1186,6 +1243,22 @@ impl<G: GitStore> SimForge<G> {
             pr.base_tip = Some(tip);
         }
         pr.head_tree = Some(self.repo.tree_id_of(&pr.head_sha));
+        pr.commit_messages = self
+            .commit_log
+            .get(&n)
+            .map(|l| l.iter().map(|(_, m)| m.clone()).collect())
+            .unwrap_or_default();
+        if !pr.reviews.is_empty() {
+            let mut latest: BTreeMap<&str, &str> = BTreeMap::new();
+            for r in &pr.reviews {
+                latest.insert(&r.author, &r.state);
+            }
+            pr.approved_by = latest
+                .into_iter()
+                .filter(|(_, s)| *s == "APPROVED")
+                .map(|(a, _)| a.to_string())
+                .collect();
+        }
         if pr.author == BOT {
             return Some(pr);
         }
@@ -1264,7 +1337,7 @@ impl<G: GitStore> SimForge<G> {
     pub fn open_drafts(&self) -> Vec<&PullRequest> {
         self.prs
             .values()
-            .filter(|p| p.author == BOT && !p.closed)
+            .filter(|p| p.author == BOT && !p.closed && !is_copy(p))
             .collect()
     }
 
@@ -1486,6 +1559,10 @@ impl<G: GitStore> SimForge<G> {
             Decision::Cosmetic { cosmetic } => {
                 self.apply_cosmetic(cosmetic);
                 vec![]
+            }
+            Decision::Act { id, op, .. } => {
+                let result = self.rule_action(op);
+                vec![Event::ActionDone { id: *id, result }]
             }
         }
     }

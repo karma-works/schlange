@@ -205,6 +205,14 @@ impl Repo {
         self.get(sha).tree_id.clone()
     }
 
+    /// The tree with id `id`, if some commit has it.
+    pub fn find_tree(&self, id: &str) -> Option<Tree> {
+        self.commits
+            .values()
+            .find(|c| c.tree_id == id)
+            .map(|c| c.tree.clone())
+    }
+
     pub fn ref_sha(&self, name: &str) -> Option<&Sha> {
         self.refs.get(name)
     }

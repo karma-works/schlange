@@ -65,6 +65,9 @@ use crate::store::{AuditRecord, Store};
 use crate::time::Clock;
 use crate::webhook::{conclusion, status_conclusion};
 
+#[path = "forge_actions.rs"]
+mod actions;
+
 #[derive(Clone, Debug)]
 pub struct ForgeOptions {
     /// The app's bot login (`<slug>[bot]`): author of the queue's draft pull requests.
@@ -397,6 +400,14 @@ impl GithubForge {
         pr.merged = p.merged;
         pr.merge_commit_sha = p.merge_commit_sha.clone().filter(|_| p.merged);
         pr.labels = p.labels.iter().map(|l| l.name.clone()).collect();
+        pr.assignees = p.assignees.iter().map(|u| u.login.clone()).collect();
+        pr.requested_reviewers = p
+            .requested_reviewers
+            .iter()
+            .map(|u| u.login.clone())
+            .collect();
+        pr.requested_teams = p.requested_teams.iter().map(|t| t.slug.clone()).collect();
+        pr.merged_by = p.merged_by.as_ref().map(|u| u.login.clone());
         self.heads.borrow_mut().insert(n, p.head.sha.clone());
         if pr.closed {
             return Ok(pr);
@@ -457,13 +468,27 @@ impl GithubForge {
             .and_then(|c| c.author.as_ref())
             .map(|u| u.login.clone());
         pr.head_by_queue = pr.head_pusher.as_deref() == Some(self.opts.bot_login.as_str());
+        pr.commit_messages = commits.iter().map(|c| c.commit.message.clone()).collect();
         if p.user.login == "dependabot[bot]" {
             let msgs: Vec<String> = commits.iter().map(|c| c.commit.message.clone()).collect();
             pr.dependabot_update_types = dependabot_update_types(&msgs);
         }
         if self.read_reviews {
             let mut latest: BTreeMap<String, String> = BTreeMap::new();
-            for r in self.api.reviews(n, prio)? {
+            let reviews = self.api.reviews(n, prio)?;
+            pr.reviews = reviews
+                .iter()
+                .filter_map(|r| {
+                    Some(schlange_core::model::Review {
+                        id: r.id,
+                        author: r.user.as_ref()?.login.clone(),
+                        state: r.state.clone(),
+                        commit: r.commit_id.clone(),
+                        body: r.body.clone().unwrap_or_default(),
+                    })
+                })
+                .collect();
+            for r in reviews {
                 if let Some(u) = r.user {
                     // Comments do not change a reviewer's verdict.
                     if r.state != "COMMENTED" {
@@ -943,6 +968,10 @@ impl GithubForge {
             Decision::Cosmetic { cosmetic } => {
                 self.cosmetics.push_back(Cosmetic::Show(cosmetic.clone()));
                 vec![]
+            }
+            Decision::Act { id, op, .. } => {
+                let result = self.rule_action(op);
+                vec![Event::ActionDone { id: *id, result }]
             }
         }
     }

@@ -1,0 +1,60 @@
++0:00:00  action    #1 opened by dana on main, files: api/x.rs
++0:00:00  action    #2 opened by dana on main, files: docs/readme.md
++0:00:00  action    #3 opened by erin on main, files: lib.rs
++0:00:00  webhook   #1 opened
++0:00:00  decision  action of `owners`: assign #1 +dana +lead
++0:00:00  reply     action done
++0:00:00  decision  action of `owners`: request reviews on #1 from alice, bob, carol, team api-team
++0:00:00  reply     action done
++0:00:00  decision  action of `has a description`: check `Rule: has a description (post_check)` on #1: success (Description present)
++0:00:00  reply     action done
++0:00:00  webhook   #2 opened
++0:00:00  decision  action of `approve docs`: review #2: APPROVE Docs only, approved by rule.
++0:00:00  reply     action done
++0:00:00  decision  action of `has a description`: check `Rule: has a description (post_check)` on #2: failure (Description missing)
++0:00:00  reply     action done
++0:00:00  webhook   #3 opened
++0:00:00  decision  action of `has a description`: check `Rule: has a description (post_check)` on #3: failure (Description missing)
++0:00:00  reply     action done
++0:01:00  ci        #1 check `quick` completed on 316bd6f: success
++0:01:00  ci        #2 check `quick` completed on 9e06921: success
++0:01:00  ci        #3 check `quick` completed on c29aa26: failure
++0:01:00  webhook   #3 check `quick` completed on c29aa26: failure
++0:01:00  decision  action of `failing checks make a draft`: mark #3 as draft
++0:01:00  reply     action done
++0:02:00  action    alice reviewed #1: APPROVED
++0:04:00  action    #1 pushed, head d7c4324
++0:04:00  webhook   #1 synchronize
++0:04:00  decision  action of `stale approvals`: dismiss 1 review(s) on #1
++0:04:00  reply     action done
++0:04:00  decision  action of `has a description`: check `Rule: has a description (post_check)` on #1: success (Description present)
++0:04:00  reply     action done
++0:05:00  action    #2 pushed, head 80c903a
++0:05:00  ci        #1 check `quick` completed on d7c4324: success
++0:05:00  webhook   #2 synchronize
++0:05:00  decision  action of `stale approvals`: dismiss 1 review(s) on #2
++0:05:00  reply     action done
++0:05:00  decision  action of `has a description`: check `Rule: has a description (post_check)` on #2: failure (Description missing)
++0:05:00  reply     action done
++0:05:00  webhook   #2 check `quick` started on 80c903a
++0:05:00  decision  action of `approve docs`: review #2: APPROVE Docs only, approved by rule.
++0:05:00  reply     action done
++0:06:00  ci        #2 check `quick` completed on 80c903a: success
++0:10:00  action    #1 labeled ship
++0:10:00  webhook   #1 labeled
++0:10:00  decision  enqueue #1 into `default` (rule `ship`)
++0:10:00  decision  build car 14 on mergify/merge-queue/0eaf9c52f0: base 5a8b940 + #1 (checks #1)
++0:10:00  reply     car 14 built at 486ada2, draft #1000
++0:10:00  decision  labels #1 +queued
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:10:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:11:00  ci        #1000 check `quick` completed on 486ada2: success
++0:11:00  webhook   #1000 check `quick` completed on 486ada2: success
++0:11:00  decision  read #1 #1000 main mergify/merge-queue/0eaf9c52f0 before acting
++0:11:00  decision  land car 14: squash #1 onto main if it is still 5a8b940
++0:11:00  message   #1: Pull request 1 (#1) ⏎  ⏎ * Pull request 1 (#1) ⏎ * push 1 to #1
++0:11:00  reply     car 14 landed #1 as b4eae9a
++0:11:00  decision  close car 14, delete mergify/merge-queue/0eaf9c52f0, close #1000
++0:11:00  decision  #1 merged as b4eae9a
++0:11:00  decision  labels #1 -queued
++0:11:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as b4eae9a.

@@ -85,8 +85,20 @@ pub struct GitRefSide {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Review {
     #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
     pub user: Option<User>,
     pub state: String,
+    #[serde(default)]
+    pub commit_id: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// A team in a pull request's requested reviewers.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TeamRef {
+    pub slug: String,
 }
 
 /// A comment on an issue or pull request.
@@ -143,6 +155,16 @@ pub struct Pull {
     pub base: GitRefSide,
     #[serde(default)]
     pub labels: Vec<Label>,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub assignees: Vec<User>,
+    #[serde(default)]
+    pub requested_reviewers: Vec<User>,
+    #[serde(default)]
+    pub requested_teams: Vec<TeamRef>,
+    #[serde(default)]
+    pub merged_by: Option<User>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -814,6 +836,207 @@ impl RepoApi {
             Some(&json!({ "labels": labels })),
         )
         .map(|_| ())
+    }
+
+    pub fn add_assignees(&self, n: u64, users: &[String], prio: Priority) -> Result<(), Error> {
+        self.send(
+            "POST",
+            &format!("/issues/{n}/assignees"),
+            prio,
+            Some(&json!({ "assignees": users })),
+        )
+        .map(|_| ())
+    }
+
+    pub fn remove_assignees(&self, n: u64, users: &[String], prio: Priority) -> Result<(), Error> {
+        self.send(
+            "DELETE",
+            &format!("/issues/{n}/assignees"),
+            prio,
+            Some(&json!({ "assignees": users })),
+        )
+        .map(|_| ())
+    }
+
+    pub fn request_reviewers(
+        &self,
+        n: u64,
+        users: &[String],
+        teams: &[String],
+        prio: Priority,
+    ) -> Result<(), Error> {
+        self.send(
+            "POST",
+            &format!("/pulls/{n}/requested_reviewers"),
+            prio,
+            Some(&json!({ "reviewers": users, "team_reviewers": teams })),
+        )
+        .map(|_| ())
+    }
+
+    /// Submits a review (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`).
+    pub fn create_review(
+        &self,
+        n: u64,
+        event: &str,
+        body: &str,
+        prio: Priority,
+    ) -> Result<(), Error> {
+        self.send(
+            "POST",
+            &format!("/pulls/{n}/reviews"),
+            prio,
+            Some(&json!({ "event": event, "body": body })),
+        )
+        .map(|_| ())
+    }
+
+    pub fn dismiss_review(
+        &self,
+        n: u64,
+        id: u64,
+        message: &str,
+        prio: Priority,
+    ) -> Result<(), Error> {
+        self.send(
+            "PUT",
+            &format!("/pulls/{n}/reviews/{id}/dismissals"),
+            prio,
+            Some(&json!({ "message": message, "event": "DISMISS" })),
+        )
+        .map(|_| ())
+    }
+
+    /// Merges the base into the pull request's head (`PUT /pulls/{n}/update-branch`), only
+    /// while the head is `expected`.
+    pub fn update_branch(&self, n: u64, expected: &str, prio: Priority) -> Result<(), Error> {
+        self.send(
+            "PUT",
+            &format!("/pulls/{n}/update-branch"),
+            prio,
+            Some(&json!({ "expected_head_sha": expected })),
+        )
+        .map(|_| ())
+    }
+
+    /// Creates a commit from a tree and parents (git data API); returns its SHA.
+    pub fn create_commit(
+        &self,
+        tree: &str,
+        parents: &[String],
+        message: &str,
+        prio: Priority,
+    ) -> Result<String, Error> {
+        let c: ShaOnly = self
+            .send(
+                "POST",
+                "/git/commits",
+                prio,
+                Some(&json!({ "tree": tree, "parents": parents, "message": message })),
+            )?
+            .json("/git/commits")?;
+        Ok(c.sha)
+    }
+
+    /// Moves a branch, forcing (the actions' own head rewrites: squash).
+    pub fn force_ref(&self, branch: &str, sha: &str, prio: Priority) -> Result<(), Error> {
+        self.send(
+            "PATCH",
+            &format!("/git/refs/heads/{}", enc_path(branch)),
+            prio,
+            Some(&json!({ "sha": sha, "force": true })),
+        )
+        .map(|_| ())
+    }
+
+    /// Merges pull request `n` with `method` only if its head is still `sha`.
+    pub fn merge_pull(
+        &self,
+        n: u64,
+        sha: &str,
+        method: &str,
+        prio: Priority,
+    ) -> Result<PullMergeOutcome, Error> {
+        let body = json!({ "merge_method": method, "sha": sha });
+        match self.send("PUT", &format!("/pulls/{n}/merge"), prio, Some(&body)) {
+            Ok(r) => {
+                let m: ShaOnly = r.json("merge")?;
+                Ok(PullMergeOutcome::Merged { sha: m.sha })
+            }
+            Err(Error::Status { status: 409, .. }) => Ok(PullMergeOutcome::HeadMoved),
+            Err(Error::Status {
+                status: 405,
+                message,
+                ..
+            }) => Ok(PullMergeOutcome::NotMergeable(message)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Starts a workflow (`workflow_dispatch`).
+    pub fn dispatch_workflow(
+        &self,
+        workflow: &str,
+        reference: &str,
+        inputs: &BTreeMap<String, String>,
+        prio: Priority,
+    ) -> Result<(), Error> {
+        self.send(
+            "POST",
+            &format!("/actions/workflows/{}/dispatches", enc_path(workflow)),
+            prio,
+            Some(&json!({ "ref": reference, "inputs": inputs })),
+        )
+        .map(|_| ())
+    }
+
+    /// A GraphQL mutation on pull request `node` (draft state); `Err` with GraphQL's errors.
+    pub fn set_draft(&self, node: &str, draft: bool, prio: Priority) -> Result<(), Error> {
+        let query = if draft {
+            "mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+        } else {
+            "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+        };
+        let r = self.client.send(
+            "POST",
+            "/graphql",
+            auth_inst(self.installation),
+            prio,
+            Some(&json!({ "query": query, "variables": { "id": node } })),
+        )?;
+        let v: Value = r.json("/graphql")?;
+        match v
+            .get("errors")
+            .and_then(|e| e.as_array())
+            .and_then(|e| e.first())
+        {
+            Some(e) => Err(Error::Status {
+                status: 422,
+                message: e["message"].as_str().unwrap_or("GraphQL error").to_string(),
+                method: "POST".into(),
+                path: "/graphql".into(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// A file of another repository of the same owner, on its default branch (`extends`).
+    pub fn foreign_file(
+        &self,
+        repo: &str,
+        path: &str,
+        prio: Priority,
+    ) -> Result<Option<String>, Error> {
+        let other = RepoApi {
+            client: self.client.clone(),
+            repo: RepoName {
+                owner: self.repo.owner.clone(),
+                name: repo.to_string(),
+            },
+            installation: self.installation,
+        };
+        let def: Repository = other.get("", prio)?;
+        other.file_content(path, &def.default_branch, prio)
     }
 
     pub fn remove_label(&self, n: u64, label: &str, prio: Priority) -> Result<(), Error> {

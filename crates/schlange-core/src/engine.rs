@@ -155,6 +155,11 @@ pub enum Event {
     /// The configuration on the default branch changed: every pull request is evaluated again
     /// under the new rules (MQ-19).
     ConfigurationChanged,
+    /// Reply to `Act`: what the forge did with a rule action's request.
+    ActionDone {
+        id: u64,
+        result: crate::actions::ActionResult,
+    },
 }
 
 /// What the engine decided. The forge adapter turns decisions into side effects.
@@ -241,6 +246,13 @@ pub enum Decision {
     /// Labels, comments, reactions and reported checks. Never read back as a condition and
     /// sent with the lowest priority, so it never delays landing.
     Cosmetic { cosmetic: Cosmetic },
+    /// A rule action's request (`pull_request_rules` actions and the commands that run them).
+    /// A side effect: journaled before it is sent; reply `ActionDone`.
+    Act {
+        id: u64,
+        rule: String,
+        op: crate::actions::Op,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +388,9 @@ pub struct State {
     /// What the queue last showed on pull requests (labels, comments, checks).
     #[serde(default)]
     pub cosmetics: crate::cosmetics::Applied,
+    /// What the rule actions remember (see `actions`).
+    #[serde(default)]
+    pub actions: crate::actions::ActionsState,
 }
 
 impl State {
@@ -540,9 +555,17 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             error,
         } => queue::landed(state, rules, *car, commits, error.as_ref(), out),
         Event::Tick => {}
+        Event::Failed {
+            decision: Decision::Act { id, .. },
+            error,
+        } => crate::actions::failed(state, *id, error, out),
         Event::Failed { decision, .. } => queue::side_effect_failed(state, decision, out),
         Event::CarClosed { car } => queue::car_closed(state, *car),
-        Event::Restarted => queue::expire_all(state, out),
+        Event::Restarted => {
+            queue::expire_all(state, out);
+            crate::actions::restarted(state, out);
+        }
+        Event::ActionDone { id, result } => crate::actions::done(state, *id, result, out),
         Event::Comments { comments } => crate::control::comments(state, rules, comments, out),
         Event::ConfigurationChanged => {
             // Attributes and evaluation errors were judged under the old rules.
@@ -577,6 +600,7 @@ fn process(
         evaluate_pull_request(state, rules, &pr, now, out);
     }
     queue::process_trains(state, rules, now, token, out);
+    crate::actions::run(state, rules, out);
 }
 
 /// Removes a pull request from the queue with a reason and discards what depended on it.

@@ -109,6 +109,37 @@ pub struct PullRequest {
     /// against the default branch that touch a configuration file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_change: Option<schlange_config::config_file::ConfigChange>,
+    /// Assigned logins (`assign` action).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignees: Vec<String>,
+    /// Logins and teams whose review is requested and not given yet (`request_reviews`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_reviewers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_teams: Vec<String>,
+    /// Reviews, oldest first (`review`, `dismiss_reviews`), when the forge read them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<Review>,
+    /// Messages of the pull request's commits, in order (`squash`), when the forge read them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commit_messages: Vec<String>,
+    /// Who merged it, once merged (`{{ merged_by }}` in copies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_by: Option<String>,
+}
+
+/// One review of a pull request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    pub id: u64,
+    pub author: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
+    pub state: String,
+    /// The head the review was given on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
 }
 
 /// A pull request named in a `Depends-On` line, as the forge resolved it.
@@ -190,6 +221,12 @@ impl PullRequest {
             head_by_queue: false,
             dependencies: vec![],
             config_change: None,
+            assignees: vec![],
+            requested_reviewers: vec![],
+            requested_teams: vec![],
+            reviews: vec![],
+            commit_messages: vec![],
+            merged_by: None,
         }
     }
 

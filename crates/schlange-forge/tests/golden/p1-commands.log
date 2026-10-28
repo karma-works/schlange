@@ -54,7 +54,7 @@
 +0:10:00  action    carol commented on #4: @mergifyio rebase
 +0:10:00  webhook   #4 comment 14 by carol
 +0:10:00  decision  react +1 to comment 14 on #4
-+0:10:00  decision  reply #4: @carol, `rebase` is a known command, but Schlange does not support it yet; nothing was done.
++0:10:00  decision  reply #4: @carol, this pull request is up to date with its base.
 +0:11:00  action    carol commented on #4: @mergifyio refresh
 +0:11:00  webhook   #4 comment 16 by carol
 +0:11:00  decision  react +1 to comment 16 on #4
@@ -77,7 +77,7 @@
 +0:13:00  action    carol commented on #4: @mergifyio frobnicate
 +0:13:00  webhook   #4 comment 20 by carol
 +0:13:00  decision  react +1 to comment 20 on #4
-+0:13:00  decision  reply #4: @carol, `frobnicate` is not a command Schlange knows. The queue understands `queue [name]`, `dequeue` and `refresh`.
++0:13:00  decision  reply #4: @carol, `frobnicate` is not a command Schlange knows. The queue understands `queue [name]`, `dequeue`, `refresh`, `update`, `rebase`, `squash`, `backport` and `copy`.
 +0:30:00  action    alice commented on #3: @mergifyio queue
 +0:30:00  webhook   #3 comment 22 by alice
 +0:30:00  decision  react +1 to comment 22 on #3

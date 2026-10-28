@@ -98,6 +98,7 @@ pub fn is_side_effect(d: &Decision) -> bool {
             | Decision::CloseCar { .. }
             | Decision::Refresh { .. }
             | Decision::Land { .. }
+            | Decision::Act { .. }
     )
 }
 

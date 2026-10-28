@@ -235,6 +235,8 @@ pub struct PullRequestRule {
     pub conditions: Vec<Condition>,
     /// `Some(None)`: action `queue` without a name; `Some(Some(q))`: queue `q`.
     pub queue: Option<Option<String>>,
+    /// The other actions, in the schema's order, with `defaults.actions` filled in.
+    pub actions: Vec<crate::actions::RuleAction>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -253,6 +255,8 @@ pub enum RulesError {
     Conditions(Vec<ParseError>),
     #[error("{pointer}: {message}")]
     Shape { pointer: String, message: String },
+    #[error("{0}")]
+    Extends(#[from] crate::extends::ExtendsError),
 }
 
 impl Rules {
@@ -267,6 +271,17 @@ impl Rules {
                     .join("; "),
             )
         })?;
+        Self::from_value(&value)
+    }
+
+    /// Parses YAML text whose `extends` is resolved with `load` (repository name → the YAML
+    /// text of that repository's configuration). `own` is this repository's name.
+    pub fn from_yaml_extended(
+        source: &str,
+        own: Option<&str>,
+        load: impl FnOnce(&str) -> Result<String, String>,
+    ) -> Result<Self, RulesError> {
+        let value = crate::extends::resolved_value(source, own, load)?;
         Self::from_value(&value)
     }
 
@@ -364,6 +379,20 @@ impl Rules {
                     message: "a pull request rule needs `conditions` (use `[]` to match every pull request)".into(),
                 });
             }
+            let mut action_errors = Vec::new();
+            let actions = crate::actions::parse(
+                r.get("actions").unwrap_or(&Value::Null),
+                value.get("defaults").and_then(|d| d.get("actions")),
+                &format!("{p}/actions"),
+                &mut action_errors,
+                &mut errors,
+            );
+            if let Some(e) = action_errors.into_iter().next() {
+                return Err(RulesError::Shape {
+                    pointer: e.pointer,
+                    message: e.message,
+                });
+            }
             let queue = r
                 .get("actions")
                 .and_then(|a| a.as_object())
@@ -390,6 +419,7 @@ impl Rules {
                 name,
                 conditions: conds,
                 queue,
+                actions,
             });
         }
         if errors.is_empty() {

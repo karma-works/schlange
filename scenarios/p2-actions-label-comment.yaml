@@ -1,0 +1,35 @@
+# Rule actions `label` and `comment` next to the queue (action-label, action-comment,
+# pull-request-rules; MQ-12). `label` is level-triggered: the WIP toggle follows the title and
+# puts the label back when someone removes it. `comment` is edge-triggered: it runs once per
+# match, again only after the rule stopped matching. A rule adds `ready` once the quick check
+# passes; the queue's conditions read that label, so #1 is queued and merged. With webhook
+# faults (the disturbed run) every comment still exists exactly once.
+name: p2-actions-label-comment
+description: label toggle and add, comments once per match, a label that queues.
+config: configs/actions-label-comment.yml
+
+ci:
+  - check: quick
+    duration: 1m
+    runs_on: pull_request
+  - check: full
+    duration: 5m
+    runs_on: queue
+
+pull_requests:
+  - { number: 1, author: alice, title: "Add feature", files: { a.txt: "a\n" } }
+  - { number: 2, author: bob, title: "WIP: refactor", files: { b.txt: "b\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  # Someone removes the WIP label while the title still matches: the rule puts it back.
+  - { at: 3m, unlabel: { pr: 2, name: WIP } }
+
+expect:
+  - { pr: 1, state: merged, labels: [ready], comments: { "Merged, thanks @alice": 1, "work in progress": 0 } }
+  - { pr: 2, state: open, labels: [WIP, ready], comments: { "@bob, #2 (WIP: refactor) is marked as work in progress.": 1, "Merged, thanks": 0 } }
+expect_log:
+  - "action of `work in progress`: label #2 +WIP"
+  - "action of `ready once the quick check passes`: label #1 +ready"
+  - "enqueue #1 into `default` (rule `queue ready pull requests`)"

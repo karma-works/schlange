@@ -39,7 +39,7 @@ pub enum ExpectState {
     Closed,
 }
 
-#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Expectation {
     pub pr: u64,
@@ -57,6 +57,60 @@ pub struct Expectation {
     /// `configuration-changed`, `queue-command`, `manually-dequeued`) or text in the reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// Labels it has at the end (others may be there too).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// Labels it does not have at the end.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_labels: Vec<String>,
+    /// Text → how many comments contain it (idempotence: exactly that many).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub comments: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignees: Vec<String>,
+    /// Logins or teams whose review is requested at the end.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_requested: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<bool>,
+    /// Checks reported by actions: name → conclusion of the latest report.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checks: BTreeMap<String, String>,
+    /// Reviews by state (`APPROVED`, `DISMISSED`, …) → how many.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reviews: BTreeMap<String, usize>,
+    /// Number of commits on the head at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits: Option<usize>,
+    /// The head is up to date with the base at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to_date: Option<bool>,
+}
+
+/// A pull request an action created (`backport`, `copy`), expected at the end.
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectPr {
+    pub head: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Text the title contains.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignees: Vec<String>,
+    /// File → text it contains on the head.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
+    /// `false`: no such pull request may exist.
+    #[serde(default = "yes")]
+    pub exists: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A scenario, from YAML (`scenario`) or the Rust DSL (`dsl`).
@@ -76,6 +130,7 @@ pub struct Scenario {
     pub expect_merged_order: Option<Vec<u64>>,
     pub expect_base: BTreeMap<String, String>,
     pub expect_log: Vec<String>,
+    pub expect_prs: Vec<ExpectPr>,
     /// `None`: no disturbed run, I5 is not checked.
     pub faults: Option<Faults>,
     /// Forge faults (late, lost, duplicated, lying replies; races; lagging reads; CI timing)
@@ -97,6 +152,8 @@ pub struct Setup {
     /// hold another configuration name): it is read from there after every step, and a change
     /// that lands applies to every pull request (MQ-19).
     pub config_in_repo: bool,
+    /// More branches at the initial commit.
+    pub branches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,7 +252,7 @@ pub const LIMITATIONS: [&str; 6] = [
     "skip_intermediate_results, direct merge behind the base (scopes), batch_pull_request: not built",
     "allow_queue_branch_edit: the edit is accepted, but only merge-batch/fast-forward could land it (not built; squash halts on the tree check)",
     "in place: only for an up-to-date pull request; Mergify would update it first",
-    "commands backport, copy, rebase, squash, update: recognised and answered, actions not built",
+    "rule actions: bot_account, users_from_teams and merge options beyond `method` not built; copies are one cherry-picked commit",
     "commit_message_template (deprecated): not rendered; IANA time zones in Merge-After: not supported",
 ];
 
@@ -306,6 +363,7 @@ fn describe(d: &Decision) -> String {
         } => format!("HALT queue of {base_branch}: {reason}"),
         Decision::WakeAt { at } => format!("wake at {}", clock(*at)),
         Decision::Cosmetic { cosmetic } => cosmetic.describe(),
+        Decision::Act { rule, op, .. } => format!("action of `{rule}`: {}", op.describe()),
     }
 }
 
@@ -356,6 +414,31 @@ fn describe_reply(e: &Event) -> Option<String> {
                 .map(|e| format!("; refused: {e:?}"))
                 .unwrap_or_default()
         )),
+        Event::ActionDone { result, .. } => Some(match result {
+            schlange_core::actions::ActionResult::Done { .. } => "action done".to_string(),
+            schlange_core::actions::ActionResult::Skipped { message } => {
+                format!("action skipped: {message}")
+            }
+            schlange_core::actions::ActionResult::Refused { message } => {
+                format!("action refused: {message}")
+            }
+            schlange_core::actions::ActionResult::Copied { copies } => format!(
+                "copied: {}",
+                copies
+                    .iter()
+                    .map(|c| match (&c.error, c.number) {
+                        (Some(e), _) => format!("{} failed ({e})", c.destination),
+                        (None, Some(n)) => format!(
+                            "{} as #{n}{}",
+                            c.destination,
+                            if c.conflicts { " with conflicts" } else { "" }
+                        ),
+                        _ => c.destination.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }),
         Event::Failed { decision, error } => {
             Some(format!("forge error ({error}) on: {}", describe(decision)))
         }
@@ -387,6 +470,9 @@ impl<G: GitStore> Simulation<G> {
         );
         forge.real_ci = real_ci;
         forge.permissions = s.setup.permissions.clone();
+        for b in &s.setup.branches {
+            forge.add_branch(b);
+        }
         for d in &s.prs {
             forge.define(d.clone());
         }
@@ -824,6 +910,87 @@ fn check_expectation<G: GitStore>(sim: &Simulation<G>, e: &Expectation) -> Expec
         ok &= last == Some(code.as_str());
     }
     let mut actual = actual;
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(p) = sim.forge.read_pull_request(e.pr) {
+        for l in &e.labels {
+            if !p.labels.contains(l) {
+                ok = false;
+                notes.push(format!("lacks label {l}"));
+            }
+        }
+        for l in &e.no_labels {
+            if p.labels.contains(l) {
+                ok = false;
+                notes.push(format!("has label {l}"));
+            }
+        }
+        for (text, want) in &e.comments {
+            let have = sim
+                .forge
+                .comments_on(e.pr)
+                .iter()
+                .filter(|c| c.body.contains(text.as_str()))
+                .count();
+            if have != *want {
+                ok = false;
+                notes.push(format!("{have} comment(s) with {text:?}, expected {want}"));
+            }
+        }
+        for a in &e.assignees {
+            if !p.assignees.contains(a) {
+                ok = false;
+                notes.push(format!("{a} not assigned ({:?})", p.assignees));
+            }
+        }
+        for r in &e.review_requested {
+            if !p.requested_reviewers.contains(r) && !p.requested_teams.contains(r) {
+                ok = false;
+                notes.push(format!(
+                    "no review requested from {r} ({:?} {:?})",
+                    p.requested_reviewers, p.requested_teams
+                ));
+            }
+        }
+        if let Some(d) = e.draft
+            && p.draft != d
+        {
+            ok = false;
+            notes.push(format!("draft is {}", p.draft));
+        }
+        for (name, want) in &e.checks {
+            let have = sim
+                .forge
+                .posted_checks
+                .latest(e.pr, name)
+                .map(|c| c.conclusion.clone());
+            if have.as_deref() != Some(want.as_str()) {
+                ok = false;
+                notes.push(format!("check {name}: {have:?}"));
+            }
+        }
+        for (st, want) in &e.reviews {
+            let have = p.reviews.iter().filter(|r| &r.state == st).count();
+            if have != *want {
+                ok = false;
+                notes.push(format!("{have} review(s) {st}"));
+            }
+        }
+        if let Some(c) = e.commits
+            && p.commit_messages.len() != c
+        {
+            ok = false;
+            notes.push(format!("{} commit(s)", p.commit_messages.len()));
+        }
+        if let Some(u) = e.up_to_date
+            && p.behind_base == u
+        {
+            ok = false;
+            notes.push(format!("behind base: {}", p.behind_base));
+        }
+    }
+    if !notes.is_empty() {
+        actual = format!("{actual}; {}", notes.join("; "));
+    }
     if let Some(h) = &e.held {
         let holds = sim.state.holds.get(&e.pr).cloned().unwrap_or_default();
         ok &= holds
@@ -945,6 +1112,7 @@ pub fn run_with<G: GitStore, E>(
                 state: None,
                 reason: None,
                 held: None,
+                ..Default::default()
             },
             actual: format!("{:?}", perfect.merged_order),
             ok: &perfect.merged_order == order,
@@ -966,11 +1134,70 @@ pub fn run_with<G: GitStore, E>(
                     state: None,
                     reason: None,
                     held: None,
+                    ..Default::default()
                 },
                 ok: actual.as_deref() == Some(content.as_str()),
                 actual: format!("{actual:?}"),
             });
         }
+    }
+    for x in &s.expect_prs {
+        let found = perfect
+            .forge
+            .numbers()
+            .into_iter()
+            .filter_map(|n| perfect.forge.read_pull_request(n))
+            .find(|p| p.head_ref == x.head);
+        let mut why = Vec::new();
+        match (&found, x.exists) {
+            (None, true) => why.push("missing".to_string()),
+            (Some(p), false) => why.push(format!("exists as #{}", p.number)),
+            (None, false) => {}
+            (Some(p), true) => {
+                if let Some(b) = &x.base
+                    && &p.base != b
+                {
+                    why.push(format!("base {}", p.base));
+                }
+                if let Some(t) = &x.title
+                    && !p.title.contains(t.as_str())
+                {
+                    why.push(format!("title {:?}", p.title));
+                }
+                for l in &x.labels {
+                    if !p.labels.contains(l) {
+                        why.push(format!("lacks label {l}"));
+                    }
+                }
+                for a in &x.assignees {
+                    if !p.assignees.contains(a) {
+                        why.push(format!("{a} not assigned"));
+                    }
+                }
+                let tree = perfect.forge.repo.tree(&p.head_sha);
+                for (f, text) in &x.files {
+                    if !tree.get(f).is_some_and(|c| c.contains(text.as_str())) {
+                        why.push(format!("{f} = {:?}", tree.get(f)));
+                    }
+                }
+            }
+        }
+        expectations.push(ExpectationResult {
+            expected: Expectation {
+                queue: Some(format!(
+                    "pull request on {}{}",
+                    x.head,
+                    if x.exists { "" } else { " absent" }
+                )),
+                ..Default::default()
+            },
+            ok: why.is_empty(),
+            actual: if why.is_empty() {
+                "as expected".into()
+            } else {
+                why.join("; ")
+            },
+        });
     }
     for needle in &s.expect_log {
         let found = perfect.log.iter().any(|l| l.text.contains(needle.as_str()));
@@ -982,6 +1209,7 @@ pub fn run_with<G: GitStore, E>(
                 state: None,
                 reason: None,
                 held: None,
+                ..Default::default()
             },
             actual: if found { "found" } else { "missing" }.into(),
             ok: found,

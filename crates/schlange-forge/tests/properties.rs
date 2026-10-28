@@ -2,14 +2,17 @@
 //! files, markers that break or hang the full suite, semantic conflicts, flaky checks, human
 //! actions (labels read by the queue conditions and by the merge conditions only, pushes,
 //! closes, drafts, manual merges, direct pushes to main, pushes to queue branches, comment
-//! commands `queue`, `dequeue`, `refresh` and `rebase` by a maintainer or by someone the
+//! commands `queue`, `dequeue`, `refresh`, `rebase`, `update`, `squash`, `backport`, `copy` by a maintainer or by someone the
 //! restrictions refuse, pushes by someone else than the author; every third pull request is
 //! a human's that only a `queue` command queues; queue settings include
 //! `reset_on_external_merge: never`, `max_checks_retries`, `allow_queue_branch_edit` and an
 //! explicit `checks_timeout: auto`), webhook
 //! faults, forge faults (lost, late, duplicated and lying replies, base races, lagging reads, CI
-//! timing) and engine crashes. The runner checks I0–I4 after every step and I2/I3 at
-//! quiescence; any violation fails the case.
+//! timing) and engine crashes, and random `pull_request_rules` with actions next to the queue
+//! (labels the queue conditions read, comments, assignees, reviews, review requests and
+//! dismissals, drafts, checks, updates, rebases, squashes, closes, branch deletions, copies and
+//! backports). The runner checks I0–I4 after every step and I2/I3 at quiescence; any violation
+//! fails the case, and so does an action comment posted twice.
 //!
 //! - `invariants_hold_in_every_step`: perfect and disturbed webhook delivery.
 //! - `invariants_hold_under_forge_faults_and_crashes`: the same plans with forge faults and
@@ -71,7 +74,41 @@ struct Settings {
     /// `checks_timeout: auto` written out (the default; without history it applies no
     /// timeout, so a case with it is the same as without a timeout).
     auto: bool,
+    /// Rules with actions next to the queue rule: (condition, action) indices.
+    actions: Vec<(u8, u8)>,
 }
+
+/// Conditions of the random action rules.
+const ACTION_CONDITIONS: [&str; 7] = [
+    "[]",
+    "\n      - label = halt",
+    "\n      - -label = wip",
+    "\n      - author = bot",
+    "\n      - check-success = quick",
+    "\n      - files ~= ^[abc]",
+    "\n      - merged",
+];
+
+/// Actions of the random action rules (YAML under `actions:`).
+const ACTIONS: [&str; 17] = [
+    "      label:\n        add: [triage]\n",
+    "      label:\n        toggle: [wip]\n",
+    "      label:\n        remove: [halt]\n",
+    "      comment:\n        message: \"@{{ author }} #{{ number }} {{ labels }}\"\n",
+    "      assign:\n        add_users: [\"{{ author }}\", lead]\n",
+    "      request_reviews:\n        users: [r1, r2, r3]\n        random_count: 2\n",
+    "      review:\n        type: APPROVE\n",
+    "      dismiss_reviews: {}\n",
+    "      post_check:\n        title: \"{{ check_rule_name }} {{ check_status }}\"\n",
+    "      edit:\n        draft: true\n",
+    "      update:\n",
+    "      rebase:\n",
+    "      squash:\n",
+    "      close:\n",
+    "      delete_head_branch:\n",
+    "      copy:\n        branches: [side]\n",
+    "      backport:\n        branches: [side]\n        report_mode: [check, comment]\n",
+];
 
 impl Settings {
     fn yaml(&self) -> String {
@@ -118,8 +155,22 @@ impl Settings {
         } else {
             ""
         };
+        let mut extra = String::new();
+        for (k, (c, a)) in self.actions.iter().enumerate() {
+            let cond = ACTION_CONDITIONS[*c as usize % ACTION_CONDITIONS.len()];
+            // Copies only of pull requests against main (a copy of a copy would never end).
+            let cond = if cond == "[]" {
+                "\n      - base = main".to_string()
+            } else {
+                format!("{cond}\n      - base = main")
+            };
+            extra.push_str(&format!(
+                "  - name: action {k}\n    conditions:{cond}\n    actions:\n{}",
+                ACTIONS[*a as usize % ACTIONS.len()]
+            ));
+        }
         format!(
-            "merge_queue:\n  max_parallel_checks: {}\n{reset}queue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n",
+            "merge_queue:\n  max_parallel_checks: {}\n{reset}queue_rules:\n{rule}pull_request_rules:\n  - name: q\n    conditions:\n      - author = bot\n    actions:\n      queue:\n{extra}",
             self.max_parallel
         )
     }
@@ -142,6 +193,7 @@ fn settings() -> impl Strategy<Value = Settings> {
             prop::bool::weighted(0.15),
             prop::bool::weighted(0.3),
         ),
+        prop::collection::vec((0u8..7, 0u8..17), 0..=3),
     )
         .prop_map(
             |(
@@ -152,6 +204,7 @@ fn settings() -> impl Strategy<Value = Settings> {
                 single_step,
                 wip,
                 (never, retries, branch_edit, auto),
+                actions,
             )| Settings {
                 batch,
                 max_parallel,
@@ -163,6 +216,7 @@ fn settings() -> impl Strategy<Value = Settings> {
                 retries,
                 branch_edit,
                 auto,
+                actions,
             },
         )
 }
@@ -186,8 +240,8 @@ enum Human {
     MergeByHand(usize),
     PushBase(usize),
     PushQueueBranch(usize),
-    /// A comment command: `queue`, `dequeue`, `refresh` or `rebase` (answered as not
-    /// supported), by the maintainer (write permission) or by mallory (read, refused).
+    /// A comment command: `queue`, `dequeue`, `refresh`, `rebase`, `update`, `squash`,
+    /// `backport side` or `copy side`, by the maintainer (write permission) or by mallory (read, refused).
     Command(usize, u8, bool),
     /// A push by mallory (someone else than the author): cancels a waiting `queue` command.
     PushByOther(usize),
@@ -284,7 +338,7 @@ fn human() -> impl Strategy<Value = Human> {
         (0usize..6).prop_map(Human::MergeByHand),
         (0usize..6).prop_map(Human::PushBase),
         (0usize..6).prop_map(Human::PushQueueBranch),
-        (0usize..6, 0u8..4, prop::bool::weighted(0.8))
+        (0usize..6, 0u8..8, prop::bool::weighted(0.8))
             .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
         (0usize..6).prop_map(Human::PushByOther),
     ]
@@ -364,7 +418,16 @@ fn human_action(p: &Plan, k: usize, h: &Human) -> Action {
             by: if *trusted { "maintainer" } else { "mallory" }.into(),
             body: format!(
                 "@mergifyio {}",
-                ["queue", "dequeue", "refresh", "rebase"][*c as usize % 4]
+                [
+                    "queue",
+                    "dequeue",
+                    "refresh",
+                    "rebase",
+                    "update",
+                    "squash",
+                    "backport side",
+                    "copy side"
+                ][*c as usize % 8]
             ),
         },
         Human::PushByOther(i) => Action::PushAs {
@@ -409,6 +472,7 @@ fn scenario(p: &Plan) -> Scenario {
         }
     }
     let mut sim = Sim::new("pbt", &p.settings.yaml())
+        .branch("side")
         .permission("maintainer", "write")
         .permission("mallory", "read")
         .check(quick)
@@ -460,6 +524,15 @@ fn outcome_of(
     for (id, r) in &sim.checker.results {
         for v in &r.violations {
             out.push(format!("{id}: {v}"));
+        }
+    }
+    // Rule actions never post the same comment twice (markers are unique per firing).
+    let mut seen = std::collections::BTreeSet::new();
+    for n in sim.forge.numbers() {
+        for c in sim.forge.comments_on(n) {
+            if c.body.contains("schlange-action") && !seen.insert((n, c.body.clone())) {
+                out.push(format!("#{n}: action comment posted twice: {}", c.body));
+            }
         }
     }
     let log = sim
@@ -539,7 +612,7 @@ fn oracle_plan() -> impl Strategy<Value = OraclePlan> {
                     (0usize..6).prop_map(Human::MergeByHand),
                     (0usize..6).prop_map(Human::PushBase),
                     (0usize..6).prop_map(Human::PushQueueBranch),
-                    (0usize..6, 0u8..4, prop::bool::weighted(0.8))
+                    (0usize..6, 0u8..8, prop::bool::weighted(0.8))
                         .prop_map(|(n, c, trusted)| Human::Command(n, c, trusted)),
                     (0usize..6).prop_map(Human::PushByOther),
                 ],
@@ -573,6 +646,7 @@ fn oracle_scenario(p: &OraclePlan) -> Scenario {
         ci("quick", "1m").pr_only()
     };
     let mut sim = Sim::new("pbt-oracle", &p.settings.yaml())
+        .branch("side")
         .permission("maintainer", "write")
         .permission("mallory", "read")
         .check(quick)
@@ -691,6 +765,8 @@ fn calm_plan() -> impl Strategy<Value = CalmPlan> {
         settings().prop_map(|mut s| {
             // No limit: with a limit, which pull requests are dropped depends on queue order.
             s.limit = None;
+            // No rule actions: they change outcomes on purpose (close, draft, labels).
+            s.actions.clear();
             s.timeout = true;
             s
         }),

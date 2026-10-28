@@ -153,6 +153,7 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
         "title" => AttrValue::Str(pr.title.clone()),
         "draft" => AttrValue::Bool(pr.draft),
         "closed" => AttrValue::Bool(pr.closed),
+        "merged" => AttrValue::Bool(pr.merged),
         "label" => AttrValue::List(pr.labels.iter().cloned().collect()),
         "files" => AttrValue::List(pr.files.clone()),
         "dependabot-update-type" => AttrValue::List(pr.dependabot_update_types.clone()),

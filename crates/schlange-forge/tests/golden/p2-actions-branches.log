@@ -1,0 +1,78 @@
++0:00:00  action    #1 opened by dev on main, files: one.txt
++0:00:00  action    #2 opened by dev on main, files: two.txt
++0:00:00  action    #3 opened by dev on main, files: three.txt
++0:00:00  action    #4 opened by dev on main, files: vendor/lib.c
++0:00:00  action    #6 opened by dev on main, files: six.txt
++0:00:00  webhook   #4 opened
++0:00:00  decision  action of `no vendor changes`: close #4
++0:00:00  reply     action done
++0:00:00  decision  action of `no vendor changes`: comment on #4: @dev, changes to vendor/ are not accepted here.
++0:00:00  reply     action done
++0:00:00  webhook   #4 check `quick` started on f799a93
++0:00:00  decision  action of `tidy branches`: delete head branch pr-4 of #4
++0:00:00  reply     action done
++0:00:00  webhook   #6 opened
++0:00:00  decision  action of `deploy preview`: dispatch workflow preview.yml for #6
++0:00:00  reply     action done
++0:00:30  action    #3 pushed, head 17a8283
++0:01:00  ci        #1 check `quick` completed on 7d4ee48: success
++0:01:00  ci        #2 check `quick` completed on 5ce265e: success
++0:01:00  ci        #3 check `quick` completed on 86477e6: success
++0:01:00  ci        #4 check `quick` completed on f799a93: success
++0:01:00  ci        #6 check `quick` completed on 88077a7: success
++0:01:30  ci        #3 check `quick` completed on 17a8283: success
++0:02:00  action    direct push to main: 538b5e4
++0:02:00  webhook   push to main
++0:02:00  decision  action of `keep up to date`: update #1 with its base
++0:02:00  reply     action done
++0:02:00  decision  action of `keep rebased`: rebase #2 onto its base
++0:02:00  reply     action done
++0:03:00  action    #3 labeled squash-me
++0:03:00  ci        #1 check `quick` completed on 8a09f77: success
++0:03:00  ci        #2 check `quick` completed on 77f1c58: success
++0:03:00  webhook   #3 labeled
++0:03:00  decision  action of `one commit`: squash the commits of #3
++0:03:00  reply     action done
++0:04:00  action    #5 opened by dev on main, files: docs/a.md
++0:04:00  ci        #3 check `quick` completed on 5a0b628: success
++0:05:00  ci        #5 check `quick` completed on 37c32e6: success
++0:05:00  webhook   #5 check `quick` completed on 37c32e6: success
++0:05:00  decision  action of `merge docs directly`: merge #5 directly (squash)
++0:05:00  reply     action done
++0:05:00  webhook   push to main
++0:05:00  decision  action of `keep up to date`: update #1 with its base
++0:05:00  reply     action done
++0:05:00  decision  action of `keep rebased`: rebase #2 onto its base
++0:05:00  reply     action done
++0:05:00  webhook   #5 closed (merged by a rule)
++0:05:00  decision  action of `tidy branches`: delete head branch pr-5 of #5
++0:05:00  reply     action done
++0:06:00  ci        #1 check `quick` completed on e4ff457: success
++0:06:00  ci        #2 check `quick` completed on e1eee34: success
++0:10:00  action    #7 opened by dev on main, files: seven.txt
++0:11:00  ci        #7 check `quick` completed on 445a693: success
++0:11:00  webhook   #7 check `quick` completed on 445a693: success
++0:11:00  decision  enqueue #7 into `default` (rule `queue`)
++0:11:00  decision  build car 13 on mergify/merge-queue/b06017e54d: base 37c32e6 + #7 (checks #7)
++0:11:00  reply     car 13 built at 0199522, draft #1000
++0:11:00  decision  labels #7 +queued
++0:11:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked.
++0:11:00  decision  status comment #7: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:12:00  ci        #1000 check `quick` completed on 0199522: success
++0:12:00  webhook   #1000 check `quick` completed on 0199522: success
++0:12:00  decision  read #7 #1000 main mergify/merge-queue/b06017e54d before acting
++0:12:00  decision  land car 13: squash #7 onto main if it is still 37c32e6
++0:12:00  message   #7: Pull request 7 (#7)
++0:12:00  reply     car 13 landed #7 as 445a693
++0:12:00  decision  close car 13, delete mergify/merge-queue/b06017e54d, close #1000
++0:12:00  decision  #7 merged as 445a693
++0:12:00  decision  action of `keep up to date`: update #1 with its base
++0:12:00  reply     action done
++0:12:00  decision  action of `keep rebased`: rebase #2 onto its base
++0:12:00  reply     action done
++0:12:00  decision  action of `tidy branches`: delete head branch pr-7 of #7
++0:12:00  reply     action done
++0:12:00  decision  labels #7 -queued
++0:12:00  decision  status comment #7: **Merge queue** · merged — Merged by the queue as 445a693.
++0:13:00  ci        #1 check `quick` completed on 5207839: success
++0:13:00  ci        #2 check `quick` completed on 8a23058: success

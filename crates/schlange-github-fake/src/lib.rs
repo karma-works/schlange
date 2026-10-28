@@ -57,6 +57,8 @@ pub struct FakeConfig {
     pub webhook_secret: Vec<u8>,
     /// Head branches with this prefix are the queue's (CI rules `on: queue`).
     pub queue_prefix: String,
+    /// Other repositories of the owner: name → files (for `extends`).
+    pub other_repos: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for FakeConfig {
@@ -76,6 +78,7 @@ impl Default for FakeConfig {
                 .collect(),
             webhook_secret: b"fake-webhook-secret".to_vec(),
             queue_prefix: "mergify/merge-queue/".into(),
+            other_repos: BTreeMap::new(),
         }
     }
 }
@@ -102,8 +105,23 @@ pub struct FakePr {
     pub labels: BTreeSet<String>,
     /// The head branch lives in a fork.
     pub fork: bool,
-    /// Reviews in order: login and state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`).
-    pub reviews: Vec<(String, String)>,
+    /// Reviews in order.
+    pub reviews: Vec<FakeReview>,
+    pub assignees: Vec<String>,
+    pub requested_reviewers: Vec<String>,
+    pub requested_teams: Vec<String>,
+    pub merged_by: Option<String>,
+}
+
+/// A review of a pull request.
+#[derive(Clone, Debug)]
+pub struct FakeReview {
+    pub id: u64,
+    pub user: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
+    pub state: String,
+    pub commit: Sha,
+    pub body: String,
 }
 
 /// A comment on a pull request.
@@ -356,6 +374,10 @@ pub(crate) struct St {
     pub requests: Vec<String>,
     pub squashes: Vec<Squash>,
     pub external: BTreeSet<Sha>,
+    /// Workflow dispatches: workflow and request body.
+    pub dispatches: Vec<(String, Value)>,
+    /// Other repositories of the owner (for `extends`): name → files on their default branch.
+    pub other_repos: BTreeMap<String, BTreeMap<String, String>>,
     /// Commits made by `POST /merges`, with their branch.
     pub queue_commits: BTreeMap<Sha, String>,
     /// Pull request heads merged into queue branches, with the queue branches.
@@ -540,6 +562,11 @@ impl St {
                 "squash_merge_commit_message": self.squash_message_setting })
     }
 
+    /// The tree of some commit whose tree id is `id`.
+    pub fn tree_by_id(&self, id: &str) -> Option<Tree> {
+        self.repo.find_tree(id)
+    }
+
     pub fn bot(&self) -> String {
         format!("{}[bot]", self.cfg.app_slug)
     }
@@ -621,6 +648,11 @@ impl St {
             "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": { "full_name": head_repo } },
             "base": { "ref": pr.base, "sha": base_sha, "repo": { "full_name": own } },
             "labels": pr.labels.iter().map(|l| json!({ "name": l })).collect::<Vec<_>>(),
+            "node_id": format!("PR_{}", pr.number),
+            "assignees": pr.assignees.iter().map(|l| json!({ "login": l })).collect::<Vec<_>>(),
+            "requested_reviewers": pr.requested_reviewers.iter().map(|l| json!({ "login": l })).collect::<Vec<_>>(),
+            "requested_teams": pr.requested_teams.iter().map(|t| json!({ "slug": t })).collect::<Vec<_>>(),
+            "merged_by": pr.merged_by.as_ref().map(|l| json!({ "login": l })),
         }))
     }
 
@@ -837,6 +869,7 @@ pub(crate) struct Inner {
 
 impl FakeGithub {
     pub fn start(cfg: FakeConfig) -> FakeGithub {
+        let other_repos = cfg.other_repos.clone();
         let mut repo = Repo::new();
         let root = repo.commit(cfg.base_files.clone(), vec![], "initial commit");
         repo.create_ref(&cfg.default_branch, &root)
@@ -870,6 +903,8 @@ impl FakeGithub {
             requests: Vec::new(),
             squashes: Vec::new(),
             external: BTreeSet::new(),
+            dispatches: Vec::new(),
+            other_repos: other_repos.clone(),
             queue_commits: BTreeMap::new(),
             queue_heads: BTreeMap::new(),
             merge_guard: None,
@@ -1059,6 +1094,10 @@ impl FakeGithub {
                     labels: labels.iter().cloned().collect(),
                     fork,
                     reviews: vec![],
+                    assignees: vec![],
+                    requested_reviewers: vec![],
+                    requested_teams: vec![],
+                    merged_by: None,
                 },
             );
             s.emit_pr("opened", n, json!({}));
@@ -1194,8 +1233,17 @@ impl FakeGithub {
     /// `user` reviews pull request `n` (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`).
     pub fn review(&self, n: u64, user: &str, state: &str) {
         self.with(|s| {
+            s.next_id += 1;
+            let id = s.next_id;
             if let Some(p) = s.prs.get_mut(&n) {
-                p.reviews.push((user.into(), state.into()));
+                p.requested_reviewers.retain(|r| r != user);
+                p.reviews.push(FakeReview {
+                    id,
+                    user: user.into(),
+                    state: state.into(),
+                    commit: p.head_sha.clone(),
+                    body: String::new(),
+                });
             }
             s.emit(
                 "pull_request_review",
@@ -1293,10 +1341,36 @@ impl FakeGithub {
             let bot = format!("{}[bot]", s.cfg.app_slug);
             s.prs
                 .values()
-                .filter(|p| p.open && p.user == bot)
+                .filter(|p| p.open && p.user == bot && p.head_ref.starts_with(&s.cfg.queue_prefix))
                 .cloned()
                 .collect()
         })
+    }
+
+    /// Creates branch `name` at the default branch's tip.
+    pub fn create_branch(&self, name: &str) {
+        self.with(|s| {
+            let tip = s.tip(&s.cfg.default_branch).expect("default branch");
+            s.repo.create_ref(name, &tip).ok();
+        });
+    }
+
+    /// Another repository of the owner with these files (for `extends`).
+    pub fn set_other_repo(&self, name: &str, files: &[(&str, &str)]) {
+        self.with(|s| {
+            s.other_repos.insert(
+                name.into(),
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), c.to_string()))
+                    .collect(),
+            );
+        });
+    }
+
+    /// Workflow dispatches: workflow and request body.
+    pub fn dispatches(&self) -> Vec<(String, Value)> {
+        self.with(|s| s.dispatches.clone())
     }
 
     pub fn branches(&self) -> Vec<String> {
@@ -1429,7 +1503,12 @@ impl FakeGithub {
             }
             if quiescent {
                 let bot = format!("{}[bot]", s.cfg.app_slug);
-                for p in s.prs.values().filter(|p| p.open && p.user == bot) {
+                for p in s.prs.values().filter(|p| {
+                    p.open
+                        && p.user == bot
+                        && !p.head_ref.starts_with("mergify/bp/")
+                        && !p.head_ref.starts_with("mergify/copy/")
+                }) {
                     v.push(format!("I3: queue draft #{} is still open", p.number));
                 }
                 for r in s.repo.refs().keys() {

@@ -53,8 +53,23 @@ impl ConfigCheck {
         Ok(ConfigCheck { schema, features })
     }
 
-    /// Validates a configuration text; `Err` lists the errors (stages 1–4).
+    /// Validates a configuration text; `Err` lists the errors (stages 1–4). A configuration
+    /// with `extends` fails here: use [`ConfigCheck::check_extended`].
     pub fn check(&self, file: &str, text: &str) -> Result<Loaded, String> {
+        self.check_extended(file, text, None, |name| {
+            Err(format!("repository `{name}` cannot be read here"))
+        })
+    }
+
+    /// Like `check`, resolving `extends` with `load` (repository name → its configuration
+    /// text). The local text is validated against the schema; the merged result is what runs.
+    pub fn check_extended(
+        &self,
+        file: &str,
+        text: &str,
+        own: Option<&str>,
+        load: impl FnOnce(&str) -> Result<String, String>,
+    ) -> Result<Loaded, String> {
         let report = schlange_config::validate(file, text, &self.schema, &self.features, false);
         let at = |f: &schlange_config::validate::Finding| match (f.line, f.column) {
             (Some(l), Some(c)) => format!("{file}:{l}:{c}"),
@@ -74,7 +89,8 @@ impl ConfigCheck {
             }
             return Err(text);
         }
-        let rules = Rules::from_yaml(text).map_err(|e| format!("{file}: {e}"))?;
+        let rules =
+            Rules::from_yaml_extended(text, own, load).map_err(|e| format!("{file}: {e}"))?;
         let warnings = report
             .findings
             .iter()
@@ -83,6 +99,23 @@ impl ConfigCheck {
             .collect();
         Ok(Loaded { rules, warnings })
     }
+}
+
+/// The configuration of the repository `text` extends (`extends`), read from that
+/// repository's default branch under every documented name; `None` without `extends`.
+pub fn extended_text(api: &RepoApi, text: &str, prio: Priority) -> Option<Result<String, String>> {
+    let (value, _) = schlange_config::yaml::parse(text).ok()?;
+    let name = schlange_config::extends::target(&value).ok()??;
+    for file in schlange_config::config_file::NAMES {
+        match api.foreign_file(&name, file, prio) {
+            Ok(Some(t)) => return Some(Ok(t)),
+            Ok(None) => {}
+            Err(e) => return Some(Err(format!("repository `{name}`: {e}"))),
+        }
+    }
+    Some(Err(format!(
+        "repository `{name}` has no configuration file"
+    )))
 }
 
 /// Reads the configuration from the default branch under every documented name.

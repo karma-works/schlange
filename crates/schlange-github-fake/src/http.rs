@@ -377,6 +377,35 @@ fn route(
             json!({ "resources": { "core": { "limit": 5000, "remaining": 4999, "reset": unix_now() + 3600 } } }),
         );
     }
+    if seg == ["graphql"] && method == "POST" {
+        return graphql(st, body);
+    }
+    if seg.len() >= 3
+        && seg[0] == "repos"
+        && seg[1] == st.cfg.owner
+        && let Some(files) = st.other_repos.get(seg[2]).cloned()
+    {
+        return match (method, &seg[3..]) {
+            ("GET", []) => reply(
+                200,
+                json!({ "full_name": format!("{}/{}", st.cfg.owner, seg[2]), "name": seg[2],
+                        "default_branch": "main", "visibility": "private" }),
+            ),
+            ("GET", ["contents", p @ ..]) => match files.get(&p.join("/")) {
+                Some(content) => {
+                    let enc = schlange_github::jwt::base64url(content.as_bytes())
+                        .replace('-', "+")
+                        .replace('_', "/");
+                    reply(
+                        200,
+                        json!({ "type": "file", "encoding": "base64", "content": enc }),
+                    )
+                }
+                None => err(404, "Not Found"),
+            },
+            _ => err(404, "Not Found"),
+        };
+    }
     if seg.len() < 3 || seg[0] != "repos" || seg[1] != st.cfg.owner || seg[2] != st.cfg.name {
         return err(404, "Not Found");
     }
@@ -403,6 +432,52 @@ fn route(
     }
     let rest = &seg[3..];
     repo_route(st, base_url, method, path, query, rest, body)
+}
+
+/// The two GraphQL mutations the adapter uses: `convertPullRequestToDraft` and
+/// `markPullRequestReadyForReview` (variables `id`: the pull request's node id).
+fn graphql(st: &mut St, body: &Value) -> Reply {
+    let query = body["query"].as_str().unwrap_or("");
+    let id = body["variables"]["id"].as_str().unwrap_or("");
+    let Some(n) = id.strip_prefix("PR_").and_then(|n| n.parse::<u64>().ok()) else {
+        return reply(
+            200,
+            json!({ "errors": [{ "message": "Could not resolve to a node" }] }),
+        );
+    };
+    let Some(p) = st.prs.get_mut(&n) else {
+        return reply(
+            200,
+            json!({ "errors": [{ "message": "Could not resolve to a node" }] }),
+        );
+    };
+    let draft = if query.contains("convertPullRequestToDraft") {
+        true
+    } else if query.contains("markPullRequestReadyForReview") {
+        false
+    } else {
+        return reply(
+            200,
+            json!({ "errors": [{ "message": "unsupported query" }] }),
+        );
+    };
+    let changed = p.draft != draft;
+    p.draft = draft;
+    if changed {
+        st.emit_pr(
+            if draft {
+                "converted_to_draft"
+            } else {
+                "ready_for_review"
+            },
+            n,
+            json!({}),
+        );
+    }
+    reply(
+        200,
+        json!({ "data": { "pullRequest": { "isDraft": draft } } }),
+    )
 }
 
 fn new_pr_body(st: &St) -> String {
@@ -474,6 +549,10 @@ fn repo_route(
                     labels: Default::default(),
                     fork: false,
                     reviews: vec![],
+                    assignees: vec![],
+                    requested_reviewers: vec![],
+                    requested_teams: vec![],
+                    merged_by: None,
                 },
             );
             st.emit_pr("opened", n, json!({}));
@@ -1054,9 +1133,181 @@ fn repo_route(
             let items = pr
                 .reviews
                 .iter()
-                .map(|(u, s)| json!({ "user": { "login": u }, "state": s }))
+                .map(|r| {
+                    json!({ "id": r.id, "user": { "login": r.user }, "state": r.state,
+                                 "commit_id": r.commit, "body": r.body })
+                })
                 .collect();
             paginate(base_url, path, query, items, None)
+        }
+        ("POST", ["pulls", n, "reviews"]) => {
+            let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
+                return err(404, "Not Found");
+            };
+            let state = match body["event"].as_str() {
+                Some("REQUEST_CHANGES") => "CHANGES_REQUESTED",
+                Some("COMMENT") => "COMMENTED",
+                Some("APPROVE") => "APPROVED",
+                _ => return err(422, "Validation Failed: event"),
+            };
+            st.next_id += 1;
+            let id = st.next_id;
+            let user = st.bot();
+            let p = st.prs.get_mut(&n).expect("pr");
+            let commit = p.head_sha.clone();
+            p.reviews.push(crate::FakeReview {
+                id,
+                user: user.clone(),
+                state: state.into(),
+                commit,
+                body: body["body"].as_str().unwrap_or("").into(),
+            });
+            st.emit(
+                "pull_request_review",
+                json!({ "action": "submitted", "pull_request": { "number": n },
+                        "review": { "state": state.to_lowercase(), "user": { "login": user } } }),
+            );
+            reply(200, json!({ "id": id, "state": state }))
+        }
+        ("PUT", ["pulls", n, "reviews", id, "dismissals"]) => {
+            let (Some(n), Some(id)) = (num(n), num(id)) else {
+                return err(404, "Not Found");
+            };
+            let Some(p) = st.prs.get_mut(&n) else {
+                return err(404, "Not Found");
+            };
+            let Some(r) = p.reviews.iter_mut().find(|r| r.id == id) else {
+                return err(404, "Not Found");
+            };
+            if r.state != "APPROVED" && r.state != "CHANGES_REQUESTED" {
+                return err(422, "Can not dismiss a review in this state");
+            }
+            r.state = "DISMISSED".into();
+            st.emit(
+                "pull_request_review",
+                json!({ "action": "dismissed", "pull_request": { "number": n } }),
+            );
+            reply(200, json!({ "id": id, "state": "DISMISSED" }))
+        }
+        ("POST", ["pulls", n, "requested_reviewers"]) => {
+            let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
+                return err(404, "Not Found");
+            };
+            let list = |k: &str| -> Vec<String> {
+                body[k]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let p = st.prs.get_mut(&n).expect("pr");
+            for u in list("reviewers") {
+                if u == p.user {
+                    return err(422, "Review cannot be requested from pull request author.");
+                }
+                if !p.requested_reviewers.contains(&u) {
+                    p.requested_reviewers.push(u);
+                }
+            }
+            for t in list("team_reviewers") {
+                if !p.requested_teams.contains(&t) {
+                    p.requested_teams.push(t);
+                }
+            }
+            st.emit_pr("review_requested", n, json!({}));
+            reply(201, st.pr_json(n).unwrap_or_default())
+        }
+        ("POST", ["issues", n, "assignees"]) | ("DELETE", ["issues", n, "assignees"]) => {
+            let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
+                return err(404, "Not Found");
+            };
+            let users: Vec<String> = body["assignees"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let p = st.prs.get_mut(&n).expect("pr");
+            if method == "POST" {
+                for u in users {
+                    if !p.assignees.contains(&u) && p.assignees.len() < 10 {
+                        p.assignees.push(u);
+                    }
+                }
+                st.emit_pr("assigned", n, json!({}));
+            } else {
+                p.assignees.retain(|a| !users.contains(a));
+                st.emit_pr("unassigned", n, json!({}));
+            }
+            reply(201, st.pr_json(n).unwrap_or_default())
+        }
+        ("PUT", ["pulls", n, "update-branch"]) => {
+            let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {
+                return err(404, "Not Found");
+            };
+            let pr = st.prs[&n].clone();
+            if let Some(e) = body["expected_head_sha"].as_str()
+                && e != pr.head_sha
+            {
+                return err(422, "expected head sha didn't match current head ref.");
+            }
+            let Some(tip) = st.tip(&pr.base) else {
+                return err(422, "base does not exist");
+            };
+            if st.repo.is_ancestor(&tip, &pr.head_sha) {
+                return err(422, "There are no new commits on the base branch.");
+            }
+            let msg = format!("Merge branch '{}' into {}", pr.base, pr.head_ref);
+            let Ok(c) = st.repo.merge(&pr.head_sha, &tip, &msg) else {
+                return err(422, "merge conflict between base and head");
+            };
+            let bot = st.bot();
+            st.commit_authors.insert(c.clone(), bot);
+            st.repo
+                .update_ref(&pr.head_ref, &pr.head_sha, &c)
+                .expect("cas");
+            st.prs.get_mut(&n).expect("pr").head_sha = c.clone();
+            st.emit_push(&pr.head_ref, &pr.head_sha, Some(&c));
+            st.emit_pr("synchronize", n, json!({}));
+            st.run_ci(n);
+            reply(202, json!({ "message": "Updating pull request branch." }))
+        }
+        ("POST", ["git", "commits"]) => {
+            // The tree must be the tree of a commit the fake knows (enough for copies and
+            // squashes, which reuse trees of merges and heads).
+            let tree_id = body["tree"].as_str().unwrap_or("");
+            let parents: Vec<String> = body["parents"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let Some(tree) = st.tree_by_id(tree_id) else {
+                return err(422, "tree does not exist");
+            };
+            if parents.iter().any(|p| st.repo.get_opt(p).is_none()) {
+                return err(422, "parent does not exist");
+            }
+            let msg = body["message"].as_str().unwrap_or("").to_string();
+            let c = st.repo.commit(tree, parents.clone(), &msg);
+            let bot = st.bot();
+            st.commit_authors.insert(c.clone(), bot);
+            reply(
+                201,
+                json!({ "sha": c, "tree": { "sha": tree_id }, "message": msg,
+                        "parents": parents.iter().map(|p| json!({ "sha": p })).collect::<Vec<_>>() }),
+            )
+        }
+        ("POST", ["actions", "workflows", wf, "dispatches"]) => {
+            st.dispatches.push((wf.to_string(), body.clone()));
+            reply(204, Value::Null)
         }
         ("POST", ["issues", n, "labels"]) => {
             let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {

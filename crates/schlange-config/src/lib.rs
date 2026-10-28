@@ -10,8 +10,10 @@
 //!
 //! [`rules`] gives the engine a typed view of queue rules and pull request rules.
 
+pub mod actions;
 pub mod conditions;
 pub mod config_file;
+pub mod extends;
 pub mod features;
 pub mod glob;
 pub mod rules;
