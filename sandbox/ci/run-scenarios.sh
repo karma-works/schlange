@@ -38,8 +38,8 @@ if [ "$repo" = schlange-e2e ] && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8
   exit 1
 fi
 
-# On schlange-e2e a wait that times out is a failure, with or without a baseline.
-[ "$repo" = schlange-e2e ] && export SANDBOX_FAIL_ON_TIMEOUT=1
+# A timed-out reference is not a valid baseline, and a timed-out comparison is not a pass.
+export SANDBOX_FAIL_ON_TIMEOUT=1
 
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 { echo "### Sandbox $repo"; echo; echo "| Scenario | Result |"; echo "|---|---|"; } >> "$summary"

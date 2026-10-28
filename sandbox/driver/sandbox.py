@@ -247,6 +247,7 @@ class Run:
         self.actors = {"driver": installation_client("driver", org), "human": human_client()}
         self.prs = {}  # key -> {"number", "branch"}
         self.checkpoints = []
+        self.timed_out = False
         self.started = now_iso()
 
     def actor(self, spec):
@@ -441,7 +442,7 @@ class Run:
 
     def save_state(self, **extra):
         state = {"org": self.org, "repo": self.repo, "run_id": self.run_id, "started": self.started,
-                 "prs": self.prs, "checkpoints": self.checkpoints, **extra}
+                 "prs": self.prs, "checkpoints": self.checkpoints, "timed_out": self.timed_out, **extra}
         (self.out / "run.json").write_text(json.dumps(state, indent=2))
 
 

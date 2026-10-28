@@ -42,6 +42,12 @@ class ScenarioRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertTrue(self.marker.exists())
 
+    def test_reference_run_also_fails_on_timeout(self):
+        path = self.root / 'bin' / 'python3'
+        path.write_text('#!/bin/sh\n[ "${SANDBOX_FAIL_ON_TIMEOUT:-}" = 1 ]\n')
+        path.chmod(0o755)
+        self.assertEqual(self.run_scenario('queue-lab').returncode, 0)
+
     def test_existing_baseline_runs_compatibility_scenario(self):
         (self.root / 'sandbox' / 'baselines' / 's01.json').write_text('{}')
         result = self.run_scenario('schlange-e2e')
