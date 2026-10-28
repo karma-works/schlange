@@ -10,6 +10,63 @@ START = Path(__file__).resolve().parents[1] / 'start-schlange.sh'
 
 
 class SetupGuardTests(unittest.TestCase):
+    def test_fixture_reset_retains_owner_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'preflight'
+            program = '''source "$SETUP_SCRIPT"
+preflight() { echo owner >> "$TEST_PREFLIGHT"; }
+preflight_isolated() { echo isolated >> "$TEST_PREFLIGHT"; }
+reset_isolated_fixture() { :; }
+main fixture-isolated
+'''
+            env = {**os.environ, 'SANDBOX_ORG': 'schlange-sandbox', 'SETUP_SCRIPT': str(SCRIPT),
+                   'TEST_PREFLIGHT': str(marker)}
+            result = subprocess.run(['bash', '-c', program], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(marker.read_text().splitlines(), ['owner'])
+
+    def test_isolated_preflight_does_not_require_membership_api(self):
+        program = '''source "$SETUP_SCRIPT"
+gh() {
+  case "$*" in
+    'auth status') return 0;;
+    'api user --jq .login') echo sandbox-user;;
+    'api orgs/schlange-sandbox') return 0;;
+    'api repos/schlange-sandbox/schlange-e2e --jq .full_name') echo "${TEST_REPO_NAME:-schlange-sandbox/schlange-e2e}";;
+    'api repos/schlange-sandbox/schlange-e2e --jq .permissions.admin') echo "${TEST_REPO_ADMIN:-true}";;
+    *memberships*) echo forbidden >&2; return 1;;
+    *) return 1;;
+  esac
+}
+preflight_isolated
+test "$ME" = sandbox-user
+'''
+        env = {**os.environ, 'SANDBOX_ORG': 'schlange-sandbox', 'SETUP_SCRIPT': str(SCRIPT),
+               'SANDBOX_HUMAN_TOKEN': 'sandbox-test-token'}
+        result = subprocess.run(['bash', '-c', program], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        denied = subprocess.run(['bash', '-c', program], env={**env, 'TEST_REPO_ADMIN': 'false'},
+                                capture_output=True, text=True)
+        self.assertNotEqual(denied.returncode, 0)
+        wrong = subprocess.run(['bash', '-c', program], env={**env, 'TEST_REPO_NAME': 'other/repo'},
+                               capture_output=True, text=True)
+        self.assertNotEqual(wrong.returncode, 0)
+
+    def test_isolated_creation_refusal_stops_before_any_fixture_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'fixture-called'
+            program = '''source "$SETUP_SCRIPT"
+app_field() { case "$2" in id) echo 123;; bot_login) echo bot;; esac; }
+gh() { return 1; }
+initialize_isolated_fixture() { touch "$TEST_FIXTURE_CALLED"; }
+cmd_repos_isolated
+'''
+            env = {**os.environ, 'SANDBOX_ORG': 'schlange-sandbox', 'SETUP_SCRIPT': str(SCRIPT),
+                   'TEST_FIXTURE_CALLED': str(marker)}
+            result = subprocess.run(['bash', '-c', program], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+
     def test_new_isolated_fixture_never_clones_or_removes_existing_files(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'git-calls'

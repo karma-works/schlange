@@ -57,7 +57,7 @@ save_env() {
   printf 'SMEE_URL=%q\n' "$SMEE_URL" > "$CONFIG/sandbox.env"
 }
 
-preflight() {
+preflight_common() {
   local t
   local sandbox_human_token="${SANDBOX_HUMAN_TOKEN:-}"
   if [ -z "$sandbox_human_token" ] && [ -f "$CONFIG/human-token" ]; then
@@ -68,7 +68,21 @@ preflight() {
   for t in gh jq git python3 curl; do command -v "$t" >/dev/null || die "$t is missing"; done
   gh auth status >/dev/null 2>&1 || die "gh is not logged in (gh auth login --web)"
   ME=$(gh api user --jq .login)
+  [[ "$ME" =~ ^[A-Za-z0-9-]+$ ]] || die "sandbox token did not identify a valid user"
   gh api "orgs/$ORG" >/dev/null 2>&1 || die "Organisation $ORG does not exist. Please create it: https://github.com/account/organizations/new?plan=free (name: $ORG)"
+}
+
+preflight_isolated() {
+  preflight_common
+  local full admin
+  full=$(gh api "repos/$ORG/$E2E" --jq .full_name) || die "sandbox token cannot inspect the existing sandbox repository"
+  [ "$full" = "$ORG/$E2E" ] || die "unexpected sandbox repository identity"
+  admin=$(gh api "repos/$ORG/$E2E" --jq .permissions.admin) || die "sandbox token cannot verify repository administration"
+  [ "$admin" = true ] || die "sandbox token is not an administrator of $ORG/$E2E"
+}
+
+preflight() {
+  preflight_common
   local role
   role=$(gh api "orgs/$ORG/memberships/$ME" --jq .role 2>/dev/null || echo none)
   [ "$role" = admin ] || die "$ME is not an owner of $ORG (role: $role)"
@@ -359,8 +373,8 @@ main() {
     smee) cmd_smee ;;
     apps) preflight; cmd_apps ;;
     repos) preflight; cmd_repos ;;
-    repos-isolated) preflight; cmd_repos_isolated ;;
-    finish-isolated) preflight; cmd_finish_isolated ;;
+    repos-isolated) preflight_isolated; cmd_repos_isolated ;;
+    finish-isolated) preflight_isolated; cmd_finish_isolated ;;
     fixture) preflight; cmd_fixture ;;
     fixture-e2e) preflight; push_fixture "$E2E" "Update sandbox fixture" ;;
     fixture-lab) preflight; push_fixture "$LAB" "Update sandbox fixture" ;;

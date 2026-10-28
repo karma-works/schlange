@@ -99,6 +99,10 @@ their repo-scoped tokens, and requires the queue app's ruleset bypass. The sandb
 must be able to create the repository, administer its ruleset and grant a repository to an app
 installation; GitHub documents installation-repository access write for the latter. Actual
 token capabilities must be checked in the sandbox; the script stops on a refusal.
+The isolated setup preflight verifies the token is an administrator of the existing
+`schlange-e2e` repository without requiring access to the organization-membership API. That
+check does not prove organization ownership or permission to create repositories: GitHub
+enforces those permissions when the setup requests each operation.
 
 If setup stops after the fixture was pushed, `bash sandbox/setup.sh finish-isolated` resumes
 only after confirming the exact repository identity, an exact fixture Git tree, and no open pull
