@@ -1,0 +1,23 @@
+{
+  "scenario": "S01",
+  "repo": "queue-lab",
+  "prs": {
+    "a": {
+      "end": "merged",
+      "queued": true,
+      "enter_count": 1,
+      "dequeue_codes": []
+    }
+  },
+  "landed": [
+    "a"
+  ],
+  "batches": [
+    {
+      "prs": [
+        "a"
+      ],
+      "ci_ok": "success"
+    }
+  ]
+}
