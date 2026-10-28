@@ -312,8 +312,7 @@ impl Checker {
                             Some("merge-batch" | "fast-forward")
                         )
                 })
-                .filter(|_| !car.in_place)
-                .and_then(|_| l.draft_before.as_ref())
+                .and_then(|_| l.draft_before.as_ref().filter(|_| !car.in_place))
                 .map(|d| d.head_sha.clone())
                 .filter(|h| *h != car.head && forge.repo.is_ancestor(&car.head, h));
             let car_head = edit_head.clone().unwrap_or_else(|| car.head.clone());
