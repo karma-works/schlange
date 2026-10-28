@@ -194,3 +194,209 @@ proptest! {
         prop_assert!(halted.is_empty(), "halted: {halted:?}\nops: {ops:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// A bors-style stress test with Arztagent's real `.mergify.yml` (batch of five, `ci-ok` on the
+// draft, `#check-failure = 0`, the constitution regex): many pull requests, a full suite that
+// breaks for marked pull requests, checks that fail once and then pass (flakes), pushes while
+// queued, a moving base, drafts, `halt`, API faults, webhook faults and restarts of `serve`
+// (a crash: memory lost, the journal stays). Whatever happens, I0 (every commit on the base is
+// a tree the full suite passed) and I1 hold, and nothing is left behind.
+
+const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
+
+#[derive(Clone, Debug)]
+enum AOp {
+    /// 0 plain, 1 breaks the suite, 2 flaky (fails once on the draft), 3 draft, 4 constitution path.
+    Open {
+        kind: u8,
+        f: u8,
+    },
+    Push {
+        i: u8,
+        f: u8,
+    },
+    Halt {
+        i: u8,
+        add: bool,
+    },
+    BasePush {
+        f: u8,
+    },
+    Advance {
+        minutes: u8,
+    },
+    Fault {
+        kind: u8,
+    },
+    Restart,
+}
+
+fn aop() -> impl Strategy<Value = AOp> {
+    prop_oneof![
+        6 => (0u8..5, 0u8..6).prop_map(|(kind, f)| AOp::Open { kind, f }),
+        2 => (any::<u8>(), 0u8..5).prop_map(|(i, f)| AOp::Push { i, f }),
+        1 => (any::<u8>(), any::<bool>()).prop_map(|(i, add)| AOp::Halt { i, add }),
+        1 => (0u8..5).prop_map(|f| AOp::BasePush { f }),
+        4 => (1u8..7).prop_map(|minutes| AOp::Advance { minutes }),
+        2 => (0u8..6).prop_map(|kind| AOp::Fault { kind }),
+        1 => Just(AOp::Restart),
+    ]
+}
+
+fn arztagent_tester(drop: f64, duplicate: f64, delay_ms: u64, seed: u64) -> Tester {
+    let flaked = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let full_suite = CiRule {
+        check: "ci-ok".into(),
+        on: CiOn::Queue,
+        decide: std::sync::Arc::new(move |c: &schlange_github_fake::CiCtx| {
+            let mut flake = None;
+            for v in c.tree.values() {
+                if v.contains("BREAKS_FULL_SUITE") {
+                    return Some("failure".into());
+                }
+                if let Some(m) = v.lines().find(|l| l.starts_with("FLAKY_ONCE")) {
+                    flake = Some(m.to_string());
+                }
+            }
+            if let Some(m) = flake
+                && flaked.lock().unwrap().insert(m)
+            {
+                return Some("failure".into());
+            }
+            Some("success".into())
+        }),
+    };
+    Tester::new(ARZTAGENT)
+        .ci(CiRule::success(
+            "Risk class and data protection",
+            CiOn::Both,
+        ))
+        .ci(CiRule::success("ci-ok", CiOn::PullRequest))
+        .ci(full_suite)
+        .ci(CiRule::success("KI-Review", CiOn::PullRequest))
+        .merge_guard(guard_labels(&["halt"]))
+        .persistent()
+        .reconcile_every("60s")
+        .hook_faults(HookFaults {
+            drop,
+            duplicate,
+            max_delay: Duration::from_millis(delay_ms),
+            seed,
+        })
+}
+
+fn apply_a(t: &mut Running, prs: &mut Vec<u64>, op: &AOp, n: usize) {
+    match op {
+        AOp::Open { kind, f } => {
+            let (path, content) = match kind {
+                1 => (
+                    format!("backend/f{f}-{n}.py"),
+                    format!("v{n} BREAKS_FULL_SUITE\n"),
+                ),
+                2 => (format!("backend/f{f}-{n}.py"), format!("FLAKY_ONCE{n}\n")),
+                4 => (
+                    format!(".github/workflows/w{n}.yml"),
+                    format!("on: [push] # {n}\n"),
+                ),
+                _ => (format!("backend/f{f}-{n}.py"), format!("v{n}\n")),
+            };
+            let author = ["arztagent-bot", "karma-works", "julianhaegele-create"][n % 3];
+            let mut b = t.open_pr(author).file(&path, &content);
+            if *kind == 3 {
+                b = b.draft();
+            }
+            prs.push(b.create());
+        }
+        AOp::Push { i, f } if !prs.is_empty() => {
+            let p = prs[*i as usize % prs.len()];
+            if t.gh.pr(p).is_some_and(|x| x.open) {
+                t.gh.push_pr(p, &[(format!("backend/push{f}-{n}.py"), format!("p{n}\n"))]);
+            }
+        }
+        AOp::Halt { i, add } if !prs.is_empty() => {
+            let p = prs[*i as usize % prs.len()];
+            if t.gh.pr(p).is_some_and(|x| x.open) {
+                t.gh.label(p, "halt", *add);
+            }
+        }
+        AOp::BasePush { f } => {
+            t.gh.push_base(&[(format!("base/b{f}.txt"), format!("b{n}\n"))]);
+        }
+        AOp::Advance { minutes } => t.advance(&format!("{minutes}m")),
+        AOp::Fault { kind } => t.gh.add_fault(fault(*kind)),
+        AOp::Restart => {
+            t.stop_service();
+            t.start_service();
+        }
+        _ => {}
+    }
+    std::thread::sleep(Duration::from_millis(15));
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    #[test]
+    fn arztagent_configuration_under_bors_style_stress(
+        ops in prop::collection::vec(aop(), 6..24),
+        drop in prop::sample::select(vec![0.0, 0.0, 0.3]),
+        duplicate in prop::sample::select(vec![0.0, 0.3]),
+        delay_ms in 0u64..30,
+        seed in any::<u64>(),
+    ) {
+        let mut t = arztagent_tester(drop, duplicate, delay_ms, seed).start();
+        let mut prs = Vec::new();
+        for (n, o) in ops.iter().enumerate() {
+            apply_a(&mut t, &mut prs, o, n);
+        }
+        drain(&t);
+        let mut v = t.gh.invariant_violations(true);
+        v.extend(t.dequeued_but_landed());
+        let halted = t.status().unwrap().halted.clone();
+        t.shutdown();
+        prop_assert!(v.is_empty(), "violations: {v:?}\nops: {ops:?}");
+        prop_assert!(halted.is_empty(), "halted: {halted:?}\nops: {ops:?}");
+    }
+}
+
+/// Not vacuous: with the same CI, seven agent pull requests (one breaks the suite, one flakes
+/// once) and a restart in the middle, the broken one never lands, the pull requests that
+/// share no batch with the flake land, and the base only ever holds tested trees. A flake in
+/// a batch whose every split passes blames the batch's last pull request, as Mergify does
+/// (`queue-bisection`, Gotchas): such a pull request (#7 here) may be dequeued, no other.
+#[test]
+fn arztagent_stress_scenario_lands_the_good_pull_requests() {
+    let mut t = arztagent_tester(0.0, 0.0, 0, 1).start();
+    let mut prs = Vec::new();
+    let kinds = [0u8, 0, 1, 0, 2, 0, 0];
+    for (n, kind) in kinds.iter().enumerate() {
+        apply_a(
+            &mut t,
+            &mut prs,
+            &AOp::Open {
+                kind: *kind,
+                f: n as u8,
+            },
+            n,
+        );
+    }
+    t.advance("6m");
+    apply_a(&mut t, &mut prs, &AOp::Restart, 99);
+    drain(&t);
+    let landed: Vec<u64> = t.gh.squashes().iter().map(|q| q.pr).collect();
+    let v = t.gh.invariant_violations(true);
+    t.shutdown();
+    assert!(v.is_empty(), "{v:?}");
+    for (i, kind) in kinds.iter().enumerate() {
+        let n = prs[i];
+        if *kind == 1 {
+            assert!(!landed.contains(&n), "the broken #{n} landed");
+        } else if i != 6 {
+            assert!(
+                landed.contains(&n),
+                "#{n} (kind {kind}) did not land: {landed:?}"
+            );
+        }
+    }
+}
