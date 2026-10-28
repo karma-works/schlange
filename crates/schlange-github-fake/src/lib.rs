@@ -493,7 +493,10 @@ impl St {
                         .and_then(|r| r.split_whitespace().next())
                         .and_then(|x| x.parse().ok())
                         .unwrap_or(0);
-                    let head = commit.parents.get(1).cloned().unwrap_or_default();
+                    // A commit pushed onto the queue branch by someone else (an accepted
+                    // `allow_queue_branch_edit`) has one parent: it is its own head, and
+                    // whether it was tested is judged on it.
+                    let head = commit.parents.get(1).cloned().unwrap_or_else(|| c.clone());
                     (n, head)
                 }
             };
@@ -1002,7 +1005,24 @@ impl St {
                             .all(|r| r.conclusion.as_deref() == Some("success"))
                 }
         });
+        // The head of an open queue draft whose own checks are all green: also a commit
+        // someone else pushed onto the queue branch (an accepted `allow_queue_branch_edit`),
+        // tested there like any queue head.
+        let draft_head = self.prs.values().any(|p| {
+            p.open
+                && p.user == format!("{}[bot]", self.cfg.app_slug)
+                && p.head_ref.starts_with(&self.cfg.queue_prefix)
+                && self.repo.tree_id_of(&p.head_sha) == tree
+                && {
+                    let runs = self.latest_runs(&p.head_sha);
+                    !runs.is_empty()
+                        && runs
+                            .values()
+                            .all(|r| r.conclusion.as_deref() == Some("success"))
+                }
+        });
         in_place
+            || draft_head
             || self.queue_commits.iter().any(|(sha, branch)| {
                 self.repo.tree_id_of(sha) == tree
                     && self.prs.values().any(|p| {
