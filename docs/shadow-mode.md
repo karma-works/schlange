@@ -212,6 +212,11 @@ the webhook secret and ignores the rest.
   ```bash
   sudo tailscale funnel --bg --https=8443 --set-path=/webhook http://127.0.0.1:8080/webhook
   ```
+
+  For the first minute or two after starting Funnel, GitHub's deliveries can fail with `EOF`
+  while Tailscale's ingress learns the host. Redeliver one from the app's "Advanced" page (or
+  `POST /app/hook/deliveries/{id}/attempts`) to confirm a `202`; `doctor`'s `webhooks` line
+  stays WARN until enough new deliveries succeeded.
 - **A relay** such as smee.io forwards deliveries through a public channel. Only for public
   repositories: anyone who knows the channel URL can read the payloads.
 - **Without webhooks** Schlange still reconciles every 300 seconds (`--reconcile-every`), so it
