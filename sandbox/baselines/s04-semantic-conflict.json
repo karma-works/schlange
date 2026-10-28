@@ -1,0 +1,39 @@
+{
+  "batches": [
+    {
+      "ci_ok": "failure",
+      "prs": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "ci_ok": "success",
+      "prs": [
+        "a",
+        "b"
+      ]
+    }
+  ],
+  "landed": [
+    "a"
+  ],
+  "prs": {
+    "a": {
+      "dequeue_codes": [],
+      "end": "merged",
+      "enter_count": 1,
+      "queued": true
+    },
+    "b": {
+      "dequeue_codes": [
+        "CHECKS_FAILED"
+      ],
+      "end": "open",
+      "enter_count": 1,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S04"
+}

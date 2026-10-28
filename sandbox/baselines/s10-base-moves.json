@@ -1,0 +1,31 @@
+{
+  "batches": [
+    {
+      "ci_ok": "success",
+      "prs": [
+        "a"
+      ]
+    }
+  ],
+  "landed": [
+    "a"
+  ],
+  "prs": {
+    "a": {
+      "dequeue_codes": [],
+      "end": "merged",
+      "enter_count": 1,
+      "queued": true
+    },
+    "b": {
+      "dequeue_codes": [
+        "PR_DEQUEUED"
+      ],
+      "end": "open",
+      "enter_count": 1,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S10"
+}

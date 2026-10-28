@@ -312,6 +312,13 @@ class Run:
         self.commit_files(self.actors["human"], "main", files, f"Scenario {self.run_id}: base moves")
         log("Commit directly on main (admin bypass)")
 
+    def queue_activity(self):
+        h = self.actors["human"]
+        pulls = h.call("GET", f"{self.r}/pulls?state=open&per_page=100")
+        queue = sorted((p["number"], p["head"]["sha"]) for p in pulls if p["head"]["ref"].startswith("mergify/merge-queue/"))
+        main = h.call("GET", f"{self.r}/git/ref/heads/main")["object"]["sha"]
+        return json.dumps([queue, main])
+
     def pr_state(self, key):
         pr = self.actors["human"].call("GET", f"{self.r}/pulls/{self.prs[key]['number']}")
         return "merged" if pr["merged"] else pr["state"], pr["updated_at"]
@@ -322,9 +329,14 @@ class Run:
         last_change, seen = time.time(), {}
         while time.time() < deadline:
             states = {k: self.pr_state(k) for k in keys}
+            if what == "quiet":
+                # Quiet means the queue is idle: also open queue pull requests and the tip of
+                # main count as activity. A queue that updates the scenario pull requests rarely
+                # (checks run for minutes) is not idle while it still tests batches.
+                states["_queue"] = (self.queue_activity(), "")
             if states != seen:
                 seen, last_change = states, time.time()
-                log("State: " + ", ".join(f"{k}=#{self.prs[k]['number']}:{v[0]}" for k, v in states.items()))
+                log("State: " + ", ".join(f"{k}=#{self.prs[k]['number']}:{v[0]}" for k, v in states.items() if k in self.prs))
             st = {k: v[0] for k, v in states.items()}
             if what == "merged" and all(v == "merged" for v in st.values()):
                 return
