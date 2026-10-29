@@ -19,6 +19,156 @@ use schlange_github_fake::{CiOn, CiRule, Tester};
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
 const REPO: &str = "karma-works/arzt-agent";
 
+#[test]
+fn failed_lineage_metadata_cannot_become_trusted_on_renewal() {
+    use schlange_github::{
+        RepoName,
+        api::RepoApi,
+        lease::{Lease, LeaseConfig},
+        store::Store,
+    };
+    let t = Tester::new(ARZTAGENT).start();
+    let dir = temp_dir("lineage-metadata-failure");
+    let store = Store::open(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("schlange.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_fence BEFORE INSERT ON meta BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    let api = RepoApi {
+        client: t.client.clone(),
+        repo: RepoName::parse(REPO).unwrap(),
+        installation: t.gh.config().installation_id,
+    };
+    let lease = Lease::new(
+        api,
+        Some(store),
+        LeaseConfig {
+            holder: "metadata-test".into(),
+            ttl: 60,
+        },
+        t.clock.clone(),
+    );
+    assert!(lease.ensure());
+    assert!(
+        !lease.journal_is_current(),
+        "failed metadata write must not prove lineage"
+    );
+    db.execute_batch("DROP TRIGGER fail_fence;").unwrap();
+    t.clock.advance(31);
+    assert!(lease.ensure());
+    assert!(
+        !lease.journal_is_current(),
+        "renewal must not launder unknown predecessor"
+    );
+    t.shutdown();
+}
+
+#[test]
+fn mismatched_fence_cannot_become_trusted_on_renewal() {
+    use schlange_github::{
+        RepoName,
+        api::RepoApi,
+        lease::{Lease, LeaseConfig},
+        store::Store,
+    };
+    let t = Tester::new(ARZTAGENT).start();
+    let dir = temp_dir("lineage-mismatch");
+    let store = Store::open(&dir).unwrap();
+    let key = format!("fence:{REPO}");
+    store.set_meta(&key, "unrelated-fence").unwrap();
+    let api = RepoApi {
+        client: t.client.clone(),
+        repo: RepoName::parse(REPO).unwrap(),
+        installation: t.gh.config().installation_id,
+    };
+    let lease = Lease::new(
+        api,
+        Some(store.clone()),
+        LeaseConfig {
+            holder: "mismatch-test".into(),
+            ttl: 60,
+        },
+        t.clock.clone(),
+    );
+    assert!(lease.ensure());
+    assert!(!lease.journal_is_current());
+    t.clock.advance(31);
+    assert!(lease.ensure());
+    assert!(!lease.journal_is_current());
+    assert_eq!(
+        store.meta(&key).unwrap().as_deref(),
+        Some("unrelated-fence")
+    );
+    t.shutdown();
+}
+
+#[test]
+fn unreadable_fence_metadata_is_not_a_missing_predecessor() {
+    use schlange_github::{
+        RepoName,
+        api::RepoApi,
+        lease::{Lease, LeaseConfig},
+        store::Store,
+    };
+    let t = Tester::new(ARZTAGENT).start();
+    let dir = temp_dir("lineage-read-failure");
+    let store = Store::open(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("schlange.db")).unwrap();
+    db.execute_batch("DROP TABLE meta;").unwrap();
+    let api = RepoApi {
+        client: t.client.clone(),
+        repo: RepoName::parse(REPO).unwrap(),
+        installation: t.gh.config().installation_id,
+    };
+    let lease = Lease::new(
+        api,
+        Some(store),
+        LeaseConfig {
+            holder: "read-error-test".into(),
+            ttl: 60,
+        },
+        t.clock.clone(),
+    );
+    assert!(lease.ensure());
+    assert!(!lease.journal_is_current());
+    db.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+        .unwrap();
+    t.clock.advance(31);
+    assert!(lease.ensure());
+    assert!(!lease.journal_is_current());
+    t.shutdown();
+}
+
+#[test]
+fn first_fence_and_empty_metadata_preserve_fresh_start_behavior() {
+    use schlange_github::{
+        RepoName,
+        api::RepoApi,
+        lease::{Lease, LeaseConfig},
+        store::Store,
+    };
+    let t = Tester::new(ARZTAGENT).start();
+    let store = Store::open(&temp_dir("lineage-first-fence")).unwrap();
+    let api = RepoApi {
+        client: t.client.clone(),
+        repo: RepoName::parse(REPO).unwrap(),
+        installation: t.gh.config().installation_id,
+    };
+    let lease = Lease::new(
+        api,
+        Some(store),
+        LeaseConfig {
+            holder: "fresh-test".into(),
+            ttl: 60,
+        },
+        t.clock.clone(),
+    );
+    assert!(lease.ensure());
+    assert!(
+        lease.journal_is_current(),
+        "retains existing empty predecessor behavior"
+    );
+    t.shutdown();
+}
+
 fn arztagent_ci(t: Tester) -> Tester {
     t.ci(CiRule::success(
         "Risk class and data protection",

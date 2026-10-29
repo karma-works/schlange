@@ -142,9 +142,14 @@ impl Lease {
     /// one recorded before.
     fn won(&self, built_on: Option<&str>, sha: &str) {
         let Some(s) = &self.store else { return };
-        let before = s.meta(&self.meta_key()).ok().flatten();
-        let current = before.as_deref() == built_on;
-        let _ = s.set_meta(&self.meta_key(), sha);
+        let current = match s.meta(&self.meta_key()) {
+            Ok(before) if before.as_deref() == built_on => {
+                s.set_meta(&self.meta_key(), sha).is_ok()
+            }
+            // Do not record an untrusted successor: a later renewal could mistake it for a
+            // trusted predecessor. Read/write errors also leave the lineage unproven.
+            _ => false,
+        };
         self.lock().journal_current = current;
     }
 

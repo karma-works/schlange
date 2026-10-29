@@ -733,7 +733,8 @@ def write_outcome(out):
     return outcome
 
 
-def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_observation=False, expected_prs=None):
+def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_observation=False, expected_prs=None,
+                     expected_batches=None):
     """0 = same behaviour, 1 = deviations (they are printed)."""
     exp = json.loads(Path(expected_path).read_text())
     act = json.loads(Path(actual_path).read_text())
@@ -788,9 +789,16 @@ def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_ob
         else:
             diffs.append(line)
     # Batches depend on timing (batch_max_wait_time); compare strictly only on request.
-    if strict_batches and exp.get("batches") is not None and \
-            [b["prs"] for b in exp["batches"]] != [b["prs"] for b in act["batches"]]:
-        diffs.append(f"Batches: expected {exp['batches']}, observed {act['batches']}")
+    if strict_batches:
+        batches = (exp.get("batches"), act.get("batches"))
+        if not all(isinstance(bs, list) and all(isinstance(b, dict)
+                   and isinstance(b.get("prs"), list)
+                   and all(isinstance(pr, str) for pr in b["prs"]) for b in bs) for bs in batches):
+            diffs.append("Batches: evidence is missing or invalid")
+        elif [b["prs"] for b in batches[0]] != [b["prs"] for b in batches[1]]:
+            diffs.append(f"Batches: expected {batches[0]}, observed {batches[1]}")
+        elif expected_batches is not None and [b["prs"] for b in batches[1]] != expected_batches:
+            diffs.append(f"Batches: scenario expected {expected_batches}, observed {batches[1]}")
     if known:
         print("KNOWN DEVIATION (documented)\n  " + "\n  ".join(known))
     if diffs:
@@ -908,6 +916,8 @@ def cmd_run(a):
     if a.baseline:
         expected_prs = {step["open"] for step in scenario["steps"] if "open" in step}
         sys.exit(compare_outcomes(Path(a.baseline), out / "outcome.json",
+                                  strict_batches=scenario.get("strict_batches", False),
+                                  expected_batches=scenario.get("expected_batches"),
                                   strict_observation=a.repo in ACTIVE_REPOS, expected_prs=expected_prs))
 
 

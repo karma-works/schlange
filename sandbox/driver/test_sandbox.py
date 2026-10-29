@@ -264,6 +264,32 @@ class CheckpointTests(unittest.TestCase):
                                           'landed': [], 'batches': []}))
             self.assertEqual(driver.compare_outcomes(baseline, actual, strict_observation=True), 1)
 
+    def test_strict_batch_comparison_rejects_missing_batch_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / 'baseline.json'
+            actual = Path(directory) / 'actual.json'
+            pr = {'end': 'merged', 'queued': True, 'enter_count': 1, 'dequeue_codes': []}
+            reference = {'prs': {'a': pr}, 'landed': ['a'], 'batches': [{'prs': ['a']} ]}
+            baseline.write_text(json.dumps(reference))
+            actual.write_text(json.dumps({'repo': 'schlange-e2e', 'prs': {'a': pr}, 'landed': ['a']}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual, strict_batches=True,
+                                                     strict_observation=True), 1)
+
+    def test_expected_batches_reject_identical_empty_outcomes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / 'baseline.json'
+            actual = Path(directory) / 'actual.json'
+            pr = {'end': 'merged', 'queued': True, 'enter_count': 1, 'dequeue_codes': []}
+            reference = {'prs': {'a': pr}, 'landed': ['a'], 'batches': []}
+            baseline.write_text(json.dumps(reference))
+            actual.write_text(json.dumps({'repo': 'schlange-e2e', **reference}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual, strict_batches=True,
+                                                     strict_observation=True, expected_batches=[['a']]), 1)
+            actual.write_text(json.dumps({'repo': 'schlange-e2e', 'prs': {'a': pr}, 'landed': ['a'],
+                                          'batches': [{'prs': []}]}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual, strict_batches=True,
+                                                     strict_observation=True), 1)
+
     def test_failed_base_push_persists_start_checkpoint(self):
         run = object.__new__(driver.Run)
         run.run_id = 'run-123'

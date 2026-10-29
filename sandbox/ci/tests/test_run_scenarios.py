@@ -138,6 +138,24 @@ class ScenarioRunnerTests(unittest.TestCase):
         baseline.write_text(json.dumps(data))
         self.assertEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
 
+    def test_strict_batch_scenario_requires_batch_reference_before_driver(self):
+        scenario = self.root / 'sandbox' / 'scenarios' / 's01.json'
+        scenario.write_text('{"steps": [{"open": "a"}], "strict_batches": true}')
+        self.write_baseline()
+        baseline = self.root / 'sandbox' / 'baselines' / 's01.json'
+        data = json.loads(baseline.read_text())
+        data.pop('batches')
+        baseline.write_text(json.dumps(data))
+        self.assertNotEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_expected_batch_must_match_reference_before_driver(self):
+        scenario = self.root / 'sandbox' / 'scenarios' / 's01.json'
+        scenario.write_text('{"steps": [{"open": "a"}], "strict_batches": true, "expected_batches": [["a"]]}')
+        self.write_baseline()
+        self.assertNotEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
+        self.assertFalse(self.marker.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -17,6 +17,14 @@ def valid(reference, scenario):
         return False
     if not isinstance(landed, list) or not all(isinstance(k, str) for k in landed):
         return False
+    if scenario.get('strict_batches', False):
+        batches = reference.get('batches')
+        if not isinstance(batches, list) or not all(
+                isinstance(b, dict) and isinstance(b.get('prs'), list)
+                and all(isinstance(pr, str) for pr in b['prs']) for b in batches):
+            return False
+        if 'expected_batches' in scenario and [b['prs'] for b in batches] != scenario['expected_batches']:
+            return False
     deviations = reference.get('known_deviations', [])
     if not isinstance(deviations, list) or not all(
             isinstance(d, dict) and isinstance(d.get('pr'), str)
