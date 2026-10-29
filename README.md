@@ -29,8 +29,8 @@ working byte for byte.
 
 - **Own the critical path.** A merge queue decides what reaches `main`. Running it yourself keeps
   code and pull request data in house and removes a dependency on a hosted service's outages.
-- **Small and hardened.** One static binary in a `FROM scratch` image (about 10.5 MiB budget,
-  target under 15 MB), read-only file system, no shell, no git, SQLite on one volume.
+- **Small and hardened.** One static binary in a `FROM scratch` image (20 MB budget), read-only
+  file system, no shell, no git, SQLite on one volume.
 - **Explainable.** `schlange explain <pr>` says why a pull request is or is not queued,
   condition by condition; every merge has an audit record (tested tree, base, heads, landed
   commit).
