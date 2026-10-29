@@ -11,4 +11,5 @@
 # JSON, extension loading, statistics tables, deprecated APIs) adds about 0.8 MB; the
 # journal, listener and serve-side validation about 0.2 MB. The untrimmed SQLite build was
 # 10.78 MiB. Budget raised to 10.5 MiB; the target stays < 15 MB.
-11010048
+# October 2026: budget relaxed to 20 MB for the expanded GitHub adapter and verification work.
+20000000

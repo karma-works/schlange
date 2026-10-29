@@ -1,0 +1,45 @@
++0:00:00  action    #1 opened by bot on main, files: a.txt
++0:00:00  action    #2 opened by bot on main, files: shared.txt
++0:01:00  ci        #1 check `quick` completed on 84886d8: success
++0:01:00  ci        #2 check `quick` completed on ca61873: success
++0:01:00  webhook   #1 check `quick` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:01:00  reply     car 2 built at ecd3e04, draft #1000
++0:01:00  decision  labels #1 +queued
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:01:00  webhook   #2 check `quick` completed on ca61873: success
++0:01:00  decision  enqueue #2 into `default` (rule `queue bot pull requests`)
++0:01:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base 5a8b940 + #1 #2 (checks #2)
++0:01:00  reply     car 4 built at b2e3b76, draft #1001
++0:01:00  decision  labels #2 +queued
++0:01:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:01:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked in draft pull request #1001.
++0:05:00  action    direct push to main: c917c3c
++0:05:00  webhook   push to main
++0:05:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:05:00  decision  checks of #1 ended, stays queued: MERGE_QUEUE_RESET: the base branch moved outside the queue (5a8b940 → c917c3c)
++0:05:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1001
++0:05:00  decision  checks of #2 ended, stays queued: MERGE_QUEUE_RESET: the base branch moved outside the queue (5a8b940 → c917c3c)
++0:05:00  decision  build car 5 on mergify/merge-queue/f2f5067500: base c917c3c + #1 (checks #1)
++0:05:00  reply     car 5 built at eeeb84f, draft #1002
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
++0:05:00  decision  build car 6 on mergify/merge-queue/744dfff868: base c917c3c + #1 #2 (checks #2)
++0:05:00  reply     car 6: #2 conflicts with the base branch
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1002.
++0:05:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:05:00  decision  dequeue #2 from `default`: PR_DEQUEUED: the pull request does not merge onto the base branch
++0:05:00  decision  labels #2 +dequeued -queued
++0:05:00  decision  status comment #2: **Merge queue** · left the queue — Reason: PR_DEQUEUED: the pull request does not merge onto the base branch — - [ ] Put this pull request back into the queue
++0:15:00  ci        #1002 check `full` completed on eeeb84f: success
++0:15:00  webhook   #1002 check `full` completed on eeeb84f: success
++0:15:00  decision  read #1 #1002 main mergify/merge-queue/f2f5067500 before acting
++0:15:00  decision  land car 5: squash #1 onto main if it is still c917c3c
++0:15:00  message   #1: Pull request 1 (#1)
++0:15:00  reply     car 5 landed #1 as 4234cfa
++0:15:00  decision  close car 5, delete mergify/merge-queue/f2f5067500, close #1002
++0:15:00  decision  #1 merged as 4234cfa
++0:15:00  decision  labels #1 -queued
++0:15:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 4234cfa.

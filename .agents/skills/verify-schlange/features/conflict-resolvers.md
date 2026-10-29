@@ -5,6 +5,10 @@ priority: P2
 arztagent: false
 status: missing
 inventory:
+  - "config:merge_queue.resolve_conflicts"
+  - "config:merge_queue.resolve_conflicts.*"
+  - "default:merge_queue.resolve_conflicts.*"
+  - "enum:pull_requests:*"
   - "config:conflict_resolvers"
   - "config:conflict_resolvers.*"
   - "default:conflict_resolvers.*"
@@ -23,6 +27,7 @@ dequeueing the pull request.
 
 ## Sub-features
 
+- `merge-queue-resolve-conflicts`: missing. Explicit `merge_queue.resolve_conflicts` settings, including an empty object, are reported as unsupported.
 - `paths`
 - `package-manager`
 - `language`

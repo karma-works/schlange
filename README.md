@@ -29,8 +29,8 @@ working byte for byte.
 
 - **Own the critical path.** A merge queue decides what reaches `main`. Running it yourself keeps
   code and pull request data in house and removes a dependency on a hosted service's outages.
-- **Small and hardened.** One static binary in a `FROM scratch` image (about 10.5 MiB budget,
-  target under 15 MB), read-only file system, no shell, no git, SQLite on one volume.
+- **Small and hardened.** One static binary in a `FROM scratch` image (20 MB budget), read-only
+  file system, no shell, no git, SQLite on one volume.
 - **Explainable.** `schlange explain <pr>` says why a pull request is or is not queued,
   condition by condition; every merge has an audit record (tested tree, base, heads, landed
   commit).
@@ -67,6 +67,29 @@ target/release/schlange doctor
 
 Running against GitHub as an app (`schlange serve`, flags and security notes) and shadow mode
 (`--shadow`, `schlange shadow report`) are described in [AGENTS.md](AGENTS.md#schlange-serve).
+The `/healthz` endpoint returns 503 if a worker stops or its loop heartbeat is older than
+30 minutes (or three times the worker poll interval, whichever is longer). A lengthy API
+operation or reconciliation can also trigger this alarm. It clears when the worker resumes;
+it does not restart the process or detect every stalled queue. A liveness probe may restart
+the process on 503: configure its failure threshold to allow for the longest expected operation,
+or use the endpoint for alerting and investigate before restarting.
+
+For an active leader, a separate read-only observer samples one eligible car at most once per
+minute, rotating past cars that are not actionable. It reads that car's pull requests and draft,
+their checks and the relevant branches, so API cost grows with the size of the car. If two
+completed observations at least a minute apart find the same green car ready for verification, it requests an ordinary
+reconciliation; the worker alone decides and journals any writes. The observer discards failed
+reads and observations made against a changed engine view. Its reads use background priority and
+leave the worker's local API reserve available; GitHub's shared upstream rate limit still applies.
+A budget-deferred observation resumes successful GETs, including pages, for up to ten minutes,
+provided the engine view and leadership do not change. It is not an atomic GitHub snapshot; the
+worker makes its own fresh reads before landing. Memoized keys, headers and bodies are limited to
+2 MiB and 512 entries per observation and 16 MiB across the service process; decoded pull requests
+and map overhead are outside those limits. A larger observation is discarded. With many eligible
+cars, rotation can also exceed the ten-minute age limit before a partial read is revisited. It
+does not observe shadow processes or lease followers, and detects this particular stalled state
+rather than every kind of stall. Frequent unrelated engine state changes can also prevent two
+observations from sharing a generation; the observer rotates among eligible cars in that case.
 
 ## Adopting Schlange
 
@@ -124,8 +147,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (301) | – | built 257, partial 8 | 36 |
-| Sub-features Arztagent uses (162) | – | built 149, partial 4 | 9 |
+| Sub-features (306) | – | built 256, partial 13 | 37 |
+| Sub-features Arztagent uses (166) | – | built 149, partial 8 | 9 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -149,21 +172,21 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Find and load the configuration file](.agents/skills/verify-schlange/features/config-file.md) | partial | 4 / 0 / 1 | yes |
 | [Validate a configuration](.agents/skills/verify-schlange/features/config-validation.md) | partial | 1 / 0 / 0 | yes |
 | [Dependencies between pull requests (`Depends-On`)](.agents/skills/verify-schlange/features/depends-on.md) | partial | 7 / 0 / 0 | yes |
-| [GitHub integration (app, webhooks, reconciliation)](.agents/skills/verify-schlange/features/github-integration.md) | partial | 19 / 0 / 0 | yes |
+| [GitHub integration (app, webhooks, reconciliation)](.agents/skills/verify-schlange/features/github-integration.md) | partial | 18 / 2 / 0 | yes |
 | [Built-in protection: configuration changed](.agents/skills/verify-schlange/features/merge-protections-builtin.md) | partial | 6 / 0 / 0 | yes |
 | [Workflow rules (`pull_request_rules`)](.agents/skills/verify-schlange/features/pull-request-rules.md) | partial | 9 / 0 / 0 | yes |
 | [Batches (`batch_size`, `batch_max_wait_time`)](.agents/skills/verify-schlange/features/queue-batch.md) | partial | 3 / 1 / 1 | yes |
 | [Bisection of red batches](.agents/skills/verify-schlange/features/queue-bisection.md) | partial | 6 / 0 / 0 | yes |
 | [Bot accounts for merge, draft and update](.agents/skills/verify-schlange/features/queue-bot-accounts.md) | partial | 1 / 0 / 0 | yes |
-| [Foreign pushes to queue branches](.agents/skills/verify-schlange/features/queue-branch-edit.md) | partial | 2 / 0 / 0 | yes |
+| [Foreign pushes to queue branches](.agents/skills/verify-schlange/features/queue-branch-edit.md) | partial | 3 / 0 / 0 | yes |
 | [Required checks from branch protection and rulesets](.agents/skills/verify-schlange/features/queue-branch-protection.md) | partial | 3 / 1 / 1 | yes |
 | [Check timeout and retries (defaults)](.agents/skills/verify-schlange/features/queue-checks-timeout.md) | partial | 7 / 0 / 0 | yes |
 | [Commit message on merge](.agents/skills/verify-schlange/features/queue-commit-message.md) | partial | 4 / 0 / 1 | yes |
-| [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 5 / 0 / 0 | yes |
-| [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 5 / 0 / 0 | yes |
+| [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 4 / 1 / 0 | yes |
+| [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 6 / 0 / 0 | yes |
 | [Queue pull requests as drafts on `mergify/merge-queue/`](.agents/skills/verify-schlange/features/queue-draft-pr.md) | partial | 4 / 0 / 1 | yes |
 | [Queue labels and status comments](.agents/skills/verify-schlange/features/queue-labels-comments.md) | partial | 4 / 0 / 0 | yes |
-| [Landing as compare-and-swap with evidence](.agents/skills/verify-schlange/features/queue-landing.md) | partial | 6 / 1 / 0 | yes |
+| [Landing as compare-and-swap with evidence](.agents/skills/verify-schlange/features/queue-landing.md) | partial | 6 / 2 / 0 | yes |
 | [Merge method `squash`](.agents/skills/verify-schlange/features/queue-merge-method-squash.md) | partial | 3 / 0 / 2 | yes |
 | [Queue rules (`queue_rules`)](.agents/skills/verify-schlange/features/queue-rules.md) | partial | 5 / 0 / 1 | yes |
 | [Serial, cumulative speculation](.agents/skills/verify-schlange/features/queue-speculation.md) | partial | 4 / 0 / 0 | yes |
@@ -185,7 +208,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Action `delete_head_branch` (deprecated)](.agents/skills/verify-schlange/features/action-delete-head-branch.md) | partial | 1 / 0 / 0 |  |
 | [Action `dismiss_reviews`](.agents/skills/verify-schlange/features/action-dismiss-reviews.md) | partial | 2 / 0 / 0 |  |
 | [Action `edit`](.agents/skills/verify-schlange/features/action-edit.md) | partial | 1 / 0 / 0 |  |
-| [Action `github_actions` (deprecated)](.agents/skills/verify-schlange/features/action-github-actions.md) | partial | 2 / 0 / 0 |  |
+| [Action `github_actions` (deprecated)](.agents/skills/verify-schlange/features/action-github-actions.md) | partial | 1 / 1 / 0 |  |
 | [Action `label`](.agents/skills/verify-schlange/features/action-label.md) | partial | 3 / 0 / 0 |  |
 | [Action `merge`](.agents/skills/verify-schlange/features/action-merge.md) | partial | 1 / 0 / 0 |  |
 | [Action `post_check`](.agents/skills/verify-schlange/features/action-post-check.md) | partial | 2 / 0 / 0 |  |
@@ -219,7 +242,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Further file and line attributes](.agents/skills/verify-schlange/features/conditions-files-other.md) | missing | 0 / 0 / 0 |  |
 | [Review attributes](.agents/skills/verify-schlange/features/conditions-reviews.md) | missing | 0 / 0 / 0 |  |
 | [Time and schedule](.agents/skills/verify-schlange/features/conditions-time.md) | missing | 0 / 0 / 0 |  |
-| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 0 |  |
+| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 1 |  |
 | [Update method of a pull request](.agents/skills/verify-schlange/features/queue-update-method.md) | missing | 1 / 0 / 2 |  |
 
 </details>

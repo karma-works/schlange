@@ -149,6 +149,14 @@ pub enum Action {
     MergeManually(u64),
     /// Someone pushes to the queue branch that checks this pull request (MQ-08).
     PushQueueBranch(u64),
+    /// Someone force-pushes a commit with these parents (and the tip's tree plus `files`) to
+    /// the queue branch that checks this pull request: a head that need not descend from the
+    /// tested one (checker tests).
+    ForcePushQueueBranch {
+        number: u64,
+        parents: Vec<Sha>,
+        files: Vec<(String, String)>,
+    },
     /// A push to the pull request by someone else than its author.
     PushAs {
         number: u64,
@@ -1260,6 +1268,37 @@ impl<G: GitStore> SimForge<G> {
                     Err(_) => format!("manual merge of #{n} refused: conflict"),
                 }
             }
+            Action::ForcePushQueueBranch {
+                number,
+                parents,
+                files,
+            } => {
+                let car = self
+                    .cars
+                    .values()
+                    .filter(|c| !c.closed && !c.in_place)
+                    .find(|c| c.prefix.iter().any(|(p, ..)| *p == number))
+                    .cloned();
+                let Some(car) = car else {
+                    return format!("no open queue branch holds #{number}; nothing pushed");
+                };
+                let branch = car.branch.clone().expect("draft car");
+                let tip = self.repo.ref_sha(&branch).expect("branch");
+                let mut tree = self.repo.tree(&tip).clone();
+                for (p, c) in files {
+                    tree.insert(p, c);
+                }
+                let c = self.repo.commit(tree, parents, "foreign force push");
+                self.repo.update_ref(&branch, &tip, &c).expect("CAS");
+                if let Some(d) = car.draft
+                    && let Some(p) = self.prs.get_mut(&d)
+                {
+                    p.head_sha = c.clone();
+                    self.start_ci(d, true);
+                }
+                self.emit(Hint::Branch(branch.clone()), format!("push to {branch}"));
+                format!("foreign force push to {branch}: {}", short(&c))
+            }
             Action::PushQueueBranch(n) => {
                 let car = self
                     .cars
@@ -1719,8 +1758,14 @@ impl<G: GitStore> SimForge<G> {
         }
         let mut commits = Vec::new();
         let in_place = record.as_ref().is_some_and(|r| r.in_place);
-        for p in prs {
+        let edited = !in_place
+            && method == MergeMethod::FastForward
+            && record.as_ref().is_some_and(|r| r.head != new);
+        for (k, p) in prs.iter().enumerate() {
             let (sha, extra) = if method == MergeMethod::MergeBatch {
+                (new.clone(), vec![])
+            } else if edited && k + 1 == prs.len() {
+                // An accepted `allow_queue_branch_edit`: the base moves onto the pushed head.
                 (new.clone(), vec![])
             } else if in_place {
                 let mut own = self.own_commits(head, expected);

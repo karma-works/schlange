@@ -1,0 +1,39 @@
+{
+  "id": "S12",
+  "title": "Base moves after both pull requests enter the queue",
+  "refs": [
+    "MQ-06",
+    "MQ-27",
+    "MQ-47"
+  ],
+  "steps": [
+    {
+      "open": "a",
+      "flags": [
+        "sleep-full 240"
+      ]
+    },
+    {
+      "open": "b",
+      "conflict": true
+    },
+    {
+      "wait": "queued",
+      "prs": [
+        "a",
+        "b"
+      ],
+      "timeout": 1800
+    },
+    {
+      "main_commit": {
+        "shared/conflict.txt": "Shared file for text conflicts between scenario PRs.\nline: main ({run})\n"
+      }
+    },
+    {
+      "wait": "quiet",
+      "seconds": 600,
+      "timeout": 3600
+    }
+  ]
+}

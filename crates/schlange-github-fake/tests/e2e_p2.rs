@@ -207,3 +207,48 @@ fn a_scheduled_freeze_holds_matching_pull_requests_until_it_ends() {
     t.assert_invariants();
     t.shutdown();
 }
+
+/// `allow_queue_branch_edit: true` with `fast-forward`: someone pushes to the queue branch, the
+/// full suite runs on the pushed head, and the base moves onto that head (the edit lands). With
+/// a red full suite on the pushed head, nothing lands. The fake's I0 checks that every commit
+/// on the base is a tree the full suite passed.
+fn edit_of_the_queue_branch(content: &str) -> (bool, Option<String>) {
+    let cfg = config("fast-forward", 1).replace(
+        "    merge_method: fast-forward\n",
+        "    merge_method: fast-forward\n    allow_queue_branch_edit: true\n",
+    );
+    let t = ci(Tester::new(&cfg)).start();
+    let a = t.open_pr(BOT).file("a.txt", "a\n").create();
+    t.pr(a).wait_queued();
+    t.advance("2m");
+    // The fake's CI reports at once; the queue lands only after its fresh read, which
+    // sees the pushed head.
+    let draft = t.queue_pr().get();
+    t.gh.push_pr_as(
+        draft.number,
+        "mallory",
+        &[("edit.txt".to_string(), content.to_string())],
+    );
+    t.settle();
+    t.advance("2m");
+    t.settle();
+    let merged = t.gh.pr(a).is_some_and(|p| p.merged);
+    let edit = t.base_tree().get("edit.txt").cloned();
+    t.assert_invariants();
+    t.shutdown();
+    (merged, edit)
+}
+
+#[test]
+fn an_accepted_edit_of_the_queue_branch_lands_the_tested_pushed_head() {
+    let (merged, edit) = edit_of_the_queue_branch("edited\n");
+    assert!(merged);
+    assert_eq!(edit.as_deref(), Some("edited\n"));
+}
+
+#[test]
+fn an_accepted_edit_that_breaks_the_full_suite_never_lands() {
+    let (merged, edit) = edit_of_the_queue_branch("BREAKS\n");
+    assert!(!merged);
+    assert_eq!(edit, None);
+}

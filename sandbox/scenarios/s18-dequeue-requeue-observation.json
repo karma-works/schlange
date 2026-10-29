@@ -1,0 +1,13 @@
+{
+  "id": "S18",
+  "title": "Observe an authorized requeue after a confirmed dequeue",
+  "refs": ["MQ-45", "MQ-50"],
+  "steps": [
+    {"open": "a", "flags": ["sleep-full 240"], "as": "human"},
+    {"wait": "queued", "prs": ["a"], "timeout": 1200},
+    {"comment": "a", "text": "@mergifyio dequeue", "as": "human"},
+    {"wait": "dequeued", "prs": ["a"], "reason": "PR_MANUALLY_DEQUEUED", "timeout": 1200},
+    {"comment": "a", "text": "@mergifyio queue", "as": "human"},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

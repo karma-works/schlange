@@ -1,0 +1,25 @@
+{
+  "batches": [
+    {
+      "ci_ok": "success",
+      "prs": [
+        "a"
+      ]
+    }
+  ],
+  "landed": [
+    "a"
+  ],
+  "prs": {
+    "a": {
+      "dequeue_codes": [
+        "PULL_REQUEST_UPDATED"
+      ],
+      "end": "merged",
+      "enter_count": 2,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S06"
+}

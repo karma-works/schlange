@@ -569,6 +569,11 @@ pub(crate) fn car_built(
     c.draft = Some(draft);
     c.started = now;
     c.status = CarStatus::Running;
+    for number in &c.own {
+        if let Some(entry) = state.queued.get_mut(number) {
+            entry.external_reset = false;
+        }
+    }
     // The queue's own push to its branch is known now (not a foreign push).
     state
         .branches
@@ -634,17 +639,30 @@ pub(crate) fn car_conflict(
             out,
         );
     } else if with_base {
+        let external_reset = state.queued.get(&number).is_some_and(|e| e.external_reset);
+        if external_reset && let Some(pr) = state.pull_requests.get(&number) {
+            state.blocked_heads.insert(number, pr.head_sha.clone());
+        }
         dequeue(
             state,
             rules,
             number,
             DequeueReason::new(
-                code::CONFLICT_WITH_BASE_BRANCH,
+                if external_reset {
+                    code::PR_DEQUEUED
+                } else {
+                    code::CONFLICT_WITH_BASE_BRANCH
+                },
                 "the pull request does not merge onto the base branch",
             ),
             out,
         );
     } else {
+        // The forge confirmed this pull request still merges onto the moved base by itself.
+        // A later conflict after a queued predecessor lands has its own specific reason.
+        if let Some(entry) = state.queued.get_mut(&number) {
+            entry.external_reset = false;
+        }
         discard_containing(state, rules, &base, number, out);
         if let Some(entry) = state.queued.get_mut(&number) {
             entry.status = EntryStatus::Held { on: with.to_vec() };
@@ -1923,6 +1941,13 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
                 }
             } else {
                 train.set_base(sha.clone());
+                for entry in state
+                    .queued
+                    .values_mut()
+                    .filter(|e| e.base == base && !matches!(e.status, EntryStatus::Held { .. }))
+                {
+                    entry.external_reset = true;
+                }
                 reset(
                     state,
                     base,

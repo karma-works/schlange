@@ -1,5 +1,5 @@
 #7 Change 7: dequeued
-#7 left the queue: PR_DEQUEUED: queue_conditions no longer hold (condition 3 is false)
+#7 left the queue: PR_DEQUEUED: queue_conditions no longer hold (condition 3 is false); it rejoins only after a new push or a `queue` command
 
 pull_request_rules with a `queue` action:
   rule `bots` -> first matching queue

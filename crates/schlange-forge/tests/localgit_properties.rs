@@ -5,8 +5,11 @@
 //! isolated mode). The runner checks I0–I4 against the
 //! real repository after every step and I2/I3 at quiescence; any violation fails the case.
 //!
+//! A second property adds forge faults (lost, late, duplicated and lying replies, base races,
+//! lagging reads, CI timing) and engine crashes with a restart from the journal, on real git.
+//!
 //! Every case starts git hundreds of times, so the count is small: `SCHLANGE_LOCALGIT_PBT_CASES`
-//! (default 4). Deterministic: a fixed seed.
+//! (default 8 per property). Deterministic: a fixed seed.
 
 #![cfg(feature = "localgit")]
 
@@ -15,6 +18,7 @@ use proptest::test_runner::{Config, RngSeed};
 
 use schlange_forge::Scenario;
 use schlange_forge::dsl::{Sim, ci};
+use schlange_forge::faults::{CrashPlan, ForgeFaults};
 use schlange_forge::localgit::LocalGit;
 use schlange_forge::runner::Simulation;
 use schlange_forge::sim::{Action, Faults};
@@ -23,7 +27,7 @@ fn config() -> Config {
     let cases = std::env::var("SCHLANGE_LOCALGIT_PBT_CASES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4);
+        .unwrap_or(8);
     Config {
         cases,
         rng_seed: RngSeed::Fixed(0x10ca_1617),
@@ -201,5 +205,33 @@ proptest! {
         }
         prop_assert!(run.forge.repo.fsck(), "git fsck failed");
         prop_assert!(run.forge.processes > 0);
+    }
+
+    /// The same plans with forge faults and engine crashes on real git: I0–I4 hold, git stays
+    /// consistent.
+    #[test]
+    fn invariants_hold_on_real_git_under_forge_faults_and_crashes(
+        p in plan(),
+        seed in any::<u64>(),
+        crash_rate in prop_oneof![Just(0.0f64), 0.0f64..0.06],
+    ) {
+        let s = scenario(&p);
+        let mut run = Simulation::on(&s, Faults::standard(seed), LocalGit::new().expect("git"), true)
+            .with_forge_faults(ForgeFaults::standard(seed))
+            .with_crashes(CrashPlan::random(seed, crash_rate, 3));
+        run.run(&s);
+        let mut violations = Vec::new();
+        for (id, r) in &run.checker.results {
+            for v in &r.violations {
+                violations.push(format!("{id}: {v}"));
+            }
+        }
+        let log: String = run
+            .log
+            .iter()
+            .map(|l| format!("{} {} {}\n", l.t, l.kind, l.text))
+            .collect();
+        prop_assert!(violations.is_empty(), "{}\n{log}", violations.join("\n"));
+        prop_assert!(run.forge.repo.fsck(), "git fsck failed");
     }
 }

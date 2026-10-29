@@ -23,7 +23,7 @@ Starts GitHub Actions workflows by dispatch (deprecated in Mergify). Arztagent d
 
 ## Sub-features
 
-- `run`: built. Edge-triggered (docs: workflow, "How rules are evaluated"): runs once when the rule starts to match, again only after it stopped matching.
+- `run`: partial. Edge-triggered (docs: workflow, "How rules are evaluated"): runs when the rule starts to match, again only after it stopped matching. An isolated simulator regression found that a crash after the decision checkpoint but before its intent is recorded loses an unsent dispatch; the paired post-send case sends it only once. The recovery fix and GitHub/SQLite evidence remain outstanding.
 - `options`: built: `workflow.dispatch` with `workflow` (file name or id), `ref` (default: the default branch), `inputs` (templates with `author`, `base`, `head`, `number`, `repository_full_name`, `title`; numbers and booleans as text).
 
 ## How to get to it (user POV)

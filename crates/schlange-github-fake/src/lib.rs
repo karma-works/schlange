@@ -197,6 +197,8 @@ pub fn guard_labels(labels: &[&str]) -> MergeGuard {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultKind {
+    /// Redirect a request to a synthetic location.
+    Redirect { status: u16, location: String },
     /// Answer with this status, do nothing.
     Status(u16),
     /// 429 with `Retry-After`.
@@ -376,6 +378,7 @@ pub(crate) struct St {
     pub hook_seq: u64,
     pub webhook_target: Option<String>,
     pub requests: Vec<String>,
+    pub requests_with_query: Vec<String>,
     pub squashes: Vec<Squash>,
     pub external: BTreeSet<Sha>,
     /// Workflow dispatches: workflow and request body.
@@ -493,7 +496,10 @@ impl St {
                         .and_then(|r| r.split_whitespace().next())
                         .and_then(|x| x.parse().ok())
                         .unwrap_or(0);
-                    let head = commit.parents.get(1).cloned().unwrap_or_default();
+                    // A commit pushed onto the queue branch by someone else (an accepted
+                    // `allow_queue_branch_edit`) has one parent: it is its own head, and
+                    // whether it was tested is judged on it.
+                    let head = commit.parents.get(1).cloned().unwrap_or_else(|| c.clone());
                     (n, head)
                 }
             };
@@ -1002,7 +1008,24 @@ impl St {
                             .all(|r| r.conclusion.as_deref() == Some("success"))
                 }
         });
+        // The head of an open queue draft whose own checks are all green: also a commit
+        // someone else pushed onto the queue branch (an accepted `allow_queue_branch_edit`),
+        // tested there like any queue head.
+        let draft_head = self.prs.values().any(|p| {
+            p.open
+                && p.user == format!("{}[bot]", self.cfg.app_slug)
+                && p.head_ref.starts_with(&self.cfg.queue_prefix)
+                && self.repo.tree_id_of(&p.head_sha) == tree
+                && {
+                    let runs = self.latest_runs(&p.head_sha);
+                    !runs.is_empty()
+                        && runs
+                            .values()
+                            .all(|r| r.conclusion.as_deref() == Some("success"))
+                }
+        });
         in_place
+            || draft_head
             || self.queue_commits.iter().any(|(sha, branch)| {
                 self.repo.tree_id_of(sha) == tree
                     && self.prs.values().any(|p| {
@@ -1072,6 +1095,7 @@ impl FakeGithub {
             hook_seq: 0,
             webhook_target: None,
             requests: Vec::new(),
+            requests_with_query: Vec::new(),
             squashes: Vec::new(),
             external: BTreeSet::new(),
             dispatches: Vec::new(),
@@ -1417,6 +1441,11 @@ impl FakeGithub {
         self.with(|s| s.add_comment(n, user, body))
     }
 
+    /// Remove a comment to exercise stale comment IDs in the adapter.
+    pub fn delete_comment(&self, id: u64) {
+        self.with(|s| s.comments.retain(|c| c.id != id));
+    }
+
     /// Sends the `issue_comment.created` webhook of comment `id` again, with a new delivery
     /// id (a webhook redelivered by hand, or a second delivery GitHub does not deduplicate).
     pub fn resend_comment(&self, id: u64) {
@@ -1653,6 +1682,11 @@ impl FakeGithub {
 
     pub fn requests(&self) -> Vec<String> {
         self.with(|s| s.requests.clone())
+    }
+
+    /// Requests with query strings, for pagination assertions.
+    pub fn requests_with_query(&self) -> Vec<String> {
+        self.with(|s| s.requests_with_query.clone())
     }
 
     pub fn deliveries(&self) -> Vec<Delivery> {
