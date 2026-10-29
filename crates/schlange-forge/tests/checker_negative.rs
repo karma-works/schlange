@@ -202,6 +202,67 @@ fn an_accepted_edit_on_the_tested_head_retested_is_accepted() {
     assert!(!has(&v, UNTESTED_HEAD) && !has(&v, "I0"), "{v:?}");
 }
 
+#[test]
+fn an_edit_with_tested_head_only_as_second_parent_does_not_hide_foreign_history() {
+    let r = rules("fast-forward", true, false);
+    let mut f = forge();
+    let tested = build_car(&mut f);
+    let base = f.read_branch("main").unwrap();
+    let mut tree = f.repo.tree(&base).clone();
+    tree.insert("foreign".into(), "untested\n".into());
+    let foreign = f.repo.commit(tree, vec![base], "unobserved foreign commit");
+    f.schedule(
+        f.now(),
+        Action::ForcePushQueueBranch {
+            number: 1,
+            parents: vec![foreign.clone(), tested],
+            files: vec![],
+        },
+    );
+    drain(&mut f);
+    let pushed = f.read_branch("mergify/merge-queue/0000000001").unwrap();
+    land(&mut f, MergeMethod::FastForward, &pushed);
+    let v = violations(&f, &r);
+    assert!(
+        has(
+            &v,
+            &format!("commit {} on main came from nowhere", &foreign[..7])
+        ),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_multi_commit_edit_does_not_hide_untested_intermediate_history() {
+    let r = rules("fast-forward", true, false);
+    let mut f = forge();
+    let tested = build_car(&mut f);
+    let mut tree = f.repo.tree(&tested).clone();
+    tree.insert("unverified".into(), "intermediate\n".into());
+    let intermediate = f
+        .repo
+        .commit(tree, vec![tested], "unverified intermediate edit");
+    f.schedule(
+        f.now(),
+        Action::ForcePushQueueBranch {
+            number: 1,
+            parents: vec![intermediate.clone()],
+            files: vec![("final".into(), "tested\n".into())],
+        },
+    );
+    drain(&mut f);
+    let pushed = f.read_branch("mergify/merge-queue/0000000001").unwrap();
+    land(&mut f, MergeMethod::FastForward, &pushed);
+    let v = violations(&f, &r);
+    assert!(
+        has(
+            &v,
+            &format!("commit {} on main came from nowhere", &intermediate[..7])
+        ),
+        "{v:?}"
+    );
+}
+
 /// Unsafe with the option: the pushed head does not descend from the tested head (a force
 /// push of a sibling). Rejected.
 #[test]

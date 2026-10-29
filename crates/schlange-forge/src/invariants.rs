@@ -314,19 +314,21 @@ impl Checker {
                 })
                 .and_then(|_| l.draft_before.as_ref().filter(|_| !car.in_place))
                 .map(|d| d.head_sha.clone())
-                .filter(|h| *h != car.head && forge.repo.is_ancestor(&car.head, h));
+                .filter(|h| {
+                    *h != car.head
+                        && forge
+                            .repo
+                            .first_parent_history(h)
+                            .iter()
+                            .any(|sha| sha == &car.head)
+                });
             let car_head = edit_head.clone().unwrap_or_else(|| car.head.clone());
             let edit_tree = edit_head.as_ref().map(|h| forge.repo.tree_id_of(h));
             if let Some(h) = &edit_head {
-                // The commits on the way from the tested head to the pushed one came onto the
-                // base with it.
-                for sha in forge.repo.first_parent_history(h) {
-                    let done = sha == car.head;
-                    self.landed_commits.insert(sha);
-                    if done {
-                        break;
-                    }
-                }
+                // Only the original car and the newly checked tip have evidence. Intermediate
+                // edits are not automatically tested prefixes and must be accounted separately.
+                self.landed_commits.insert(h.clone());
+                self.landed_commits.insert(car.head.clone());
             }
             let merge_conds = rule.map(|r| {
                 let mut v = if r.merge_conditions.is_empty() {
