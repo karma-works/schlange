@@ -1,6 +1,8 @@
 {
   "id": "S02",
   "title": "Three PRs in quick succession land as one batch",
+  "strict_batches": true,
+  "expected_batches": [["a", "b", "c"]],
   "refs": [
     "MQ-26",
     "MQ-20"

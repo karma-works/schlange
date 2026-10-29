@@ -5,13 +5,13 @@
       "field": "end",
       "observed": "merged",
       "pr": "a",
-      "why": "a queue command from a sender allowed by commands_restrictions lifts the sticky dequeue in Schlange; on Mergify it fails because Mergify's own cancelled check counts against #check-failure = 0 (queue-dequeue-reasons.md, sticky-dequeue)"
+      "why": "provisional S11 reference lacks source-run timeout evidence; do not treat this comparison as proven parity"
     },
     {
       "field": "enter_count",
       "observed": 2,
       "pr": "a",
-      "why": "same deviation: the allowed queue command queues the pull request a second time"
+      "why": "provisional S11 reference lacks source-run timeout evidence; do not treat this comparison as proven parity"
     },
     {
       "field": "landed",
@@ -19,7 +19,7 @@
         "a"
       ],
       "pr": "*",
-      "why": "same deviation: the pull request queued again by the command lands"
+      "why": "provisional S11 reference lacks source-run timeout evidence; do not treat this comparison as proven parity"
     }
   ],
   "landed": [],
@@ -34,5 +34,6 @@
     }
   },
   "repo": "queue-lab",
-  "scenario": "S11"
+  "scenario": "S11",
+  "reference_quality": "provisional: source run and timeout status unavailable; S18 requires a fresh reference observation"
 }

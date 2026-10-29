@@ -959,6 +959,48 @@ impl RepoApi {
         Ok(id.id)
     }
 
+    pub(crate) fn comment_reserved(
+        &self,
+        n: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<u64, Error> {
+        #[derive(Deserialize)]
+        struct Id {
+            id: u64,
+        }
+        let path = self.p(&format!("/issues/{n}/comments"));
+        let id: Id = self
+            .client
+            .send_reserved_cosmetic(
+                "POST",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )?
+            .json("comments")?;
+        Ok(id.id)
+    }
+
+    pub(crate) fn update_comment_reserved(
+        &self,
+        id: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<(), Error> {
+        let path = self.p(&format!("/issues/comments/{id}"));
+        self.client
+            .send_reserved_cosmetic(
+                "PATCH",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )
+            .map(|_| ())
+    }
+
     pub fn update_comment(&self, id: u64, body: &str, prio: Priority) -> Result<(), Error> {
         self.send(
             "PATCH",

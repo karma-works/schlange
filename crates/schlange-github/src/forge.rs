@@ -219,6 +219,16 @@ pub fn refusal_text(status: u16, message: &str) -> String {
 }
 
 impl GithubForge {
+    /// An isolated read-only observer shares the client budget but has a private probe memo.
+    pub(crate) fn with_probe_memo(&self, memo: Arc<crate::client::ProbeMemo>) -> Self {
+        let mut api = self.api.clone();
+        api.client = api.client.with_probe_memo(memo);
+        let mut forge = Self::new(api, self.clock.clone(), self.opts.clone());
+        forge.read_reviews = self.read_reviews;
+        forge.check = self.check.clone();
+        forge
+    }
+
     pub fn new(api: RepoApi, clock: Arc<dyn Clock>, opts: ForgeOptions) -> Self {
         GithubForge {
             api,
@@ -1174,7 +1184,7 @@ impl GithubForge {
                 .join(", ")
         );
         let body = format!(
-            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\nDo not edit this pull request; the queue closes it.",
+            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\n## Datenschutz\n\nSee the constituent pull requests for their data protection details.\n\nDo not edit this pull request; the queue closes it.",
             short(base_sha),
             prs.iter()
                 .map(|p| format!("- #{} at {}", p.number, short(&p.head_sha)))
@@ -1850,28 +1860,45 @@ impl GithubForge {
     /// Creates or edits the queue's own comment with `marker` on pull request `n`.
     fn upsert(&mut self, n: u64, marker: &'static str, body: &str) -> Result<(), Error> {
         let prio = Priority::Cosmetic;
+        let mut permit = None;
         let id = match self.own_comments.get(&(n, marker)).copied() {
             Some(id) => Some(id),
-            None => self
-                .api
-                .issue_comments(n, prio)?
-                .into_iter()
-                .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
-                .map(|c| c.id),
+            None => {
+                permit = Some(self.api.client.reserve_cosmetic_write("status comment")?);
+                self.api
+                    .issue_comments(n, prio)?
+                    .into_iter()
+                    .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
+                    .map(|c| c.id)
+            }
         };
         if let Some(id) = id {
-            match self.api.update_comment(id, body, prio) {
+            // Keep the identity learned from the read even if the subsequent write is
+            // deferred. Otherwise each retry spends the next token rediscovering the same
+            // comment and may never leave enough budget to update it.
+            self.own_comments.insert((n, marker), id);
+            let result = if let Some(p) = permit.as_mut() {
+                self.api.update_comment_reserved(id, body, p)
+            } else {
+                self.api.update_comment(id, body, prio)
+            };
+            match result {
                 Ok(()) => {
                     self.own_comments.insert((n, marker), id);
                     return Ok(());
                 }
                 Err(Error::NotFound { .. }) => {
                     self.own_comments.remove(&(n, marker));
+                    permit = None;
                 }
                 Err(e) => return Err(e),
             }
         }
-        let id = self.api.comment(n, body, prio)?;
+        let id = if let Some(p) = permit.as_mut() {
+            self.api.comment_reserved(n, body, p)?
+        } else {
+            self.api.comment(n, body, prio)?
+        };
         self.own_comments.insert((n, marker), id);
         Ok(())
     }

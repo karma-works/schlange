@@ -239,3 +239,84 @@ fn a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human() {
     t.assert_invariants();
     t.shutdown();
 }
+
+#[test]
+fn manual_dequeue_requires_a_listed_human_to_queue_again() {
+    // Leave queue CI pending so the dequeue happens while a batch is running.
+    let t = Tester::new(ARZTAGENT).start();
+    t.permission("karma-works", "admin");
+    t.permission(BOT, "write");
+    let n = t.open_pr(BOT).file("a.py", "a\n").create();
+    green(&t, n, true);
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    let _draft = t.queue_pr();
+
+    t.pr(n).comment("karma-works", "@mergifyio dequeue");
+    t.wait_until("manually dequeued", |t| !queued(t, n));
+    t.wait_until("old batch retired", |t| t.gh.open_queue_drafts().is_empty());
+    t.settle();
+    assert!(!queued(&t, n));
+    t.pr(n).comment(BOT, "@mergifyio queue");
+    t.pr(n)
+        .wait_comment("@arztagent-bot, you may not run `queue`");
+    t.settle();
+    assert!(!queued(&t, n));
+
+    t.pr(n).comment("karma-works", "@mergifyio queue");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(n).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn external_base_conflict_context_survives_service_restart() {
+    let mut t = Tester::new(ARZTAGENT).persistent().start();
+    let a = t.open_pr(BOT).file("a.py", "a\n").create();
+    let b = t.open_pr(BOT).file("shared.py", "pull request\n").create();
+    for n in [a, b] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.gh.push_base(&[("shared.py".into(), "external push\n".into())]);
+    t.wait_until("queued PR records external reset", |t| {
+        t.status()
+            .is_some_and(|s| s.state["queued"][b.to_string()]["external_reset"] == true)
+    });
+    t.stop_service();
+    t.start_service();
+    assert_eq!(
+        t.status().unwrap().state["queued"][b.to_string()]["external_reset"],
+        true
+    );
+    for _ in 0..8 {
+        t.advance("5m");
+        t.settle();
+        for draft in t.gh.open_queue_drafts() {
+            t.pr(draft.number).check("ci-ok").succeed();
+        }
+        if t.dequeue_code(b).is_some() && t.gh.pr(a).unwrap().merged {
+            break;
+        }
+    }
+    t.wait_until("conflict dequeued", |t| t.dequeue_code(b).is_some());
+    assert_eq!(t.dequeue_code(b).as_deref(), Some("PR_DEQUEUED"));
+    let state = t.status().unwrap().state;
+    assert!(
+        state["outcomes"][b.to_string()]["reason"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not merge onto the base branch")
+    );
+    assert!(
+        state["holds"][b.to_string()]
+            .to_string()
+            .contains("dequeued-waits-for-new-head")
+    );
+    t.pr(a).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}

@@ -1,0 +1,15 @@
+name: Collision probe green
+
+# Dispatched after the red probe completes, on the same PR branch.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ci-ok
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 0
