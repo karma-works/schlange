@@ -860,12 +860,20 @@ fn a_paused_leader_that_lost_the_lease_never_writes_and_nothing_lands_twice() {
     let b = t.second_service("host-b", None, clock_b.clone());
     // B leads now (it took the fence on GitHub) and lands the pull request itself.
     wait("B leads", || status(&b).is_some_and(|s| s.role == "leader"));
-    // Liveness, not safety: B gets as much wall-clock time as a loaded machine needs (the
-    // virtual clock moves on in 30-second steps meanwhile); the safety assertions below do
-    // not depend on how long this took.
+    // Liveness, not safety: advance only after B has renewed its lease. Pausing virtual
+    // time at the renewal boundary lets a loaded worker finish its HTTP operations without
+    // turning a 60-second lease into a few hundred milliseconds of wall-clock time.
     let deadline = Instant::now() + Duration::from_secs(180);
     while !t.gh.pr(pr).unwrap().merged && Instant::now() < deadline {
-        clock_b.advance(30);
+        let now = schlange_github::time::Clock::now(clock_b.as_ref());
+        if status(&b).and_then(|s| s.lease).is_some_and(|lease| {
+            lease.held
+                && lease
+                    .expires
+                    .is_some_and(|expires| expires.saturating_sub(now) > 30)
+        }) {
+            clock_b.advance(30);
+        }
         std::thread::sleep(Duration::from_millis(150));
     }
     assert!(
