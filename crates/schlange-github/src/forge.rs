@@ -84,6 +84,32 @@ struct CarInfo {
     prefix: Vec<(u64, String)>,
 }
 
+/// An uncommitted session build result; the worker must verify and persist it atomically.
+pub struct SessionBuildResult {
+    request: Decision,
+    api_base: String,
+    repo: String,
+    installation: u64,
+    event: Event,
+    prefix: Vec<(u64, String)>,
+    gate: Arc<dyn crate::client::WriteGate>,
+}
+impl SessionBuildResult {
+    pub(crate) fn belongs_to_gate(&self, gate: &Arc<dyn crate::client::WriteGate>) -> bool {
+        Arc::ptr_eq(&self.gate, gate)
+    }
+    pub fn event(&self) -> &Event {
+        &self.event
+    }
+    pub fn prefix(&self) -> &[(u64, String)] {
+        &self.prefix
+    }
+    #[cfg(feature = "test-hooks")]
+    pub fn test_replace_prefix(&mut self, prefix: Vec<(u64, String)>) {
+        self.prefix = prefix;
+    }
+}
+
 struct PendingOp {
     decision: Decision,
     attempts: u32,
@@ -136,6 +162,15 @@ pub fn queue_prefixes(rules: &Rules) -> BTreeSet<String> {
 /// How long a branch tip the adapter moved away from counts as a stale read.
 const STALE_WINDOW: Duration = Duration::from_secs(300);
 const CLOSED_CARS_MAX: usize = 4096;
+
+/// A bounded pair of complete, equal reads. This is evidence for re-decision,
+/// not an atomic GitHub snapshot or authority to execute a write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityBatch {
+    pub base_tip: String,
+    pub requirements: Vec<crate::api::RequiredContext>,
+    pub pull_requests: Vec<PullRequest>,
+}
 
 pub struct GithubForge {
     pub api: RepoApi,
@@ -219,6 +254,16 @@ pub fn refusal_text(status: u16, message: &str) -> String {
 }
 
 impl GithubForge {
+    /// An isolated read-only observer shares the client budget but has a private probe memo.
+    pub(crate) fn with_probe_memo(&self, memo: Arc<crate::client::ProbeMemo>) -> Self {
+        let mut api = self.api.clone();
+        api.client = api.client.with_probe_memo(memo);
+        let mut forge = Self::new(api, self.clock.clone(), self.opts.clone());
+        forge.read_reviews = self.read_reviews;
+        forge.check = self.check.clone();
+        forge
+    }
+
     pub fn new(api: RepoApi, clock: Arc<dyn Clock>, opts: ForgeOptions) -> Self {
         GithubForge {
             api,
@@ -385,13 +430,321 @@ impl GithubForge {
         Ok(p)
     }
 
+    #[cfg(feature = "test-hooks")]
+    pub fn remember_merge_for_test(&mut self, number: u64, sha: &str) {
+        self.known_merged.insert(number, sha.to_string());
+    }
+
     /// Reads a pull request with everything the engine evaluates.
     pub fn read_pr(&self, n: u64, prio: Priority) -> Result<PullRequest, Error> {
         let p = self.pull(n, prio)?;
-        self.pr_from(&p, prio)
+        self.pr_from(&p, prio, None)
     }
 
-    fn pr_from(&self, p: &Pull, prio: Priority) -> Result<PullRequest, Error> {
+    /// Compare two independent complete reads while the caller's ingress/lease fence holds.
+    /// Closed or undiscovered targets fail closed and require a fresh discovery.
+    pub fn read_identity_batch(
+        &self,
+        base: &str,
+        numbers: &[u64],
+        prio: Priority,
+        fence: impl Fn() -> bool,
+    ) -> Result<IdentityBatch, Error> {
+        let started = std::time::Instant::now();
+        let check = || {
+            if !fence() || started.elapsed() > Duration::from_secs(120) {
+                Err(Error::Refused(
+                    "identity batch expired or invalidated".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let expected: BTreeSet<_> = numbers.iter().copied().collect();
+        if expected.len() != numbers.len() {
+            return Err(Error::Refused("identity target list is duplicated".into()));
+        }
+        let read =
+            || -> Result<IdentityBatch, Error> {
+                check()?;
+                let open = self.api.open_pulls(prio)?;
+                check()?;
+                let actual: BTreeSet<_> = open
+                    .iter()
+                    .filter(|p| p.base.ref_name == base)
+                    .map(|p| p.number)
+                    .collect();
+                if !actual.is_subset(&expected) {
+                    return Err(Error::Refused("identity target membership changed".into()));
+                }
+                let tip = self
+                    .read_branch_checked(base, prio)?
+                    .ok_or_else(|| Error::Refused("identity base missing".into()))?;
+                check()?;
+                let requirements = self.api.required_check_contexts(base, prio)?;
+                check()?;
+                let mut pull_requests = Vec::new();
+                for n in &expected {
+                    let pull = self.api.pull(*n, prio)?;
+                    if self.known_merged.get(n).is_some_and(|sha| {
+                        !pull.merged || pull.merge_commit_sha.as_ref() != Some(sha)
+                    }) {
+                        return Err(Error::Refused(
+                            "identity read contradicts a confirmed merge".into(),
+                        ));
+                    }
+                    let mut pr = self.pr_from(&pull, prio, Some(&requirements))?;
+                    check()?;
+                    if pr.base != base
+                        || actual.contains(n) == pr.closed
+                        || pr.base_tip.as_ref().is_some_and(|b| b != &tip)
+                    {
+                        return Err(Error::Refused("identity pull or base changed".into()));
+                    }
+                    pr.base_tip = Some(tip.clone());
+                    pull_requests.push(pr);
+                }
+                Ok(IdentityBatch {
+                    base_tip: tip,
+                    requirements,
+                    pull_requests,
+                })
+            };
+        let first = read()?;
+        let second = read()?;
+        check()?;
+        if first != second {
+            return Err(Error::Refused(
+                "identity batch changed between reads".into(),
+            ));
+        }
+        for terminal in second.pull_requests.iter().filter(|p| p.closed) {
+            let pull = self.api.pull(terminal.number, prio)?;
+            if self
+                .known_merged
+                .get(&terminal.number)
+                .is_some_and(|sha| !pull.merged || pull.merge_commit_sha.as_ref() != Some(sha))
+            {
+                return Err(Error::Refused(
+                    "identity read contradicts a confirmed merge".into(),
+                ));
+            }
+            let mut reread = self.pr_from(&pull, prio, Some(&second.requirements))?;
+            reread.base_tip = Some(second.base_tip.clone());
+            check()?;
+            if &reread != terminal {
+                return Err(Error::Refused("identity terminal evidence changed".into()));
+            }
+        }
+        let open = self.api.open_pulls(prio)?;
+        check()?;
+        let final_heads: BTreeMap<_, _> = open
+            .iter()
+            .filter(|p| p.base.ref_name == base)
+            .map(|p| (p.number, p.head.sha.clone()))
+            .collect();
+        let read_heads: BTreeMap<_, _> = second
+            .pull_requests
+            .iter()
+            .filter(|p| !p.closed)
+            .map(|p| (p.number, p.head_sha.clone()))
+            .collect();
+        if final_heads != read_heads {
+            return Err(Error::Refused(
+                "identity target membership or head changed".into(),
+            ));
+        }
+        for p in open.iter().filter(|p| p.base.ref_name == base) {
+            let Some(read) = second.pull_requests.iter().find(|r| r.number == p.number) else {
+                return Err(Error::Refused("identity pull missing".into()));
+            };
+            let labels: BTreeSet<_> = p.labels.iter().map(|l| l.name.clone()).collect();
+            let assignees: Vec<_> = p.assignees.iter().map(|u| u.login.clone()).collect();
+            let reviewers: Vec<_> = p
+                .requested_reviewers
+                .iter()
+                .map(|u| u.login.clone())
+                .collect();
+            let teams: Vec<_> = p.requested_teams.iter().map(|u| u.slug.clone()).collect();
+            if p.state != "open"
+                || p.merged
+                || p.user.login != read.author
+                || p.title != read.title
+                || p.draft != read.draft
+                || p.head.ref_name != read.head_ref
+                || labels != read.labels
+                || assignees != read.assignees
+                || reviewers != read.requested_reviewers
+                || teams != read.requested_teams
+                || (p.user.login != self.opts.bot_login
+                    && p.body.as_deref().unwrap_or("") != read.body)
+            {
+                return Err(Error::Refused("identity pull fields changed".into()));
+            }
+        }
+        if self.read_branch_checked(base, prio)?.as_ref() != Some(&second.base_tip) {
+            return Err(Error::Refused("identity base changed".into()));
+        }
+        check()?;
+        if self.api.required_check_contexts(base, prio)? != second.requirements {
+            return Err(Error::Refused("identity requirements changed".into()));
+        }
+        check()?;
+        Ok(second)
+    }
+
+    fn checks_with_identity(
+        &self,
+        head: &str,
+        base: &str,
+        prio: Priority,
+        supplied: Option<&[crate::api::RequiredContext]>,
+    ) -> Result<(Vec<CheckRun>, BTreeSet<String>), Error> {
+        let owned;
+        let required = if let Some(required) = supplied {
+            required
+        } else {
+            owned = self.api.required_check_contexts(base, prio)?;
+            &owned
+        };
+        let suites = self.api.check_suites(head, prio)?;
+        let mut checks = Vec::new();
+        let mut app_ids = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        let invalid = |detail: &str| Error::Decode {
+            path: "check identity".into(),
+            detail: detail.into(),
+        };
+        for suite in suites {
+            if suite.head_sha != head || !seen.insert(suite.id) {
+                return Err(invalid("invalid or duplicate suite"));
+            }
+            let timestamp = suite
+                .created_at
+                .as_deref()
+                .and_then(|s| crate::time::parse_rfc3339(s))
+                .ok_or_else(|| invalid("missing or invalid suite creation time"))?;
+            let suite_app = suite
+                .app
+                .as_ref()
+                .ok_or_else(|| invalid("suite app missing"))?;
+            let (Some(slug), Some(app_id)) = (&suite_app.slug, suite_app.id) else {
+                return Err(invalid("suite app identity missing"));
+            };
+            if slug == &self.opts.app_slug {
+                continue;
+            }
+            for run in self.api.check_suite_runs(suite.id, prio)? {
+                let app = run
+                    .app
+                    .as_ref()
+                    .ok_or_else(|| invalid("check app missing"))?;
+                if run.head_sha != head
+                    || run.check_suite.as_ref().map(|s| s.id) != Some(suite.id)
+                    || app.slug.as_ref() != Some(slug)
+                    || app.id != Some(app_id)
+                {
+                    return Err(invalid("check does not match suite"));
+                }
+                if app_ids.insert(run.id, app_id).is_some() {
+                    return Err(invalid("duplicate check run"));
+                }
+                checks.push(CheckRun {
+                    name: run.name,
+                    app: Some(slug.clone()),
+                    app_id: Some(app_id),
+                    head_sha: run.head_sha,
+                    conclusion: conclusion(&run.status, run.conclusion.as_deref()),
+                    seq: run.id,
+                    suite_id: Some(suite.id),
+                    suite_created_at: Some(schlange_core::time::format_utc(timestamp as i64)),
+                    ..Default::default()
+                });
+            }
+        }
+        let mut required_names = BTreeSet::new();
+        let mut workflows = BTreeMap::new();
+        let mut suite_counts: BTreeMap<(String, String), BTreeSet<u64>> = BTreeMap::new();
+        for check in &checks {
+            if let (Some(app), Some(suite)) = (&check.app, check.suite_id) {
+                suite_counts
+                    .entry((check.name.clone(), app.clone()))
+                    .or_default()
+                    .insert(suite);
+            }
+            if check.app.as_deref() != Some("github-actions") {
+                continue;
+            }
+            for requirement in required {
+                if requirement.context == check.name {
+                    match requirement.app_id {
+                        None => {
+                            required_names.insert(check.name.clone());
+                        }
+                        Some(id) if app_ids.get(&check.seq) == Some(&id) => {
+                            required_names.insert(format!("@github-actions/{}", check.name));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for check in &mut checks {
+            if check.app.as_deref() != Some("github-actions")
+                || !(required_names.contains(&check.name)
+                    || required_names.contains(&format!("@github-actions/{}", check.name)))
+            {
+                continue;
+            }
+            if suite_counts
+                .get(&(check.name.clone(), "github-actions".into()))
+                .is_none_or(|s| s.len() <= 1)
+            {
+                continue;
+            }
+            let suite = check.suite_id.expect("suite assigned");
+            if !workflows.contains_key(&suite) {
+                let found = self.api.workflow_runs_for_suite(suite, prio)?;
+                if found.len() != 1
+                    || found[0].check_suite_id != suite
+                    || found[0].head_sha != head
+                    || found[0].path.is_empty()
+                    || found[0].event.is_empty()
+                {
+                    return Err(invalid("Actions workflow identity missing or ambiguous"));
+                }
+                let jobs = self.api.workflow_jobs(found[0].id, prio)?;
+                workflows.insert(
+                    suite,
+                    (
+                        found[0].id,
+                        found[0].path.clone(),
+                        found[0].event.clone(),
+                        jobs,
+                    ),
+                );
+            }
+            let (run, workflow, event, jobs) = &workflows[&suite];
+            if jobs
+                .iter()
+                .filter(|job| self.api.job_matches_check(job, *run, head, check.seq))
+                .count()
+                != 1
+            {
+                return Err(invalid("Actions job association missing or ambiguous"));
+            }
+            check.workflow = Some(workflow.clone());
+            check.event = Some(event.clone());
+        }
+        Ok((checks, required_names))
+    }
+
+    fn pr_from(
+        &self,
+        p: &Pull,
+        prio: Priority,
+        required: Option<&[crate::api::RequiredContext]>,
+    ) -> Result<PullRequest, Error> {
         let n = p.number;
         let mut pr = PullRequest::new(
             n,
@@ -420,20 +773,10 @@ impl GithubForge {
         }
         let ours = p.user.login == self.opts.bot_login;
         let head = p.head.sha.clone();
-        for c in self.api.check_runs(&head, prio)? {
-            let app = c.app.as_ref().and_then(|a| a.slug.clone());
-            if app.as_deref() == Some(self.opts.app_slug.as_str()) {
-                continue;
-            }
-            pr.checks.push(CheckRun {
-                name: c.name.clone(),
-                app,
-                head_sha: c.head_sha.clone(),
-                conclusion: conclusion(&c.status, c.conclusion.as_deref()),
-                seq: c.id,
-                ..Default::default()
-            });
-        }
+        let (checks, required_names) =
+            self.checks_with_identity(&head, &pr.base, prio, required)?;
+        pr.checks = checks;
+        pr.required_check_names = required_names;
         // Every page of the combined status (more than 30 contexts are common in monorepos).
         for s in self.api.combined_status(&head, prio)?.statuses {
             pr.checks.push(CheckRun {
@@ -590,6 +933,48 @@ impl GithubForge {
             branches: b,
             token,
         })
+    }
+
+    /// Two equal bounded reads for a Refresh. This is not an atomic GitHub snapshot;
+    /// delayed or omitted remote changes can still evade comparison.
+    pub fn consistent_refresh(
+        &self,
+        numbers: &[u64],
+        branches: &[String],
+        token: u64,
+        prio: Priority,
+        fence: impl Fn() -> bool,
+    ) -> Result<Event, Error> {
+        let started = std::time::Instant::now();
+        let check = || {
+            if !fence() || started.elapsed() > Duration::from_secs(120) {
+                Err(Error::Refused("refresh read expired or invalidated".into()))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let first = self.snapshot(numbers, branches, Some(token), prio)?;
+        check()?;
+        let second = self.snapshot(numbers, branches, Some(token), prio)?;
+        check()?;
+        match (&first, &second) {
+            (
+                Event::Snapshot {
+                    pull_requests: a,
+                    branches: ab,
+                    token: at,
+                },
+                Event::Snapshot {
+                    pull_requests: b,
+                    branches: bb,
+                    token: bt,
+                },
+            ) if a == b && ab == bb && at == bt => Ok(second),
+            _ => Err(Error::Refused(
+                "refresh inputs changed between reads".into(),
+            )),
+        }
     }
 
     /// A snapshot that leaves out whatever could not be read (for hints and reconciliation).
@@ -823,6 +1208,157 @@ impl GithubForge {
         }
     }
 
+    /// Execute one session build without scheduling a retry after an ambiguous partial write.
+    pub fn execute_session_build_once(
+        &mut self,
+        d: &Decision,
+    ) -> Result<SessionBuildResult, Error> {
+        if !self.api.client.has_execution_gate() || !matches!(d, Decision::BuildCar { .. }) {
+            return Err(Error::Refused(
+                "session build requires a scoped write gate".into(),
+            ));
+        }
+        let Decision::BuildCar {
+            car,
+            base_branch,
+            branch,
+            base_sha,
+            prs,
+            own,
+            stack_on,
+            ..
+        } = d
+        else {
+            unreachable!()
+        };
+        let mut prefix = Vec::new();
+        let event = self.build_car(
+            *car,
+            base_branch,
+            branch,
+            base_sha,
+            prs,
+            own,
+            stack_on.as_deref(),
+            true,
+            Some(&mut prefix),
+        )?;
+        Ok(SessionBuildResult {
+            request: d.clone(),
+            api_base: self.api.client.base().to_owned(),
+            repo: self.api.repo.full(),
+            installation: self.api.installation,
+            event,
+            prefix,
+            gate: self
+                .api
+                .client
+                .last_execution_gate()
+                .ok_or_else(|| Error::Refused("missing build gate".into()))?,
+        })
+    }
+
+    /// Check a narrow single-PR build against authenticated GitHub reads. This is not an
+    /// atomic GitHub snapshot; callers must separately fence and revalidate before committing.
+    pub fn verify_session_build_once(
+        &self,
+        request: &Decision,
+        result: &SessionBuildResult,
+    ) -> Result<(), Error> {
+        if result.api_base != self.api.client.base()
+            || result.repo != self.api.repo.full()
+            || result.installation != self.api.installation
+        {
+            return Err(Error::Refused("receipt context changed".into()));
+        }
+        if request != &result.request {
+            return Err(Error::Refused("build receipt request changed".into()));
+        }
+        let Decision::BuildCar {
+            car,
+            base_branch,
+            branch,
+            base_sha,
+            prs,
+            own,
+            stack_on,
+            ..
+        } = request
+        else {
+            return Err(Error::Refused("not a build".into()));
+        };
+        let Event::CarBuilt {
+            car: reply_car,
+            branch: reply_branch,
+            head_sha,
+            tree,
+            draft,
+        } = &result.event
+        else {
+            return Err(Error::Refused("not a built reply".into()));
+        };
+        let sha = |s: &str| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit());
+        if prs.len() != 1
+            || stack_on.is_some()
+            || own.as_slice() != [prs[0].number]
+            || car != reply_car
+            || branch != reply_branch
+            || *draft == 0
+            || !sha(base_sha)
+            || !sha(&prs[0].head_sha)
+            || !sha(head_sha)
+            || !sha(tree)
+            || result.prefix.as_slice() != [(prs[0].number, tree.clone())]
+        {
+            return Err(Error::Refused(
+                "unsupported or malformed build evidence".into(),
+            ));
+        }
+        let repo = self.api.repo.full();
+        for _ in 0..2 {
+            let source = self.api.pull(prs[0].number, Priority::Normal)?;
+            let queue = self.api.pull(*draft, Priority::Normal)?;
+            let current_base = self.api.branch_sha(base_branch, Priority::Normal)?;
+            let current_head = self.api.branch_sha(branch, Priority::Normal)?;
+            let commit = self.api.git_commit(head_sha, Priority::Normal)?;
+            if source.number != prs[0].number
+                || source.state != "open"
+                || source.merged
+                || source.head.sha != prs[0].head_sha
+                || source.base.ref_name != *base_branch
+                || source.base.sha != *base_sha
+                || source
+                    .base
+                    .repo
+                    .as_ref()
+                    .is_none_or(|r| r.full_name != repo)
+                || current_base != *base_sha
+                || queue.number != *draft
+                || queue.state != "open"
+                || !queue.draft
+                || queue.merged
+                || queue.user.login != self.opts.bot_login
+                || queue.head.ref_name != *branch
+                || queue.head.sha != *head_sha
+                || queue.head.repo.as_ref().is_none_or(|r| r.full_name != repo)
+                || queue.base.ref_name != *base_branch
+                || queue.base.sha != *base_sha
+                || queue.base.repo.as_ref().is_none_or(|r| r.full_name != repo)
+                || current_head != *head_sha
+                || commit.sha != *head_sha
+                || commit.tree.sha != *tree
+                || commit.parents.len() != 2
+                || commit.parents[0].sha != *base_sha
+                || commit.parents[1].sha != prs[0].head_sha
+            {
+                return Err(Error::Refused(
+                    "build evidence changed or incomplete".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn try_execute(&mut self, d: &Decision) -> Result<Vec<Event>, Error> {
         match d {
             Decision::BuildCar {
@@ -843,6 +1379,8 @@ impl GithubForge {
                     prs,
                     own,
                     stack_on.as_deref(),
+                    false,
+                    None,
                 )
                 .map(|e| vec![e]),
             // The engine keeps the car's slot until the close is confirmed (I4). The draft's CI
@@ -1043,6 +1581,8 @@ impl GithubForge {
         prs: &[CarPr],
         own: &[u64],
         stack_on: Option<&str>,
+        session_safe: bool,
+        session_prefix: Option<&mut Vec<(u64, String)>>,
     ) -> Result<Event, Error> {
         let prio = Priority::Normal;
         // `fast-forward`, `merge-batch`: the branch starts at the car ahead's head and only
@@ -1051,6 +1591,11 @@ impl GithubForge {
         // A branch left by an earlier attempt is rebuilt from scratch.
         match self.api.branch_sha(branch, prio) {
             Ok(_) => {
+                if session_safe {
+                    return Err(Error::Refused(format!(
+                        "session build branch {branch} already exists"
+                    )));
+                }
                 self.api.delete_ref(branch, prio).or_else(|e| match e {
                     Error::NotFound { .. } => Ok(()),
                     e => Err(e),
@@ -1062,6 +1607,9 @@ impl GithubForge {
         match self.api.create_ref(branch, start, prio) {
             Ok(()) => {}
             Err(e @ (Error::Ambiguous { .. } | Error::Status { status: 422, .. })) => {
+                if session_safe {
+                    return Err(e);
+                }
                 // Did it happen? Use it when it points at the start.
                 if self.api.branch_sha(branch, prio).ok().as_deref() != Some(start) {
                     return Err(e);
@@ -1077,9 +1625,17 @@ impl GithubForge {
                 continue; // carried by the branch it is stacked on
             }
             let msg = format!("Merge #{} into {branch}", p.number);
-            let outcome = match self.api.merge_into(branch, &p.head_sha, &msg, prio) {
+            let merge = if session_safe {
+                self.api.merge_into_receipt(branch, &p.head_sha, &msg, prio)
+            } else {
+                self.api.merge_into(branch, &p.head_sha, &msg, prio)
+            };
+            let outcome = match merge {
                 Ok(o) => o,
-                Err(Error::Ambiguous { .. }) => {
+                Err(e @ Error::Ambiguous { .. }) => {
+                    if session_safe {
+                        return Err(e);
+                    }
                     // Read the branch: a merge commit of cur and the head means it happened.
                     let tip = self.api.branch_sha(branch, prio)?;
                     let c = self.api.git_commit(&tip, prio)?;
@@ -1105,6 +1661,11 @@ impl GithubForge {
                     message,
                     ..
                 }) => {
+                    if session_safe {
+                        return Err(Error::Refused(format!(
+                            "session build merge refused for {branch}: {message}"
+                        )));
+                    }
                     // GitHub refuses this pull request's changes for good (a workflow file
                     // without `workflows: write`, a validation error): it leaves the queue
                     // with the reason; the others get a new car.
@@ -1118,7 +1679,9 @@ impl GithubForge {
                     });
                 }
                 Err(e) => {
-                    let _ = self.api.delete_ref(branch, prio);
+                    if !session_safe {
+                        let _ = self.api.delete_ref(branch, prio);
+                    }
                     return Err(e);
                 }
             };
@@ -1128,8 +1691,17 @@ impl GithubForge {
                     cur = sha;
                     tree = t;
                 }
-                MergeOutcome::NothingToMerge => {}
+                MergeOutcome::NothingToMerge => {
+                    if session_safe {
+                        return Err(Error::Refused("session build has no merge receipt".into()));
+                    }
+                }
                 MergeOutcome::Conflict => {
+                    if session_safe {
+                        return Err(Error::Refused(format!(
+                            "session build conflict on {branch}"
+                        )));
+                    }
                     let _ = self.api.delete_ref(branch, prio);
                     let with_base = if i == 0 {
                         true
@@ -1174,7 +1746,7 @@ impl GithubForge {
                 .join(", ")
         );
         let body = format!(
-            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\nDo not edit this pull request; the queue closes it.",
+            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\n## Datenschutz\n\nSee the constituent pull requests for their data protection details.\n\nDo not edit this pull request; the queue closes it.",
             short(base_sha),
             prs.iter()
                 .map(|p| format!("- #{} at {}", p.number, short(&p.head_sha)))
@@ -1187,6 +1759,9 @@ impl GithubForge {
         {
             Ok(p) => p.number,
             Err(e @ (Error::Ambiguous { .. } | Error::Status { status: 422, .. })) => {
+                if session_safe {
+                    return Err(e);
+                }
                 match self.api.pulls_with_head(branch, prio)?.first() {
                     Some(p) => p.number,
                     None => return Err(e),
@@ -1194,12 +1769,16 @@ impl GithubForge {
             }
             Err(e) => return Err(e),
         };
-        if let Some(s) = &self.store
-            && let Err(e) = s.save_car(&self.api.repo.full(), car, &prefix)
-        {
-            self.note(format!("car {car}: prefix trees not stored: {e}"));
+        if let Some(result) = session_prefix {
+            *result = prefix;
+        } else {
+            if let Some(s) = &self.store
+                && let Err(e) = s.save_car(&self.api.repo.full(), car, &prefix)
+            {
+                self.note(format!("car {car}: prefix trees not stored: {e}"));
+            }
+            self.cars.insert(car, CarInfo { prefix });
         }
-        self.cars.insert(car, CarInfo { prefix });
         self.note(format!(
             "car {car}: {branch} at {}, draft #{draft}",
             short(&cur)
@@ -1850,30 +2429,102 @@ impl GithubForge {
     /// Creates or edits the queue's own comment with `marker` on pull request `n`.
     fn upsert(&mut self, n: u64, marker: &'static str, body: &str) -> Result<(), Error> {
         let prio = Priority::Cosmetic;
+        let mut permit = None;
         let id = match self.own_comments.get(&(n, marker)).copied() {
             Some(id) => Some(id),
-            None => self
-                .api
-                .issue_comments(n, prio)?
-                .into_iter()
-                .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
-                .map(|c| c.id),
+            None => {
+                permit = Some(self.api.client.reserve_cosmetic_write("status comment")?);
+                self.api
+                    .issue_comments(n, prio)?
+                    .into_iter()
+                    .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
+                    .map(|c| c.id)
+            }
         };
         if let Some(id) = id {
-            match self.api.update_comment(id, body, prio) {
+            // Keep the identity learned from the read even if the subsequent write is
+            // deferred. Otherwise each retry spends the next token rediscovering the same
+            // comment and may never leave enough budget to update it.
+            self.own_comments.insert((n, marker), id);
+            let result = if let Some(p) = permit.as_mut() {
+                self.api.update_comment_reserved(id, body, p)
+            } else {
+                self.api.update_comment(id, body, prio)
+            };
+            match result {
                 Ok(()) => {
                     self.own_comments.insert((n, marker), id);
                     return Ok(());
                 }
                 Err(Error::NotFound { .. }) => {
                     self.own_comments.remove(&(n, marker));
+                    permit = None;
                 }
                 Err(e) => return Err(e),
             }
         }
-        let id = self.api.comment(n, body, prio)?;
+        let id = if let Some(p) = permit.as_mut() {
+            self.api.comment_reserved(n, body, p)?
+        } else {
+            self.api.comment(n, body, prio)?
+        };
         self.own_comments.insert((n, marker), id);
         Ok(())
+    }
+
+    /// Conservative clean-bootstrap evidence. A bot-authored comment could have been
+    /// edited by another actor to tick a checkbox; REST does not identify that editor.
+    /// Therefore its presence prevents treating the command history as empty.
+    pub fn identity_commands_clear(
+        &mut self,
+        state: &State,
+        _heads_before: &BTreeMap<u64, String>,
+    ) -> Result<bool, Error> {
+        // Closed targets can carry unresolved backport commands. This narrow scan cannot
+        // prove their history is clear and must not authorize bootstrap in their presence.
+        if state.pull_requests.values().any(|p| p.closed || p.merged) {
+            return Ok(false);
+        }
+        let snapshot = |comments: Vec<crate::api::IssueComment>| {
+            let mut facts = Vec::new();
+            for c in comments {
+                if c.id == 0
+                    || c.user.login.is_empty()
+                    || crate::time::parse_rfc3339(&c.created_at).is_none()
+                    || crate::time::parse_rfc3339(&c.updated_at).is_none()
+                {
+                    return None;
+                }
+                facts.push((c.id, c.user.login, c.body, c.created_at, c.updated_at));
+            }
+            facts.sort();
+            if facts.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return None;
+            }
+            Some(facts)
+        };
+        let mut before = BTreeMap::new();
+        for pr in state.pull_requests.values() {
+            let Some(facts) = snapshot(self.api.issue_comments(pr.number, Priority::Normal)?)
+            else {
+                return Ok(false);
+            };
+            if facts.iter().any(|c| {
+                c.1.eq_ignore_ascii_case(&self.opts.bot_login)
+                    || schlange_core::commands::parse(&c.2)
+                        != schlange_core::commands::Parsed::NotACommand
+            }) {
+                return Ok(false);
+            }
+            before.insert(pr.number, facts);
+        }
+        for (number, facts) in before {
+            if snapshot(self.api.issue_comments(number, Priority::Normal)?).as_ref() != Some(&facts)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Commands on the open pull requests the engine knows that it has not handled and that
@@ -1950,6 +2601,63 @@ impl GithubForge {
             }
         }
         Ok(out)
+    }
+
+    /// A conditional activity-derived candidate, not authorization to replay: omitted moves,
+    /// eventual consistency and cross-service clock skew cannot be ruled out by these reads.
+    /// Missing timestamps, forks or incomplete visible activity fail closed; the caller must
+    /// also authenticate the event, verify permissions and establish stronger ordering evidence.
+    pub fn replay_activity_head_candidate(
+        &self,
+        state: &State,
+        n: u64,
+        at: &str,
+    ) -> Result<String, Error> {
+        let fail =
+            || Error::Refused("replay head lacks complete authoritative activity evidence".into());
+        let timestamp = crate::time::parse_rfc3339(at).ok_or_else(fail)?;
+        if crate::time::format_rfc3339(timestamp) != at {
+            return Err(fail());
+        }
+        let pr = state.pull_requests.get(&n).ok_or_else(fail)?;
+        if pr.from_fork {
+            return Err(fail());
+        }
+        let valid_sha = |s: &str| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit());
+        if !valid_sha(&pr.head_sha) {
+            return Err(fail());
+        }
+        let activity = self
+            .api
+            .branch_activity_all(&pr.head_ref, Priority::Normal)?;
+        let mut expected = pr.head_sha.clone();
+        let mut previous_time = None;
+        let mut candidate = None;
+        let expected_ref = format!("refs/heads/{}", pr.head_ref);
+        for entry in &activity {
+            let time = crate::time::parse_rfc3339(&entry.timestamp).ok_or_else(fail)?;
+            if crate::time::format_rfc3339(time) != entry.timestamp
+                || entry.ref_name != expected_ref
+                || !valid_sha(&entry.before)
+                || !valid_sha(&entry.after)
+                || entry.after != expected
+                || previous_time.is_some_and(|previous| time >= previous)
+                || time == timestamp
+            {
+                return Err(fail());
+            }
+            if time < timestamp && candidate.is_none() {
+                candidate = Some(entry.after.clone());
+            }
+            previous_time = Some(time);
+            expected = entry.before.clone();
+        }
+        if !expected.bytes().all(|b| b == b'0') {
+            return Err(fail());
+        }
+        candidate
+            .filter(|head| !head.bytes().all(|b| b == b'0'))
+            .ok_or_else(fail)
     }
 
     /// The head a `queue` command made at `at` (GitHub's time, RFC 3339) vouches for: the head

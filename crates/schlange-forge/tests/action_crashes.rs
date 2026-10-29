@@ -179,3 +179,74 @@ fn action_scenarios_keep_their_invariants_under_forge_faults_and_crashes() {
         }
     }
 }
+
+#[test]
+fn crash_before_dispatch_intent_preserves_unsent_work() {
+    let scenario = load("dispatch-before-intent-crash.yaml");
+    let mut clean = Simulation::new(&scenario, Faults::none());
+    clean.run(&scenario);
+    assert_eq!(
+        clean.forge.dispatches.len(),
+        1,
+        "control must dispatch once\n{}",
+        log(&clean)
+    );
+    let mut sim = Simulation::new(&scenario, Faults::none()).with_crashes(CrashPlan::at(0, false));
+    sim.run(&scenario);
+    assert_eq!(sim.crashes, 1);
+    let crash = sim
+        .log
+        .iter()
+        .position(|l| l.kind == "crash")
+        .expect("crash recorded");
+    assert!(
+        sim.log[..crash]
+            .iter()
+            .rev()
+            .find(|l| l.kind == "decision")
+            .is_some_and(|l| l.text.contains("dispatch workflow preview.yml")),
+        "the first side effect must be the dispatch\n{}",
+        log(&sim)
+    );
+    assert!(
+        sim.log
+            .iter()
+            .any(|l| l.kind == "restart" && l.text.contains("side effects in doubt: none")),
+        "the crash is before intent; the simulator has not sent a request\n{}",
+        log(&sim)
+    );
+    assert_eq!(
+        sim.forge.dispatches.len(),
+        1,
+        "a known-unsent workflow dispatch must not disappear on recovery\n{}",
+        log(&sim)
+    );
+}
+
+#[test]
+fn crash_after_dispatch_does_not_resend_an_ambiguous_write() {
+    let scenario = load("dispatch-before-intent-crash.yaml");
+    let mut sim = Simulation::new(&scenario, Faults::none()).with_crashes(CrashPlan::at(0, true));
+    sim.run(&scenario);
+    assert_eq!(sim.crashes, 1);
+    let crash = sim
+        .log
+        .iter()
+        .position(|l| l.kind == "crash")
+        .expect("crash recorded");
+    assert!(
+        sim.log[..crash]
+            .iter()
+            .rev()
+            .find(|l| l.kind == "decision")
+            .is_some_and(|l| l.text.contains("dispatch workflow preview.yml")),
+        "the executed side effect must be the dispatch\n{}",
+        log(&sim)
+    );
+    assert_eq!(
+        sim.forge.dispatches.len(),
+        1,
+        "an executed dispatch must not be sent twice\n{}",
+        log(&sim)
+    );
+}

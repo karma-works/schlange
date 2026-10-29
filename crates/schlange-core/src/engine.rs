@@ -71,6 +71,61 @@ pub enum LandError {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// Stops all decisions while a fresh repository-wide identity view is established.
+    IdentityBootstrapHeld,
+    /// Record in-doubt work without sending or discarding it.
+    IdentityRecoveryPrepared,
+    /// Finalize recovery only when no in-flight work requires reconciliation.
+    IdentityRecoveryCleanFinalized {
+        ingress_epoch: u64,
+    },
+    /// Apply the pure configuration reset while bootstrap is still held.
+    IdentityRecoveryConfigApplied {
+        ingress_epoch: u64,
+    },
+    /// Discard an in-place announcement only when its recorded car identity is obsolete.
+    IdentityRecoveryInPlaceObsolete {
+        car: u64,
+        ingress_epoch: u64,
+    },
+    /// The worker has verified complete targets; only releases if no base remains held.
+    IdentityBootstrapReleased {
+        ingress_epoch: u64,
+    },
+    /// The worker attests that full repository discovery was checked under this epoch.
+    IdentityDiscoveryVerified {
+        ingress_epoch: u64,
+    },
+    /// An entire repository view, validated before any base is published.
+    IdentityRepositoryVerified {
+        bases: BTreeMap<String, VerifiedIdentityBase>,
+    },
+    CheckIdentityUnavailable {
+        base: String,
+        generation: u64,
+        numbers: Vec<u64>,
+    },
+    CheckIdentitiesUnavailable {
+        bases: BTreeMap<String, (u64, Vec<u64>)>,
+    },
+    CheckIdentityEmptyVerified {
+        base: String,
+        epoch: u64,
+        generation: u64,
+        base_tip: String,
+        required_checks: Vec<String>,
+        bound_required_checks: Vec<crate::model::RequiredCheck>,
+    },
+    CheckIdentityVerified {
+        base: String,
+        epoch: u64,
+        generation: u64,
+        expected_head: String,
+        expected_base: String,
+        required_checks: Vec<String>,
+        bound_required_checks: Vec<crate::model::RequiredCheck>,
+        pull_request: Box<PullRequest>,
+    },
     PullRequestOpened {
         pull_request: Box<PullRequest>,
     },
@@ -175,6 +230,12 @@ pub enum Event {
     RequiredChecks {
         base: String,
         checks: Vec<String>,
+    },
+    /// One atomic protection update with both unqualified and app-bound contexts.
+    RequiredChecksTyped {
+        base: String,
+        checks: Vec<String>,
+        bound_checks: Vec<crate::model::RequiredCheck>,
     },
 }
 
@@ -394,6 +455,9 @@ pub struct QueueEntry {
     /// Start of the batch wait (`batch_max_wait_time`).
     pub waiting_since: Time,
     pub status: EntryStatus,
+    /// The base moved outside the queue; clear after the next successful car build.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external_reset: bool,
     /// Who queued it with a command or checkbox; `None` when a rule queued it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
@@ -472,6 +536,28 @@ pub struct State {
     pub outcomes: BTreeMap<u64, Outcome>,
     /// Pull requests the `queue` action does not queue again at this head (failure codes).
     pub blocked_heads: BTreeMap<u64, String>,
+    #[serde(default)]
+    pub check_identity_unavailable: BTreeSet<u64>,
+    #[serde(default)]
+    pub identity_bootstrap_hold: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_discovery_epoch: Option<u64>,
+    #[serde(default)]
+    pub identity_recovery_prepared: bool,
+    #[serde(default)]
+    pub identity_recovery_clean: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub recovery_pending_actions: BTreeSet<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recovery_in_place: BTreeMap<u64, RecoveryInPlace>,
+    #[serde(default)]
+    pub check_identity_generations: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub check_identity_epochs: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub check_identity_targets: BTreeMap<String, BTreeSet<u64>>,
+    #[serde(default)]
+    pub check_identity_staged: BTreeMap<String, CheckIdentityStage>,
     pub wakeups: BTreeSet<Time>,
     pub reported_errors: BTreeSet<(u64, String)>,
     pub counter: u64,
@@ -526,10 +612,39 @@ pub struct State {
     /// Checks the protection of each base branch requires (as last read).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub required_checks: BTreeMap<String, Vec<String>>,
+    /// Additional app-bound checks, kept distinct from legacy unqualified contexts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bound_required_checks: BTreeMap<String, Vec<crate::model::RequiredCheck>>,
     /// Why a queued pull request may not land right now (a freeze, a merge protection, the
     /// pause), for status output; recomputed on every step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub landing_holds: BTreeMap<u64, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryInPlace {
+    pub number: u64,
+    pub head_sha: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VerifiedIdentityBase {
+    pub epoch: u64,
+    pub generation: u64,
+    pub base_tip: String,
+    pub required_checks: Vec<String>,
+    pub bound_required_checks: Vec<crate::model::RequiredCheck>,
+    pub pull_requests: Vec<PullRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckIdentityStage {
+    pub generation: u64,
+    pub base_tip: String,
+    pub required_checks: Vec<String>,
+    #[serde(default)]
+    pub bound_required_checks: Vec<crate::model::RequiredCheck>,
+    pub pull_requests: BTreeMap<u64, PullRequest>,
 }
 
 impl State {
@@ -544,8 +659,97 @@ pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, V
     let mut next = state.clone();
     next.now = now;
     let mut out = Vec::new();
-    next.wakeups.retain(|t| *t > now);
+    if matches!(event, Event::IdentityBootstrapHeld) {
+        next.identity_bootstrap_hold = true;
+        next.identity_discovery_epoch = None;
+        next.identity_recovery_prepared = false;
+        next.identity_recovery_clean = false;
+    }
+    if next.identity_bootstrap_hold {
+        let identity_event = matches!(
+            event,
+            Event::IdentityBootstrapHeld
+                | Event::IdentityRecoveryPrepared
+                | Event::IdentityRecoveryCleanFinalized { .. }
+                | Event::IdentityRecoveryConfigApplied { .. }
+                | Event::IdentityRecoveryInPlaceObsolete { .. }
+                | Event::IdentityBootstrapReleased { .. }
+                | Event::IdentityDiscoveryVerified { .. }
+                | Event::CheckIdentityUnavailable { .. }
+                | Event::CheckIdentitiesUnavailable { .. }
+                | Event::CheckIdentityVerified { .. }
+                | Event::CheckIdentityEmptyVerified { .. }
+                | Event::IdentityRepositoryVerified { .. }
+        );
+        if !identity_event {
+            if !matches!(event, Event::Tick) {
+                next.identity_discovery_epoch = None;
+                next.identity_recovery_clean = false;
+            }
+            return (next, out);
+        }
+        if let Event::IdentityDiscoveryVerified { ingress_epoch } = event
+            && next.check_identity_targets.is_empty()
+        {
+            next.identity_discovery_epoch = Some(*ingress_epoch);
+            next.identity_recovery_clean = false;
+        }
+        if let Event::IdentityBootstrapReleased { ingress_epoch } = event
+            && next.identity_recovery_prepared
+            && next.identity_recovery_clean
+            && next.check_identity_targets.is_empty()
+            && next.recovery_pending_actions.is_empty()
+            && next.recovery_in_place.is_empty()
+            && next.identity_discovery_epoch == Some(*ingress_epoch)
+        {
+            next.identity_bootstrap_hold = false;
+            next.identity_discovery_epoch = None;
+        }
+    }
+    if !next.identity_bootstrap_hold {
+        next.wakeups.retain(|t| *t > now);
+    }
+    if !matches!(
+        event,
+        Event::Tick
+            | Event::CheckIdentityVerified { .. }
+            | Event::CheckIdentityEmptyVerified { .. }
+            | Event::IdentityRepositoryVerified { .. }
+            | Event::IdentityRecoveryInPlaceObsolete { .. }
+            | Event::IdentityRecoveryConfigApplied { .. }
+            | Event::IdentityRecoveryCleanFinalized { .. }
+    ) {
+        for base in next.check_identity_targets.keys() {
+            *next.check_identity_epochs.entry(base.clone()).or_default() += 1;
+            if let Some(stage) = next.check_identity_staged.remove(base) {
+                let generation = next
+                    .check_identity_generations
+                    .entry(base.clone())
+                    .or_default();
+                *generation = (*generation).max(stage.generation);
+            }
+        }
+    }
     let token = apply(&mut next, rules, event, &mut out);
+    // Releasing is a checkpoint only. The worker must replay deferred safety controls and
+    // restart recovery before asking the engine to make new decisions.
+    if matches!(event, Event::IdentityBootstrapReleased { .. }) && !next.identity_bootstrap_hold {
+        return (next, out);
+    }
+    if next.identity_bootstrap_hold {
+        for (n, p) in &next.pull_requests {
+            if !p.closed && !p.merged {
+                let holds = next.holds.entry(*n).or_default();
+                if !holds.iter().any(|h| h.kind == "identity-bootstrap") {
+                    holds.push(crate::protections::Hold::wait(
+                        "identity-bootstrap",
+                        "Waiting for a fresh repository check identity view",
+                    ));
+                }
+            }
+        }
+        return (next, out);
+    }
     process(&mut next, rules, now, token, &mut out);
     for d in &out {
         if let Decision::Dequeue { number, reason, .. }
@@ -598,6 +802,329 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         state.pull_requests.get_mut(&n)
     }
     match event {
+        Event::IdentityBootstrapHeld
+        | Event::IdentityBootstrapReleased { .. }
+        | Event::IdentityDiscoveryVerified { .. } => {}
+        Event::IdentityRecoveryCleanFinalized { ingress_epoch } => {
+            if state.identity_bootstrap_hold
+                && state.identity_recovery_prepared
+                && state.identity_discovery_epoch == Some(*ingress_epoch)
+                && state.check_identity_targets.is_empty()
+                && state.recovery_pending_actions.is_empty()
+                && state.recovery_in_place.is_empty()
+                && state.actions.pending.is_empty()
+                && state.actions.armed.is_empty()
+                && state.actions.asked.is_empty()
+                && state.actions.merge_reads.is_empty()
+                && state.actions.waiting_backports.is_empty()
+                && state.actions.dismiss_due.is_empty()
+                && state.wakeups.is_empty()
+                && state.pending_commands.is_empty()
+                && state.unconfirmed_land.is_empty()
+                && state.closing.is_empty()
+                && state
+                    .trains
+                    .values()
+                    .all(|t| t.cars.is_empty() && t.base_request.is_none())
+            {
+                state.identity_recovery_clean = true;
+            }
+        }
+        Event::IdentityRecoveryConfigApplied { ingress_epoch } => {
+            if state.identity_bootstrap_hold
+                && state.identity_recovery_prepared
+                && state.identity_discovery_epoch == Some(*ingress_epoch)
+            {
+                reset_configuration_state(state);
+                state.identity_recovery_clean = false;
+            }
+        }
+        Event::IdentityRecoveryInPlaceObsolete { car, ingress_epoch } => {
+            if state.identity_bootstrap_hold
+                && state.identity_discovery_epoch == Some(*ingress_epoch)
+                && let Some(recorded) = state.recovery_in_place.get(car)
+            {
+                let current = state
+                    .trains
+                    .values()
+                    .flat_map(|t| t.cars.iter())
+                    .find(|c| c.id == *car);
+                let still_same = current.is_some_and(|c| {
+                    c.in_place
+                        && c.draft == Some(recorded.number)
+                        && c.head_sha.as_ref() == Some(&recorded.head_sha)
+                });
+                if !still_same {
+                    state.recovery_in_place.remove(car);
+                }
+            }
+        }
+        Event::IdentityRecoveryPrepared => {
+            if state.identity_bootstrap_hold {
+                state.identity_discovery_epoch = None;
+                state.identity_recovery_prepared = true;
+                state.identity_recovery_clean = false;
+                state
+                    .recovery_pending_actions
+                    .extend(state.actions.pending.keys().copied());
+                crate::queue::prepare_identity_recovery(state);
+            }
+        }
+        Event::IdentityRepositoryVerified { bases } => {
+            if !state.identity_bootstrap_hold
+                || bases.len() != state.check_identity_targets.len()
+                || !bases
+                    .keys()
+                    .all(|base| state.check_identity_targets.contains_key(base))
+            {
+                return None;
+            }
+            let expected: BTreeSet<_> = state
+                .check_identity_targets
+                .values()
+                .flat_map(|s| s.iter().copied())
+                .collect();
+            let mut seen = BTreeSet::new();
+            for (base, batch) in bases {
+                if state.check_identity_epochs.get(base) != Some(&batch.epoch)
+                    || !state
+                        .check_identity_generations
+                        .get(base)
+                        .is_some_and(|last| batch.generation > *last)
+                {
+                    return None;
+                }
+                for p in &batch.pull_requests {
+                    if !seen.insert(p.number)
+                        || p.base != *base
+                        || p.base_tip.as_ref() != Some(&batch.base_tip)
+                        || !state.check_identity_targets[base].contains(&p.number)
+                        || state.pull_requests.get(&p.number).is_some_and(|old| {
+                            old.merged
+                                && (!p.merged
+                                    || old.merge_commit_sha.as_ref().is_some_and(|sha| {
+                                        p.merge_commit_sha.as_ref() != Some(sha)
+                                    }))
+                        })
+                    {
+                        return None;
+                    }
+                }
+            }
+            if seen != expected {
+                return None;
+            }
+            for (base, batch) in bases {
+                let mut checks = batch.required_checks.clone();
+                checks.sort();
+                checks.dedup();
+                let mut bound = batch.bound_required_checks.clone();
+                bound.sort();
+                bound.dedup();
+                state.required_checks.insert(base.clone(), checks);
+                state.bound_required_checks.insert(base.clone(), bound);
+                state.branches.insert(base.clone(), batch.base_tip.clone());
+                for p in &batch.pull_requests {
+                    let mut verified = p.clone();
+                    verified.required_check_names = batch.required_checks.iter().cloned().collect();
+                    for check in &verified.checks {
+                        if check.app.as_deref() == Some("github-actions")
+                            && batch
+                                .bound_required_checks
+                                .iter()
+                                .any(|r| r.context == check.name && Some(r.app_id) == check.app_id)
+                        {
+                            verified
+                                .required_check_names
+                                .insert(format!("@github-actions/{}", check.name));
+                        }
+                    }
+                    state.pull_requests.insert(p.number, verified);
+                    state.check_identity_unavailable.remove(&p.number);
+                }
+            }
+            state.check_identity_targets.clear();
+            state.check_identity_staged.clear();
+            state.identity_discovery_epoch = None;
+            state.identity_recovery_clean = false;
+        }
+        Event::CheckIdentityEmptyVerified {
+            base,
+            epoch,
+            generation,
+            base_tip,
+            required_checks,
+            bound_required_checks,
+        } => {
+            if state.check_identity_epochs.get(base) == Some(epoch)
+                && state
+                    .check_identity_generations
+                    .get(base)
+                    .is_some_and(|last| generation > last)
+                && state
+                    .check_identity_targets
+                    .get(base)
+                    .is_some_and(BTreeSet::is_empty)
+            {
+                let mut checks = required_checks.clone();
+                checks.sort();
+                checks.dedup();
+                let mut bound = bound_required_checks.clone();
+                bound.sort();
+                bound.dedup();
+                state.required_checks.insert(base.clone(), checks);
+                state.bound_required_checks.insert(base.clone(), bound);
+                state.branches.insert(base.clone(), base_tip.clone());
+                state.check_identity_targets.remove(base);
+                state.check_identity_staged.remove(base);
+            }
+        }
+        Event::CheckIdentitiesUnavailable { bases } => {
+            state.identity_discovery_epoch = None;
+            state.identity_recovery_clean = false;
+            for (base, (generation, numbers)) in bases {
+                let last = state
+                    .check_identity_generations
+                    .entry(base.clone())
+                    .or_default();
+                if generation >= last {
+                    if !state.check_identity_targets.contains_key(base) {
+                        *state.check_identity_epochs.entry(base.clone()).or_default() += 1;
+                    }
+                    *last = *generation;
+                    state.check_identity_staged.remove(base);
+                    state
+                        .check_identity_unavailable
+                        .extend(numbers.iter().copied());
+                    state
+                        .check_identity_targets
+                        .entry(base.clone())
+                        .or_default()
+                        .extend(numbers.iter().copied());
+                }
+            }
+        }
+        Event::CheckIdentityUnavailable {
+            base,
+            generation,
+            numbers,
+        } => {
+            state.identity_discovery_epoch = None;
+            state.identity_recovery_clean = false;
+            let last = state
+                .check_identity_generations
+                .entry(base.clone())
+                .or_default();
+            if generation >= last {
+                if !state.check_identity_targets.contains_key(base) {
+                    *state.check_identity_epochs.entry(base.clone()).or_default() += 1;
+                }
+                *last = *generation;
+                state.check_identity_staged.remove(base);
+                state
+                    .check_identity_unavailable
+                    .extend(numbers.iter().copied());
+                state
+                    .check_identity_targets
+                    .entry(base.clone())
+                    .or_default()
+                    .extend(numbers.iter().copied());
+            }
+        }
+        Event::CheckIdentityVerified {
+            base,
+            epoch,
+            generation,
+            expected_head,
+            expected_base,
+            required_checks,
+            bound_required_checks,
+            pull_request,
+        } => {
+            let p = pull_request.as_ref();
+            if state.check_identity_epochs.get(base) == Some(epoch)
+                && state
+                    .check_identity_generations
+                    .get(base)
+                    .is_some_and(|last| generation > last)
+                && state
+                    .check_identity_targets
+                    .get(base)
+                    .is_some_and(|targets| targets.contains(&p.number))
+                && p.base == *base
+                && p.head_sha == *expected_head
+                && p.base_tip.as_ref() == Some(expected_base)
+                && state.pull_requests.get(&p.number).is_none_or(|old| {
+                    !old.merged
+                        || (p.merged
+                            && old
+                                .merge_commit_sha
+                                .as_ref()
+                                .is_none_or(|sha| p.merge_commit_sha.as_ref() == Some(sha)))
+                })
+            {
+                let mut required = required_checks.clone();
+                required.sort();
+                required.dedup();
+                let mut bound = bound_required_checks.clone();
+                bound.sort();
+                bound.dedup();
+                if state.check_identity_staged.get(base).is_some_and(|stage| {
+                    stage.generation != *generation
+                        || stage.base_tip != *expected_base
+                        || stage.required_checks != required
+                        || stage.bound_required_checks != bound
+                }) {
+                    state.check_identity_staged.remove(base);
+                    state
+                        .check_identity_generations
+                        .insert(base.clone(), *generation);
+                    return None;
+                }
+                let mut verified = p.clone();
+                verified.required_check_names = required.iter().cloned().collect();
+                for c in &verified.checks {
+                    if c.app.as_deref() == Some("github-actions")
+                        && bound
+                            .iter()
+                            .any(|r| r.context == c.name && Some(r.app_id) == c.app_id)
+                    {
+                        verified
+                            .required_check_names
+                            .insert(format!("@github-actions/{}", c.name));
+                    }
+                }
+                let stage = state
+                    .check_identity_staged
+                    .entry(base.clone())
+                    .or_insert_with(|| CheckIdentityStage {
+                        generation: *generation,
+                        base_tip: expected_base.clone(),
+                        required_checks: required.clone(),
+                        bound_required_checks: bound.clone(),
+                        pull_requests: BTreeMap::new(),
+                    });
+                stage.pull_requests.insert(p.number, verified);
+                if state.check_identity_targets[base]
+                    .iter()
+                    .all(|n| stage.pull_requests.contains_key(n))
+                {
+                    let complete = state.check_identity_staged.remove(base).expect("staged");
+                    state
+                        .required_checks
+                        .insert(base.clone(), complete.required_checks);
+                    state
+                        .bound_required_checks
+                        .insert(base.clone(), complete.bound_required_checks);
+                    state.branches.insert(base.clone(), complete.base_tip);
+                    for (n, pr) in complete.pull_requests {
+                        state.pull_requests.insert(n, pr);
+                        state.check_identity_unavailable.remove(&n);
+                    }
+                    state.check_identity_targets.remove(base);
+                }
+            }
+        }
         Event::PullRequestOpened { pull_request } => {
             state
                 .pull_requests
@@ -656,6 +1183,9 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             token,
         } => {
             for p in pull_requests {
+                if state.check_identity_unavailable.contains(&p.number) {
+                    continue;
+                }
                 // Merged is final: a read that says otherwise lags behind (MQ-33).
                 if !p.merged && state.pull_requests.get(&p.number).is_some_and(|o| o.merged) {
                     continue;
@@ -717,15 +1247,38 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                 state.required_checks.insert(base.clone(), c);
             }
         }
-        Event::ConfigurationChanged => {
-            // Attributes and evaluation errors were judged under the old rules.
-            state.blocked_attrs.clear();
-            state.reported_errors.clear();
-            state.actions.frozen_labels.clear();
-            state.actions.label_flips.clear();
+        Event::RequiredChecksTyped {
+            base,
+            checks,
+            bound_checks,
+        } => {
+            let mut checks = checks.clone();
+            checks.sort();
+            checks.dedup();
+            let mut bound = bound_checks.clone();
+            bound.sort();
+            bound.dedup();
+            if checks.is_empty() {
+                state.required_checks.remove(base);
+            } else {
+                state.required_checks.insert(base.clone(), checks);
+            }
+            if bound.is_empty() {
+                state.bound_required_checks.remove(base);
+            } else {
+                state.bound_required_checks.insert(base.clone(), bound);
+            }
         }
+        Event::ConfigurationChanged => reset_configuration_state(state),
     }
     None
+}
+
+fn reset_configuration_state(state: &mut State) {
+    state.blocked_attrs.clear();
+    state.reported_errors.clear();
+    state.actions.frozen_labels.clear();
+    state.actions.label_flips.clear();
 }
 
 /// Whether a pull request is one of the queue's own draft pull requests.
@@ -747,6 +1300,16 @@ fn process(
     for number in numbers {
         let pr = state.pull_requests[&number].clone();
         if is_queue_pull_request(rules, &pr) || queue::is_car_draft(state, number) {
+            continue;
+        }
+        if state.check_identity_unavailable.contains(&number) {
+            state.holds.insert(
+                number,
+                vec![Hold::wait(
+                    "check-identity-unavailable",
+                    "A fresh check identity read is unavailable",
+                )],
+            );
             continue;
         }
         evaluate_pull_request(state, rules, &pr, now, out);
@@ -811,6 +1374,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
+            external_reset: false,
             by,
             priority: default_priority(),
             priority_rule: None,

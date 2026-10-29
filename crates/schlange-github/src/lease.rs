@@ -134,17 +134,19 @@ impl Lease {
         self.lock().journal_current
     }
 
-    fn meta_key(&self) -> String {
-        format!("fence:{}", self.api.repo.full())
-    }
-
     /// Records the fence commit this data directory's leader wrote, and whether it built on the
     /// one recorded before.
     fn won(&self, built_on: Option<&str>, sha: &str) {
         let Some(s) = &self.store else { return };
-        let before = s.meta(&self.meta_key()).ok().flatten();
-        let current = before.as_deref() == built_on;
-        let _ = s.set_meta(&self.meta_key(), sha);
+        let current = s
+            .advance_fence_lineage(
+                &self.api.repo.full(),
+                &self.cfg.holder,
+                || self.clock.now(),
+                built_on,
+                sha,
+            )
+            .unwrap_or(false);
         self.lock().journal_current = current;
     }
 
@@ -335,6 +337,32 @@ impl Lease {
                 "the fence moved to {} (another process took the lease)",
                 tip.as_deref().unwrap_or("nothing")
             )));
+        }
+        // A slow remote read may consume the lease's remaining lifetime. Recheck both
+        // the local lease state and, when present, the persisted holder after that read.
+        let after = self.clock.now();
+        let still_held = {
+            let i = self.lock();
+            i.held && i.mine == mine && after < i.expires
+        };
+        if !still_held {
+            return Err(self.lost("the lease expired or changed during the fence read".into()));
+        }
+        if let Some(s) = &self.store {
+            let h = s.lease_holder(&repo).map_err(|e| e.to_string())?;
+            let end = self.clock.now();
+            if !h.is_some_and(|(holder, expires)| holder == self.cfg.holder && end < expires) {
+                return Err(
+                    self.lost("the local lease expired or changed during the fence read".into())
+                );
+            }
+            let still_held = {
+                let i = self.lock();
+                i.held && i.mine == mine && end < i.expires
+            };
+            if !still_held {
+                return Err(self.lost("the lease expired or changed during the holder read".into()));
+            }
         }
         Ok(())
     }

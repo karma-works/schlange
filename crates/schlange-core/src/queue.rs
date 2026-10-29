@@ -569,6 +569,11 @@ pub(crate) fn car_built(
     c.draft = Some(draft);
     c.started = now;
     c.status = CarStatus::Running;
+    for number in &c.own {
+        if let Some(entry) = state.queued.get_mut(number) {
+            entry.external_reset = false;
+        }
+    }
     // The queue's own push to its branch is known now (not a foreign push).
     state
         .branches
@@ -634,17 +639,30 @@ pub(crate) fn car_conflict(
             out,
         );
     } else if with_base {
+        let external_reset = state.queued.get(&number).is_some_and(|e| e.external_reset);
+        if external_reset && let Some(pr) = state.pull_requests.get(&number) {
+            state.blocked_heads.insert(number, pr.head_sha.clone());
+        }
         dequeue(
             state,
             rules,
             number,
             DequeueReason::new(
-                code::CONFLICT_WITH_BASE_BRANCH,
+                if external_reset {
+                    code::PR_DEQUEUED
+                } else {
+                    code::CONFLICT_WITH_BASE_BRANCH
+                },
                 "the pull request does not merge onto the base branch",
             ),
             out,
         );
     } else {
+        // The forge confirmed this pull request still merges onto the moved base by itself.
+        // A later conflict after a queued predecessor lands has its own specific reason.
+        if let Some(entry) = state.queued.get_mut(&number) {
+            entry.external_reset = false;
+        }
         discard_containing(state, rules, &base, number, out);
         if let Some(entry) = state.queued.get_mut(&number) {
             entry.status = EntryStatus::Held { on: with.to_vec() };
@@ -1923,6 +1941,13 @@ fn base_and_foreign_pushes(state: &mut State, rules: &Rules, base: &str, out: &m
                 }
             } else {
                 train.set_base(sha.clone());
+                for entry in state
+                    .queued
+                    .values_mut()
+                    .filter(|e| e.base == base && !matches!(e.status, EntryStatus::Held { .. }))
+                {
+                    entry.external_reset = true;
+                }
                 reset(
                     state,
                     base,
@@ -2073,9 +2098,43 @@ fn closed_drafts(state: &mut State, base: &str, out: &mut Vec<Decision>) {
 
 /// After a restart from the journal: every outstanding request is due at once, timers are
 /// gone. The fresh read that follows resolves the rest.
+/// Record restart work without emitting an announcement or resending an action.
+/// Each recorded car still needs fresh validation before any announcement.
+pub(crate) fn prepare_identity_recovery(state: &mut State) {
+    for train in state.trains.values_mut() {
+        if let Some((_, since)) = &mut train.base_request {
+            *since = EXPIRED;
+        }
+        for car in &mut train.cars {
+            if car.in_place
+                && let (Some(number), Some(head_sha)) = (car.draft, car.head_sha.clone())
+            {
+                state
+                    .recovery_in_place
+                    .entry(car.id)
+                    .or_insert(crate::engine::RecoveryInPlace { number, head_sha });
+            }
+            match &mut car.status {
+                CarStatus::Building { since }
+                | CarStatus::Verifying { since, .. }
+                | CarStatus::Confirming { since, .. }
+                | CarStatus::Landing { since }
+                | CarStatus::LandCheck { since, .. } => *since = EXPIRED,
+                _ => {}
+            }
+        }
+    }
+    for close in state.closing.values_mut() {
+        close.since = EXPIRED;
+    }
+}
+
 pub(crate) fn expire_all(state: &mut State, out: &mut Vec<Decision>) {
     state.wakeups.clear();
-    for t in state.trains.values() {
+    for (base, t) in &state.trains {
+        if state.check_identity_targets.contains_key(base) {
+            continue;
+        }
         // An in-place check has no effect on the forge besides being announced; announcing it
         // again is harmless, and the crash may have come before the first announcement.
         for c in t.cars.iter().filter(|c| c.in_place) {
@@ -2150,12 +2209,27 @@ pub fn process_trains(
     token: Option<u64>,
     out: &mut Vec<Decision>,
 ) {
-    collect_garbage(state, rules, out);
-    closing_timeouts(state, out);
+    // Until the protected inputs are known, neither orphan discovery nor delayed close
+    // retries may act on a potentially stale queue view. Both resume after recovery.
+    if state.check_identity_targets.is_empty() {
+        collect_garbage(state, rules, out);
+        closing_timeouts(state, out);
+    }
     state.landing_holds.clear();
     let bases: Vec<String> = state.trains.keys().cloned().collect();
     for base in bases {
         state.trains.get_mut(&base).expect("train").mode = mode(rules);
+        if state.check_identity_targets.contains_key(&base)
+            || state.check_identity_unavailable.iter().any(|n| {
+                state.pull_requests.get(n).is_some_and(|p| p.base == base)
+                    || state.trains[&base]
+                        .cars
+                        .iter()
+                        .any(|c| c.draft == Some(*n) || c.own.contains(n))
+            })
+        {
+            continue;
+        }
         base_and_foreign_pushes(state, rules, &base, out);
         closed_drafts(state, &base, out);
         if state.trains[&base].halted.is_some() {

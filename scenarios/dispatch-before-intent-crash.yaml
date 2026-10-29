@@ -1,0 +1,9 @@
+# A crash after the dispatch decision's checkpoint, before its intent and send.
+name: dispatch-before-intent-crash
+config: configs/dispatch-crash.yml
+pull_requests:
+  - { number: 1, author: dev, labels: [preview], files: { one.txt: "one\n" } }
+events:
+  - { at: 0s, open: 1 }
+expect:
+  - { pr: 1, state: open }

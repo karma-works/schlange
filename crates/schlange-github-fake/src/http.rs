@@ -171,6 +171,8 @@ pub(crate) fn serve(server: &tiny_http::Server, inner: &Inner) {
             );
             let path = url.split('?').next().unwrap_or("").to_string();
             st.requests.push(format!("{method} {path} {}", r.status));
+            st.requests_with_query
+                .push(format!("{method} {url} {}", r.status));
             r
         };
         inner.outbox_cv.notify_all();
@@ -245,7 +247,10 @@ fn handle(
     // Injected faults first.
     let mut lie = None;
     if let Some(i) = st.faults.iter().position(|f| {
-        (f.method == "*" || f.method == method) && path.contains(&f.path) && f.times > 0
+        (f.method == "*" || f.method == method)
+            && path.contains(&f.path)
+            && f.times > 0
+            && f.query_contains.as_ref().is_none_or(|q| query.contains(q))
     }) {
         st.faults[i].times -= 1;
         let kind = st.faults[i].kind.clone();
@@ -260,6 +265,18 @@ fn handle(
         }
         st.run_then(&then);
         match kind {
+            FaultKind::Json(body) => return reply(200, body),
+            FaultKind::Redirect { status, location } => {
+                let mut r = reply(status, json!({}));
+                r.headers.push(("location".into(), location));
+                return r;
+            }
+            FaultKind::JsonLink(body, next) => {
+                let mut r = reply(200, body);
+                r.headers
+                    .push(("link".into(), format!("<{next}>; rel=\"next\"")));
+                return r;
+            }
             FaultKind::Status(s) => return err(s, "injected fault"),
             FaultKind::StatusMessage(s, m) => return err(s, &m),
             FaultKind::RateLimit { retry_after } => {
@@ -353,10 +370,13 @@ fn route(
                     FakeToken {
                         expires: exp,
                         repositories,
-                        permissions,
+                        permissions: permissions.clone(),
                     },
                 );
-                reply(201, json!({ "token": token, "expires_at": ts(exp) }))
+                reply(
+                    201,
+                    json!({ "token": token, "expires_at": ts(exp), "permissions": permissions }),
+                )
             }
             ("GET", ["hook", "deliveries"]) => {
                 let items: Vec<Value> = st
@@ -500,9 +520,12 @@ pub(crate) fn required_permission(
         ["pulls", ..] => Some(("pull_requests", level)),
         // Comments, labels and assignees on pull requests.
         ["issues", ..] => Some(("pull_requests", level)),
-        ["commits", _, "check-runs" | "check-suites"] | ["check-runs", ..] => {
-            Some(("checks", level))
-        }
+        ["commits", _, "check-runs" | "check-suites"]
+        | ["check-runs", ..]
+        | ["check-suites", ..] => Some(("checks", level)),
+        ["actions", "runs", ..] => Some(("actions", level)),
+        ["branches", .., "protection"] => Some(("administration", "read")),
+        ["branches", ..] => Some(("contents", "read")),
         ["commits", _, "status"] => Some(("statuses", "read")),
         ["git", ..] | ["merges"] | ["compare", ..] | ["contents", ..] | ["commits", ..] => {
             Some(("contents", level))
@@ -566,10 +589,12 @@ fn repo_route(
             st.next_issue += 1;
             let n = st.next_issue;
             let user = new_pr_body(st);
+            let created_at = st.server_clock;
             st.prs.insert(
                 n,
                 FakePr {
                     number: n,
+                    created_at,
                     title: body["title"].as_str().unwrap_or("").into(),
                     body: body["body"].as_str().unwrap_or("").into(),
                     user,
@@ -1047,30 +1072,48 @@ fn repo_route(
             paginate(base_url, path, query, runs, Some("check_runs"))
         }
         ("GET", ["commits", sha, "check-suites"]) => {
-            let mut apps: Vec<(String, bool, bool)> = Vec::new();
-            for r in st.runs.iter().filter(|r| r.head_sha == *sha) {
-                match apps.iter_mut().find(|a| a.0 == r.app_slug) {
-                    Some(a) => {
-                        a.1 &= r.status == "completed";
-                        a.2 &= r.conclusion.as_deref() == Some("success");
-                    }
-                    None => apps.push((
-                        r.app_slug.clone(),
-                        r.status == "completed",
-                        r.conclusion.as_deref() == Some("success"),
-                    )),
-                }
-            }
-            let items = apps
-                .into_iter()
-                .enumerate()
-                .map(|(i, (app, done, ok))| {
-                    json!({ "id": i + 1, "head_sha": sha, "app": { "slug": app },
-                            "status": if done { "completed" } else { "in_progress" },
-                            "conclusion": if done { Some(if ok { "success" } else { "failure" }) } else { None } })
-                })
+            let mut seen = std::collections::BTreeSet::new();
+            let items = st.runs.iter().filter(|r| r.head_sha == *sha && seen.insert(r.suite_id))
+                .map(|r| json!({ "id": r.suite_id, "head_sha": sha, "app": {"slug": r.app_slug, "id": if r.app_slug == "github-actions" { 15368 } else { 888 }},
+                    "created_at": schlange_core::time::format_utc(1_800_000_000 + r.suite_id as i64),
+                    "status": r.status, "conclusion": r.conclusion }))
                 .collect();
             paginate(base_url, path, query, items, Some("check_suites"))
+        }
+        ("GET", ["check-suites", suite, "check-runs"]) => {
+            let Some(suite) = num(suite) else {
+                return err(404, "Not Found");
+            };
+            let runs = st
+                .runs
+                .iter()
+                .filter(|r| r.suite_id == suite)
+                .map(|r| st.run_json(r))
+                .collect();
+            paginate(base_url, path, query, runs, Some("check_runs"))
+        }
+        ("GET", ["actions", "runs", run, "jobs"]) => {
+            let Some(run) = num(run) else {
+                return err(404, "Not Found");
+            };
+            let items = st.runs.iter().filter(|r| r.suite_id == run && r.workflow.is_some())
+                .map(|r| json!({"run_id": run, "head_sha": r.head_sha,
+                    "check_run_url": format!("{base_url}/repos/{}/{}/check-runs/{}", st.cfg.owner, st.cfg.name, r.id)})).collect();
+            paginate(base_url, path, query, items, Some("jobs"))
+        }
+        ("GET", ["actions", "runs"]) => {
+            if !matches!(
+                st.caller_permissions().get("actions").map(String::as_str),
+                Some("read" | "write")
+            ) {
+                return err(403, "Actions read permission required");
+            }
+            let suite = query_param(query, "check_suite_id").and_then(|s| s.parse::<u64>().ok());
+            let runs = st.runs.iter().filter(|r| Some(r.suite_id) == suite)
+                .filter_map(|r| Some(json!({"id": r.suite_id, "check_suite_id": r.suite_id,
+                    "head_sha": r.head_sha, "path": format!(".github/workflows/{}", r.workflow.as_ref()?),
+                    "event": r.event.as_ref()?}))).collect();
+            paginate(base_url, path, query, runs, Some("workflow_runs"))
         }
         ("GET", ["commits", sha, "status"]) => {
             let mut latest: Vec<&crate::FakeStatus> = Vec::new();
@@ -1113,6 +1156,9 @@ fn repo_route(
                 conclusion: body["conclusion"].as_str().map(str::to_string),
                 app_slug: app,
                 output_title: body["output"]["title"].as_str().unwrap_or("").into(),
+                suite_id: id,
+                workflow: None,
+                event: None,
             });
             st.emit_run("created", id);
             let r = st.runs.last().cloned().expect("run");
@@ -1199,8 +1245,25 @@ fn repo_route(
             }
             paginate(base_url, path, query, items, None)
         }
-        ("GET", ["branches", _b @ .., "protection"]) => {
-            err(403, "Resource not accessible by integration")
+        ("GET", ["branches", b @ .., "protection"]) => {
+            if st.tip(&b.join("/")).is_none() {
+                return err(404, "Not Found");
+            }
+            match &st.classic_required_checks {
+                Some(checks) => reply(200, json!({"required_status_checks": {"contexts": checks}})),
+                None => err(404, "Not Found"),
+            }
+        }
+        ("GET", ["branches", b @ ..]) => {
+            let branch = b.join("/");
+            if st.tip(&branch).is_none() {
+                return err(404, "Not Found");
+            }
+            reply(
+                200,
+                json!({"name": branch,
+                "protected": st.classic_required_checks.is_some() || !st.required_checks.is_empty()}),
+            )
         }
         ("POST", ["issues", n, "comments"]) => {
             let Some(n) = num(n).filter(|n| st.prs.contains_key(n)) else {

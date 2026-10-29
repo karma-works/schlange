@@ -542,3 +542,20 @@ fn commands_are_bound_to_the_head_at_the_comment() {
         );
     }
 }
+
+#[test]
+fn pending_action_is_not_resent_when_check_identity_is_unavailable() {
+    let mut d = Driver::new(WIP);
+    let first = d.read(vec![pr(1, "WIP")]);
+    assert!(ops(&first).iter().any(|x| matches!(x, Op::Comment { .. })));
+    let out = d.feed(Event::CheckIdentityUnavailable {
+        base: "main".into(),
+        generation: 4,
+        numbers: vec![1],
+    });
+    assert!(ops(&out).is_empty());
+    d.now += schlange_core::actions::ACTION_TIMEOUT;
+    assert!(ops(&d.feed(Event::Tick)).is_empty());
+    d.state = serde_json::from_slice(&serde_json::to_vec(&d.state).unwrap()).unwrap();
+    assert!(ops(&d.feed(Event::Restarted)).is_empty());
+}

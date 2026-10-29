@@ -93,6 +93,7 @@ impl FakeConfig {
 #[derive(Clone, Debug)]
 pub struct FakePr {
     pub number: u64,
+    pub created_at: u64,
     pub title: String,
     pub body: String,
     pub user: String,
@@ -144,6 +145,9 @@ pub struct FakeRun {
     pub conclusion: Option<String>,
     pub app_slug: String,
     pub output_title: String,
+    pub suite_id: u64,
+    pub workflow: Option<String>,
+    pub event: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -197,12 +201,24 @@ pub fn guard_labels(labels: &[&str]) -> MergeGuard {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultKind {
+    /// Return a synthetic JSON body for malformed-response tests.
+    Json(Value),
+    JsonLink(Value, String),
+    /// Redirect a request to a synthetic location.
+    Redirect {
+        status: u16,
+        location: String,
+    },
     /// Answer with this status, do nothing.
     Status(u16),
     /// 429 with `Retry-After`.
-    RateLimit { retry_after: u64 },
+    RateLimit {
+        retry_after: u64,
+    },
     /// 403 "secondary rate limit" with `Retry-After`.
-    SecondaryLimit { retry_after: u64 },
+    SecondaryLimit {
+        retry_after: u64,
+    },
     /// Do the request, then answer with this status anyway (MQ-35).
     Lie(u16),
     /// Answer with this status and GitHub's message, do nothing (transient 405/409, 403, 422).
@@ -225,6 +241,7 @@ pub struct FaultRule {
     pub method: String,
     /// Substring of the path (without the query).
     pub path: String,
+    pub query_contains: Option<String>,
     pub kind: FaultKind,
     /// How many requests it hits.
     pub times: u32,
@@ -239,6 +256,7 @@ impl FaultRule {
         FaultRule {
             method: method.into(),
             path: path.into(),
+            query_contains: None,
             kind,
             times,
             then: vec![],
@@ -249,6 +267,11 @@ impl FaultRule {
     /// Adds a side action that happens when the fault first fires.
     pub fn then(mut self, t: Then) -> Self {
         self.then.push(t);
+        self
+    }
+
+    pub fn query(mut self, value: &str) -> Self {
+        self.query_contains = Some(value.into());
         self
     }
 }
@@ -355,6 +378,8 @@ pub(crate) struct St {
     pub reactions: Vec<(u64, String, String)>,
     /// Comment timestamps (seconds), increasing with every write.
     pub comment_clock: u64,
+    /// Independent, explicitly advanced GitHub server clock for PR creation.
+    pub server_clock: u64,
     /// Who made each commit (login), for `GET /pulls/{n}/commits`.
     pub commit_authors: BTreeMap<Sha, String>,
     /// The repository's squash body setting (`COMMIT_MESSAGES`, `PR_BODY`, `BLANK`).
@@ -376,6 +401,7 @@ pub(crate) struct St {
     pub hook_seq: u64,
     pub webhook_target: Option<String>,
     pub requests: Vec<String>,
+    pub requests_with_query: Vec<String>,
     pub squashes: Vec<Squash>,
     pub external: BTreeSet<Sha>,
     /// Workflow dispatches: workflow and request body.
@@ -399,6 +425,7 @@ pub(crate) struct St {
     pub rulesets: Vec<Value>,
     /// Checks a ruleset on the default branch requires (`GET /rules/branches/…`).
     pub required_checks: Vec<String>,
+    pub classic_required_checks: Option<Vec<String>>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
     /// How many files `GET /pulls/{n}/files` lists at most (GitHub: 3000).
@@ -809,6 +836,7 @@ impl St {
         };
         Some(json!({
             "number": pr.number,
+            "created_at": ts(pr.created_at),
             "title": pr.title,
             "body": pr.body,
             "state": if pr.open { "open" } else { "closed" },
@@ -839,7 +867,8 @@ impl St {
             .collect();
         json!({
             "id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status,
-            "conclusion": r.conclusion, "app": { "slug": r.app_slug },
+            "conclusion": r.conclusion, "app": { "slug": r.app_slug, "id": if r.app_slug == "github-actions" { 15368 } else { 888 } },
+            "check_suite": {"id": r.suite_id},
             "output": { "title": r.output_title },
             "pull_requests": prs,
         })
@@ -939,6 +968,9 @@ impl St {
             conclusion,
             app_slug: app.into(),
             output_title: String::new(),
+            suite_id: id,
+            workflow: None,
+            event: None,
         });
         self.emit_run("created", id);
         if completed {
@@ -1092,6 +1124,7 @@ impl FakeGithub {
             hook_seq: 0,
             webhook_target: None,
             requests: Vec::new(),
+            requests_with_query: Vec::new(),
             squashes: Vec::new(),
             external: BTreeSet::new(),
             dispatches: Vec::new(),
@@ -1106,9 +1139,11 @@ impl FakeGithub {
             old_names: Vec::new(),
             rulesets: Vec::new(),
             required_checks: Vec::new(),
+            classic_required_checks: None,
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
             comment_clock: 1_800_000_000,
+            server_clock: 1_800_000_000,
             commit_authors: BTreeMap::new(),
             squash_message_setting: "COMMIT_MESSAGES".into(),
             files_cap: 3000,
@@ -1170,6 +1205,14 @@ impl FakeGithub {
         self.with(|s| s.cfg.clone())
     }
 
+    /// Fault injection: move the lease ref to an existing, different commit.
+    pub fn test_move_fence_to_default_tip(&self) {
+        self.with(|s| {
+            let tip = s.tip(&s.cfg.default_branch).expect("default branch");
+            s.custom_refs.insert("refs/schlange/lease".into(), tip);
+        });
+    }
+
     pub fn set_webhook_target(&self, url: Option<String>) {
         self.with(|s| s.webhook_target = url);
     }
@@ -1226,8 +1269,19 @@ impl FakeGithub {
     }
 
     /// A ruleset on the default branch that requires these checks.
+    /// Advance the fake server's clock independently of the worker clock.
+    pub fn advance_server_time(&self, seconds: u64) {
+        self.with(|s| s.server_clock = s.server_clock.saturating_add(seconds));
+    }
+
     pub fn set_required_checks(&self, checks: &[&str]) {
         self.with(|s| s.required_checks = checks.iter().map(|c| c.to_string()).collect());
+    }
+
+    pub fn set_classic_required_checks(&self, checks: Option<&[&str]>) {
+        self.with(|s| {
+            s.classic_required_checks = checks.map(|c| c.iter().map(|s| s.to_string()).collect())
+        });
     }
 
     pub fn add_ruleset(&self, ruleset: Value) {
@@ -1282,10 +1336,12 @@ impl FakeGithub {
                 // A fork's branch lives in another repository's activity log.
                 s.record_push(&head_ref, "", &head, author);
             }
+            let created_at = s.server_clock;
             s.prs.insert(
                 n,
                 FakePr {
                     number: n,
+                    created_at,
                     title: title.into(),
                     body: body.into(),
                     user: author.into(),
@@ -1366,6 +1422,18 @@ impl FakeGithub {
         })
     }
 
+    /// Fixture-only retarget; creates a second base at the current default tip if needed.
+    pub fn retarget_pr_for_test(&self, n: u64, base: &str) {
+        self.with(|s| {
+            if s.tip(base).is_none() {
+                let tip = s.tip(&s.cfg.default_branch).expect("default branch");
+                s.repo.create_ref(base, &tip).expect("new base");
+            }
+            s.prs.get_mut(&n).expect("pr").base = base.to_string();
+            s.emit_pr("edited", n, json!({}));
+        });
+    }
+
     pub fn label(&self, n: u64, label: &str, add: bool) {
         self.with(|s| s.set_label(n, label, add));
     }
@@ -1435,6 +1503,11 @@ impl FakeGithub {
     /// `user` comments `body` on pull request `n`; returns the comment id.
     pub fn comment(&self, n: u64, user: &str, body: &str) -> u64 {
         self.with(|s| s.add_comment(n, user, body))
+    }
+
+    /// Remove a comment to exercise stale comment IDs in the adapter.
+    pub fn delete_comment(&self, id: u64) {
+        self.with(|s| s.comments.retain(|c| c.id != id));
     }
 
     /// Sends the `issue_comment.created` webhook of comment `id` again, with a new delivery
@@ -1543,6 +1616,44 @@ impl FakeGithub {
         self.with(|s| {
             let sha = s.prs.get(&n).expect("pr").head_sha.clone();
             s.add_run(&sha, name, conclusion.map(str::to_string), "github-actions")
+        })
+    }
+
+    /// Adds a check suite tied to a synthetic Actions workflow, for identity tests.
+    pub fn report_check_with_identity(
+        &self,
+        n: u64,
+        name: &str,
+        conclusion: &str,
+        workflow: &str,
+        event: &str,
+    ) -> (u64, u64) {
+        self.with(|s| {
+            let sha = s.prs.get(&n).expect("pr").head_sha.clone();
+            let id = s.add_run(&sha, name, Some(conclusion.into()), "github-actions");
+            let run = s.runs.iter_mut().find(|r| r.id == id).expect("run");
+            run.workflow = Some(workflow.into());
+            run.event = Some(event.into());
+            (run.suite_id, id)
+        })
+    }
+
+    /// Adds a later check-run attempt to a previously created suite.
+    pub fn report_check_in_suite(&self, n: u64, suite: u64, name: &str, conclusion: &str) -> u64 {
+        self.with(|s| {
+            let sha = s.prs.get(&n).expect("pr").head_sha.clone();
+            let original = s
+                .runs
+                .iter()
+                .find(|r| r.suite_id == suite && r.head_sha == sha)
+                .expect("suite")
+                .clone();
+            let id = s.add_run(&sha, name, Some(conclusion.into()), &original.app_slug);
+            let run = s.runs.iter_mut().find(|r| r.id == id).expect("run");
+            run.suite_id = suite;
+            run.workflow = original.workflow;
+            run.event = original.event;
+            id
         })
     }
 
@@ -1673,6 +1784,11 @@ impl FakeGithub {
 
     pub fn requests(&self) -> Vec<String> {
         self.with(|s| s.requests.clone())
+    }
+
+    /// Requests with query strings, for pagination assertions.
+    pub fn requests_with_query(&self) -> Vec<String> {
+        self.with(|s| s.requests_with_query.clone())
     }
 
     pub fn deliveries(&self) -> Vec<Delivery> {

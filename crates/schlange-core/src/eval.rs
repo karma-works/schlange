@@ -77,6 +77,7 @@ pub fn with_author(list: &[Condition], author: &str) -> Vec<Condition> {
             Condition::And(cs) => Condition::And(cs.iter().map(|c| render(c, author)).collect()),
             Condition::Or(cs) => Condition::Or(cs.iter().map(|c| render(c, author)).collect()),
             Condition::Not(c) => Condition::Not(Box::new(render(c, author))),
+            Condition::RequiredCheck { .. } => c.clone(),
             Condition::Always => Condition::Always,
         }
     }
@@ -102,6 +103,8 @@ pub enum EvalError {
     /// The forge listed only part of the changed files: a condition on them cannot be judged.
     #[error("`{0}` cannot be judged: the forge listed only part of the changed files")]
     IncompleteFiles(String),
+    #[error("`{0}` cannot be judged: check suite or workflow identity is incomplete")]
+    IncompleteChecks(String),
 }
 
 /// The conclusions a `check-*` attribute selects; `None` for other attributes.
@@ -148,6 +151,9 @@ pub fn check_matches(reference: &str, run: &crate::model::CheckRun) -> bool {
 
 /// Value of an attribute for a pull request.
 pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValue, EvalError> {
+    if check_predicate(name).is_some() && pr.checks_incomplete() {
+        return Err(EvalError::IncompleteChecks(name.to_string()));
+    }
     Ok(match name {
         "number" => AttrValue::Str(pr.number.to_string()),
         "author" => AttrValue::Str(pr.author.clone()),
@@ -435,6 +441,32 @@ fn eval3(
     errors: &mut Vec<EvalError>,
 ) -> Option<bool> {
     match cond {
+        Condition::RequiredCheck { context, app_id } => {
+            if pr.checks_incomplete()
+                || pr.checks.iter().any(|c| {
+                    c.head_sha == pr.head_sha
+                        && c.name == *context
+                        && (c.status || c.app_id.is_none())
+                })
+            {
+                errors.push(EvalError::IncompleteChecks(context.clone()));
+                None
+            } else {
+                let runs: Vec<_> = pr
+                    .current_checks()
+                    .into_iter()
+                    .filter(|c| !c.status && c.name == *context && c.app_id == Some(*app_id))
+                    .collect();
+                let slugs: std::collections::BTreeSet<_> = runs.iter().map(|c| &c.app).collect();
+                Some(
+                    !runs.is_empty()
+                        && slugs.len() == 1
+                        && runs
+                            .iter()
+                            .all(|c| c.conclusion == Some(Conclusion::Success)),
+                )
+            }
+        }
         Condition::Atom(a) => match eval_atom(a, pr, ctx) {
             Ok(r) => Some(r),
             Err(e) => {
@@ -481,6 +513,11 @@ pub fn referenced_checks(list: &[Condition]) -> Vec<String> {
             }
             Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| walk(c, out)),
             Condition::Not(c) => walk(c, out),
+            Condition::RequiredCheck { context, .. } => {
+                if !out.contains(context) {
+                    out.push(context.clone());
+                }
+            }
             Condition::Always => {}
         }
     }
@@ -588,6 +625,93 @@ mod tests {
             );
         }
         assert!(holds("base = main", &p), "other attributes still evaluate");
+    }
+
+    #[test]
+    fn required_check_app_binding_does_not_accept_another_apps_success() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        let head = p.head_sha.clone();
+        let check = |app_id, conclusion| crate::model::CheckRun {
+            name: "ci".into(),
+            app: Some(format!("app-{app_id}")),
+            app_id: Some(app_id),
+            head_sha: head.clone(),
+            conclusion: Some(conclusion),
+            ..Default::default()
+        };
+        p.checks = vec![
+            check(42, Conclusion::Failure),
+            check(43, Conclusion::Success),
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks = vec![
+            check(42, Conclusion::Success),
+            check(43, Conclusion::Failure),
+        ];
+        assert!(eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks = vec![check(43, Conclusion::Success)];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+    }
+
+    #[test]
+    fn app_bound_green_check_cannot_hide_a_red_same_name_status() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        p.checks = vec![
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("app".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Success),
+                ..Default::default()
+            },
+            crate::model::CheckRun {
+                name: "ci".into(),
+                status: true,
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Failure),
+                ..Default::default()
+            },
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks[1].app_id = Some(42);
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+    }
+
+    #[test]
+    fn bound_identity_cannot_be_split_by_inconsistent_slug() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        p.checks = vec![
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("a".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Failure),
+                ..Default::default()
+            },
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("b".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Success),
+                ..Default::default()
+            },
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
     }
 
     /// Table test: every conclusion against every check attribute (MQ-16).
@@ -818,9 +942,12 @@ mod tests {
         // One check over two workflow files: a newer pass in one does not hide a failure in
         // the other.
         let mut w1 = run("test", "h2", Some(Failure), 3);
+        p.required_check_names.insert("test".into());
+        w1.app = Some("github-actions".into());
         w1.workflow = Some("ci.yml".into());
         w1.event = Some("pull_request".into());
         let mut w2 = run("test", "h2", Some(Success), 4);
+        w2.app = Some("github-actions".into());
         w2.workflow = Some("nightly.yml".into());
         w2.event = Some("pull_request".into());
         p.checks = vec![w1.clone(), w2.clone()];
@@ -840,6 +967,63 @@ mod tests {
         assert!(holds("check-failure = lint", &p));
         assert!(holds("check-success = lint", &p));
         assert_eq!(p.current_checks().len(), 2);
+    }
+
+    #[test]
+    fn nonrequired_checks_use_newest_suite_not_newest_run() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut old_suite_late_run = run("KI-Review", "h2", Some(Failure), 100);
+        old_suite_late_run.app = Some("github-actions".into());
+        old_suite_late_run.suite_created_at = Some("2026-01-01T00:00:00Z".into());
+        old_suite_late_run.suite_id = Some(10);
+        let mut new_suite_early_run = run("KI-Review", "h2", Some(Success), 90);
+        new_suite_early_run.app = Some("github-actions".into());
+        new_suite_early_run.suite_created_at = Some("2026-01-02T00:00:00Z".into());
+        new_suite_early_run.suite_id = Some(20);
+        p.checks = vec![old_suite_late_run, new_suite_early_run];
+        assert!(holds("check-success = KI-Review", &p));
+        assert!(holds("#check-failure = 0", &p));
+        // Suite timestamps can tie at GitHub's exposed resolution. ID ordering is not a
+        // documented creation-order guarantee, so do not select a possibly stale success.
+        p.checks[0].suite_created_at = p.checks[1].suite_created_at.clone();
+        assert!(attribute(&p, &Context::default(), "check-success").is_err());
+    }
+
+    #[test]
+    fn mixed_suite_metadata_cannot_be_used_to_select_success() {
+        use Conclusion::*;
+        let mut p = pr();
+        let old = run("lint", "h2", Some(Failure), 100);
+        let mut newer = run("lint", "h2", Some(Success), 90);
+        newer.suite_created_at = Some("2026-01-02T00:00:00Z".into());
+        newer.suite_id = Some(20);
+        p.checks = vec![old, newer];
+        assert!(attribute(&p, &Context::default(), "check-success").is_err());
+        assert!(attribute(&p, &Context::default(), "check-failure").is_err());
+    }
+
+    #[test]
+    fn app_qualified_required_check_preserves_distinct_workflows() {
+        use Conclusion::*;
+        let mut p = pr();
+        p.required_check_names.insert("@github-actions/lint".into());
+        let mut red = run("lint", "h2", Some(Failure), 3);
+        red.app = Some("github-actions".into());
+        red.workflow = Some("a.yml".into());
+        red.event = Some("pull_request".into());
+        red.suite_created_at = Some("2026-01-01T00:00:00Z".into());
+        red.suite_id = Some(1);
+        let mut green = red.clone();
+        green.conclusion = Some(Success);
+        green.workflow = Some("b.yml".into());
+        green.suite_id = Some(2);
+        green.seq = 4;
+        p.checks = vec![red, green];
+        assert!(!holds("check-success = lint", &p));
+        assert!(holds("check-failure = lint", &p));
+        p.checks[0].workflow = None;
+        assert!(attribute(&p, &Context::default(), "check-success").is_err());
     }
 
     /// Critic 1abc, conditions-syntax.

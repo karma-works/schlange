@@ -6,8 +6,7 @@ name: Sandbox
 #   changes). Scenarios without a baseline are only recorded.
 # - schlange-e2e: Schlange active. The job builds the release binary and runs `schlange serve`
 #   with the queue app in the runner (no webhooks: it polls by reconciliation every 10 s).
-#   A scenario is compared with sandbox/baselines/<scenario>.json when that file exists;
-#   without one the run is only recorded (and fails when a wait times out).
+#   Every selected scenario needs a reviewed baseline; a missing baseline or wait timeout fails.
 #
 # Trigger it, also by agents:
 #   gh workflow run sandbox.yml -f repo=queue-lab -f scenarios="s01-single-pr s03-red-batch"
@@ -26,6 +25,10 @@ on:
         description: Scenarios (file names without .json, separated by spaces) or all
         required: false
         default: s01-single-pr
+      update_fixture:
+        description: Reset tracked sandbox main files to the fixture after it is idle
+        type: boolean
+        default: false
   schedule:
     # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.
     - cron: '17 2 * * 0'
@@ -54,6 +57,13 @@ jobs:
           SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
           SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
         run: bash sandbox/ci/write-config.sh
+      - name: Reset selected sandbox fixture
+        if: ${{ inputs.update_fixture }}
+        env:
+          GH_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          REPO: ${{ inputs.repo }}
+        run: bash sandbox/ci/prepare-fixture.sh "$REPO"
       - name: Rust toolchain and cache (schlange-e2e)
         if: ${{ inputs.repo == 'schlange-e2e' }}
         run: rustup show active-toolchain || rustup toolchain install
@@ -71,6 +81,10 @@ jobs:
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
         run: python3 -I sandbox/driver/sandbox.py doctor
+      - name: Test sandbox driver
+        run: |
+          python3 -I -m unittest discover -s sandbox/driver -p 'test_*.py'
+          python3 -I -m unittest discover -s sandbox/ci/tests -p 'test_*.py'
       - name: Scenarios
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}

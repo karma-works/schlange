@@ -20,9 +20,9 @@ and so is Mergify for open source. The content is synthetic.
 Both repos get the same fixture ([sandbox/fixture/](../../sandbox/fixture/)):
 
 - `ci.yml` with the required result `ci-ok`, `light` on PRs and `full` on `mergify/merge-queue/*`.
-- `pr-gate.yml` with the check `Risk class and data protection` (it checks the Datenschutz
-  section). The queue bot login is in the repo variable `QUEUE_BOT_LOGIN` (the line that
-  changes at the switchover).
+- `pr-gate.yml` with the check `Risk class and data protection`. Like Arztagent, it exempts
+  only Mergify's queue bot; Schlange drafts take the Datenschutz heading check. This fixture
+  does not reproduce Arztagent's risk classifier.
 - `ai-review.yml` with the check run `KI-Review` via `pull_request_target`, without a model.
   Red if the PR description contains "KI-Review: rot".
 - Arztagent's `.mergify.yml`, only the logins are replaced.
@@ -91,6 +91,12 @@ then install) → `setup.sh repos` → install Mergify → `setup.sh check`.
 label `halt`, `QUEUE_BOT_LOGIN` and the ruleset. `setup.sh fixture` rewrites the fixture on
 `main`; this resets the content.
 
+For the Actions `update_fixture` input, the workflow first waits for the selected sandbox
+repository to be idle and then replaces all tracked files on its `main` branch with the fixture.
+This removes previously merged scenario files; it is only for these disposable repositories. The workflow's
+concurrency group prevents overlapping Actions runs on the same repository, but the idle
+check and push are not atomic against a separately started local run.
+
 Webhooks: `setup.sh smee` creates a channel on smee.io. The queue app sends its webhooks
 there, and locally `npx smee-client -u <channel> -t http://127.0.0.1:8080/webhook` forwards
 them. For continuous operation the app's webhook URL points to the Schlange instance on the
@@ -116,6 +122,8 @@ python3 -I sandbox/driver/sandbox.py reset --repo queue-lab   # close open scena
 | S09 | red quick check, missing Datenschutz section, red KI-Review | MQ-16, MQ-37 |
 | S10 | `main` moves, text conflict with `main` | MQ-06, MQ-27, MQ-47 |
 | S11 | `@mergifyio dequeue` and `queue` again | MQ-45, MQ-50 |
+| S12 | base moves after both pull requests have entered the queue | MQ-06, MQ-27, MQ-47 |
+| S13 | base moves while the conflicting pull request is still a draft | MQ-06, MQ-27, MQ-47 |
 
 Every run writes `.sandbox-runs/<run>/` (not checked in):
 

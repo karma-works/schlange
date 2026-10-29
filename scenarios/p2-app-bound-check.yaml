@@ -1,0 +1,16 @@
+# A green check without an authenticated app identity cannot satisfy a bound requirement.
+name: p2-app-bound-check
+description: App-bound required checks fail closed when the reporting app is unknown.
+config: configs/two-step.yml
+bound_required_checks:
+  - { context: lint, app_id: 42 }
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: lint, duration: 2m, runs_on: both }
+  - { check: full, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+events:
+  - { at: 0s, open: 1 }
+expect:
+  - { pr: 1, state: open }

@@ -14,7 +14,7 @@ workspace = true
 schlange-config.workspace = true
 schlange-core.workspace = true
 schlange-forge.workspace = true
-schlange-github.workspace = true
+schlange-github = { workspace = true, features = ["test-hooks"] }
 ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,4 +22,5 @@ tiny_http.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 proptest.workspace = true

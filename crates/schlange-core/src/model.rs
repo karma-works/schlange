@@ -20,18 +20,32 @@ pub enum Conclusion {
     Stale,
 }
 
+/// A branch-protection context bound to a numeric forge app identity.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RequiredCheck {
+    pub context: String,
+    pub app_id: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     pub name: String,
     /// Slug of the app that published the run (`github-actions`); `None` if unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<u64>,
     pub head_sha: String,
     /// `None` while queued or in progress.
     pub conclusion: Option<Conclusion>,
     /// Creation order on the forge among runs of the same kind (check runs and commit
     /// statuses are numbered apart, so their orders are never compared).
     pub seq: u64,
+    /// Creation time and identity of the suite containing this run, when supplied by the forge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_id: Option<u64>,
     /// A commit status (one per context), not a check run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub status: bool,
@@ -65,6 +79,9 @@ pub struct PullRequest {
     pub dependabot_update_types: Vec<String>,
     #[serde(default)]
     pub checks: Vec<CheckRun>,
+    /// Context names required by the pull request's base branch.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub required_check_names: BTreeSet<String>,
     /// Merged (by the queue or by hand). A merged pull request is also closed.
     #[serde(default)]
     pub merged: bool,
@@ -211,6 +228,7 @@ impl PullRequest {
             files: vec![],
             dependabot_update_types: vec![],
             checks: vec![],
+            required_check_names: BTreeSet::new(),
             merged: false,
             behind_base: false,
             base_tip: None,
@@ -242,19 +260,31 @@ impl PullRequest {
     ///   later. The docs read it that way for checks the base branch requires; the engine does
     ///   not know which checks are required, so it reads every check that way (fail closed).
     pub fn current_checks(&self) -> Vec<&CheckRun> {
-        type Key<'a> = (bool, &'a str, Option<&'a str>);
+        type Key<'a> = (bool, &'a str, Option<&'a str>, Option<u64>);
         let mut groups: Vec<(Key, Vec<&CheckRun>)> = Vec::new();
         for run in self.checks.iter().filter(|c| c.head_sha == self.head_sha) {
-            let key = (run.status, run.name.as_str(), run.app.as_deref());
+            let key = (
+                run.status,
+                run.name.as_str(),
+                run.app.as_deref(),
+                run.app_id,
+            );
             let suite = (run.workflow.as_deref(), run.event.as_deref());
             let Some((_, runs)) = groups.iter_mut().find(|(k, _)| *k == key) else {
                 groups.push((key, vec![run]));
                 continue;
             };
-            let same =
-                |r: &&CheckRun| run.status || (r.workflow.as_deref(), r.event.as_deref()) == suite;
+            let per_workflow = !run.status
+                && run.app.as_deref() == Some("github-actions")
+                && (self.required_check_names.contains(&run.name)
+                    || self
+                        .required_check_names
+                        .contains(&format!("@github-actions/{}", run.name)));
+            let same = |r: &&CheckRun| {
+                !per_workflow || (r.workflow.as_deref(), r.event.as_deref()) == suite
+            };
             match runs.iter_mut().find(|r| same(r)) {
-                Some(slot) if slot.seq < run.seq => *slot = run,
+                Some(slot) if check_order(slot) < check_order(run) => *slot = run,
                 Some(_) => {}
                 None => runs.push(run),
             }
@@ -270,4 +300,48 @@ impl PullRequest {
             })
             .collect()
     }
+
+    /// Whether check-suite metadata can be compared without guessing its order or identity.
+    pub fn checks_incomplete(&self) -> bool {
+        let checks: Vec<_> = self
+            .checks
+            .iter()
+            .filter(|c| !c.status && c.head_sha == self.head_sha)
+            .collect();
+        checks.iter().any(|run| {
+            let peers: Vec<_> = checks
+                .iter()
+                .filter(|r| r.name == run.name && r.app == run.app)
+                .collect();
+            let has_suite = run.suite_id.is_some() && run.suite_created_at.is_some();
+            let partial_suite = run.suite_id.is_some() != run.suite_created_at.is_some();
+            let mixed = peers
+                .iter()
+                .any(|r| (r.suite_id.is_some() && r.suite_created_at.is_some()) != has_suite);
+            let required = run.app.as_deref() == Some("github-actions")
+                && (self.required_check_names.contains(&run.name)
+                    || self
+                        .required_check_names
+                        .contains(&format!("@github-actions/{}", run.name)));
+            let distinct_suites: BTreeSet<_> = peers.iter().filter_map(|r| r.suite_id).collect();
+            let missing_workflow = required
+                && distinct_suites.len() > 1
+                && peers
+                    .iter()
+                    .any(|r| r.workflow.is_none() || r.event.is_none());
+            let tied_suites = peers.iter().any(|other| {
+                run.suite_id.is_some()
+                    && other.suite_id.is_some()
+                    && run.suite_id != other.suite_id
+                    && run.suite_created_at.is_some()
+                    && run.suite_created_at == other.suite_created_at
+                    && (!required || (run.workflow == other.workflow && run.event == other.event))
+            });
+            partial_suite || mixed || missing_workflow || tied_suites
+        })
+    }
+}
+
+fn check_order(run: &CheckRun) -> (Option<&str>, Option<u64>, u64) {
+    (run.suite_created_at.as_deref(), run.suite_id, run.seq)
 }

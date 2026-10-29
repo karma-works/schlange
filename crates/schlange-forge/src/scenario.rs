@@ -145,6 +145,8 @@ struct CiSpec {
     check: String,
     #[serde(default)]
     app: Option<String>,
+    #[serde(default)]
+    app_id: Option<u64>,
     duration: String,
     #[serde(default = "success")]
     conclusion: Outcome,
@@ -396,6 +398,8 @@ struct ScenarioSpec {
     expect_pull_requests: Vec<crate::runner::ExpectPr>,
     #[serde(default)]
     required_checks: Vec<String>,
+    #[serde(default)]
+    bound_required_checks: Vec<schlange_core::model::RequiredCheck>,
 }
 
 /// Content a pull request writes to a path given only by name.
@@ -449,6 +453,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             c.conclusion.conclusion(),
         );
         s.app = c.app.clone();
+        s.app_id = c.app_id;
         s.runs_on = match c.runs_on.as_deref() {
             None | Some("both") => RunsOn::Both,
             Some("pull_request") => RunsOn::PullRequest,
@@ -528,6 +533,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
             .map(|r| r.branches.clone())
             .unwrap_or_default(),
         required_checks: spec.required_checks.clone(),
+        bound_required_checks: spec.bound_required_checks.clone(),
     };
 
     let mut steps = Vec::new();

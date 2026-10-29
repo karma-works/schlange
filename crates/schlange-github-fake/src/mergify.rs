@@ -73,10 +73,12 @@ impl FakeGithub {
             s.next_issue += 1;
             let d = s.next_issue;
             let list: Vec<String> = prs.iter().map(|n| format!("#{n}")).collect();
+            let created_at = s.server_clock;
             s.prs.insert(
                 d,
                 crate::FakePr {
                     number: d,
+                    created_at,
                     title: format!("other queue: {}", list.join(", ")),
                     body: format!("Embarked pull requests:\n{}\n", list.join("\n")),
                     user: MERGIFY_LOGIN.into(),

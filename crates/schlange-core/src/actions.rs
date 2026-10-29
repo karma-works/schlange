@@ -628,6 +628,9 @@ pub fn condition_text(c: &Condition) -> String {
         Condition::And(cs) => group("all of", cs),
         Condition::Or(cs) => group("any of", cs),
         Condition::Not(c) => format!("not({})", condition_text(c)),
+        Condition::RequiredCheck { context, app_id } => {
+            format!("required check {context} (app {app_id})")
+        }
         Condition::Always => "true".into(),
     }
 }
@@ -723,6 +726,9 @@ pub(crate) fn run(state: &mut State, rules: &Rules, token: Option<u64>, out: &mu
     }
     let numbers: Vec<u64> = state.pull_requests.keys().copied().collect();
     for n in numbers {
+        if state.check_identity_unavailable.contains(&n) {
+            continue;
+        }
         let pr = state.pull_requests[&n].clone();
         if is_queue_pull_request(rules, &pr) || crate::queue::is_car_draft(state, n) {
             continue;
@@ -1531,6 +1537,9 @@ fn resend_overdue(state: &mut State, out: &mut Vec<Decision>) {
     let now = state.now;
     let mut wake = None;
     for (id, p) in state.actions.pending.iter_mut() {
+        if state.check_identity_unavailable.contains(&p.op.number()) {
+            continue;
+        }
         if p.level.is_some() || !resendable(&p.op) {
             continue;
         }
@@ -1555,7 +1564,8 @@ fn resend_overdue(state: &mut State, out: &mut Vec<Decision>) {
         .pending
         .iter()
         .filter(|(_, p)| {
-            now >= p.sent.saturating_add(ACTION_TIMEOUT)
+            !state.check_identity_unavailable.contains(&p.op.number())
+                && now >= p.sent.saturating_add(ACTION_TIMEOUT)
                 && (p.level.is_some() || !resendable(&p.op) || p.attempts >= ACTION_ATTEMPTS)
         })
         .map(|(id, _)| *id)
@@ -1733,6 +1743,9 @@ pub(crate) fn restarted(state: &mut State, out: &mut Vec<Decision>) {
     let ids: Vec<u64> = state.actions.pending.keys().copied().collect();
     for id in ids {
         let p = state.actions.pending.get_mut(&id).expect("pending");
+        if state.check_identity_unavailable.contains(&p.op.number()) {
+            continue;
+        }
         p.sent = now;
         out.push(Decision::Act {
             id,

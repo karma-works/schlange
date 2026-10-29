@@ -52,6 +52,10 @@ pub struct Tester {
     shadow: bool,
     lease: Option<LeaseConfig>,
     pause_before_land: Option<Arc<PauseHook>>,
+    identity_before_attest: Option<Arc<PauseHook>>,
+    identity_before_release: Option<Arc<PauseHook>>,
+    watchdog_pause: Option<Arc<PauseHook>>,
+    watchdog_reconcile_pause: Option<Arc<PauseHook>>,
 }
 
 pub struct Running {
@@ -121,6 +125,10 @@ impl Tester {
             shadow: false,
             lease: None,
             pause_before_land: None,
+            identity_before_attest: None,
+            identity_before_release: None,
+            watchdog_pause: None,
+            watchdog_reconcile_pause: None,
         }
     }
 
@@ -142,6 +150,28 @@ impl Tester {
     /// The first `serve` process pauses before its first landing until the hook is released.
     pub fn pause_before_land(mut self, hook: Arc<PauseHook>) -> Self {
         self.pause_before_land = Some(hook);
+        self
+    }
+
+    /// Tests a state change while an observer is reading.
+    pub fn watchdog_pause(mut self, hook: Arc<PauseHook>) -> Self {
+        self.watchdog_pause = Some(hook);
+        self
+    }
+
+    pub fn identity_before_release(mut self, hook: Arc<PauseHook>) -> Self {
+        self.identity_before_release = Some(hook);
+        self
+    }
+
+    pub fn identity_before_attest(mut self, hook: Arc<PauseHook>) -> Self {
+        self.identity_before_attest = Some(hook);
+        self
+    }
+
+    /// Pause just before an observer requests reconciliation.
+    pub fn watchdog_reconcile_pause(mut self, hook: Arc<PauseHook>) -> Self {
+        self.watchdog_reconcile_pause = Some(hook);
         self
     }
 
@@ -259,6 +289,40 @@ impl Tester {
             }),
             lease: self.lease.clone(),
             pause_before_land: self.pause_before_land.clone(),
+            identity_test_before_attest: self.identity_before_attest.clone(),
+            identity_test_before_release: self.identity_before_release.clone(),
+            identity_test_after_session_rotate: None,
+            identity_test_before_status_ack: None,
+            identity_test_release_count: self
+                .identity_before_release
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            heartbeat_test_offset: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_observations: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_samples: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_cycles: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_partial_prs: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_completed: self
+                .pause_before_land
+                .as_ref()
+                .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            watchdog_test_pause: self.watchdog_pause.clone(),
+            watchdog_test_reconcile_pause: self.watchdog_reconcile_pause.clone(),
         };
         let service = Service::start(serve_cfg.clone(), clock.clone()).expect("serve starts");
         gh.set_webhook_target(Some(service.webhook_url()));

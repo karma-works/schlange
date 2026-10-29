@@ -267,3 +267,107 @@ fn an_accepted_edit_landed_untested_is_rejected() {
         "{v:?}"
     );
 }
+
+#[test]
+fn checker_rejects_landing_without_required_app_bound_check() {
+    use schlange_core::model::RequiredCheck;
+    let mut f = forge();
+    let tip = build_car(&mut f);
+    f.bound_required_checks.insert(
+        "main".into(),
+        vec![RequiredCheck {
+            context: "full".into(),
+            app_id: 42,
+        }],
+    );
+    land(&mut f, MergeMethod::Squash, &tip);
+    let v = violations(&f, &rules("squash", false, false));
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I1:") && line.contains("merge conditions")),
+        "{v:?}"
+    );
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I0:") && line.contains("without green")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn checker_respects_disabled_required_check_injection() {
+    use schlange_config::rules::InjectionMode;
+    use schlange_core::model::RequiredCheck;
+    let mut f = forge();
+    let tip = build_car(&mut f);
+    f.bound_required_checks.insert(
+        "main".into(),
+        vec![RequiredCheck {
+            context: "full".into(),
+            app_id: 42,
+        }],
+    );
+    land(&mut f, MergeMethod::Squash, &tip);
+    let mut r = rules("squash", false, false);
+    r.queue_rules[0].injection_mode = InjectionMode::None;
+    let v = violations(&f, &r);
+    assert!(
+        !v.iter()
+            .any(|line| line.starts_with("I0:") || line.starts_with("I1:")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn checker_rejects_red_required_app_even_if_another_app_is_green() {
+    use schlange_config::rules::InjectionMode;
+    use schlange_core::model::{CheckRun, RequiredCheck};
+    let mut f = forge();
+    let tip = build_car(&mut f);
+    f.bound_required_checks.insert(
+        "main".into(),
+        vec![RequiredCheck {
+            context: "full".into(),
+            app_id: 42,
+        }],
+    );
+    land(&mut f, MergeMethod::Squash, &tip);
+    let draft = f
+        .landings
+        .last_mut()
+        .unwrap()
+        .draft_before
+        .as_mut()
+        .unwrap();
+    draft.checks = vec![
+        CheckRun {
+            name: "full".into(),
+            app: Some("a".into()),
+            app_id: Some(42),
+            head_sha: draft.head_sha.clone(),
+            conclusion: Some(Conclusion::Failure),
+            ..Default::default()
+        },
+        CheckRun {
+            name: "full".into(),
+            app: Some("b".into()),
+            app_id: Some(43),
+            head_sha: draft.head_sha.clone(),
+            conclusion: Some(Conclusion::Success),
+            ..Default::default()
+        },
+    ];
+    let mut r = rules("squash", false, false);
+    r.queue_rules[0].injection_mode = InjectionMode::Merge;
+    let v = violations(&f, &r);
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I0:") && line.contains("without green")),
+        "{v:?}"
+    );
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I1:") && line.contains("merge conditions")),
+        "{v:?}"
+    );
+}

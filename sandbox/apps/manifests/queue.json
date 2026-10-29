@@ -9,6 +9,8 @@
     "issues": "write",
     "checks": "write",
     "statuses": "read",
+    "actions": "read",
+    "administration": "read",
     "workflows": "write"
   },
   "default_events": [

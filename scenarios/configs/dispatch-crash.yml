@@ -1,0 +1,9 @@
+pull_request_rules:
+  - name: preview
+    conditions:
+      - label = preview
+    actions:
+      github_actions:
+        workflow:
+          dispatch:
+            - workflow: preview.yml

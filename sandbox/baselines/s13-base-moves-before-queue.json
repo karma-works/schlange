@@ -1,0 +1,16 @@
+{
+  "scenario": "S13",
+  "repo": "queue-lab",
+  "prs": {
+    "b": {
+      "end": "open",
+      "queued": true,
+      "enter_count": 1,
+      "dequeue_codes": [
+        "PR_DEQUEUED"
+      ]
+    }
+  },
+  "landed": [],
+  "batches": []
+}

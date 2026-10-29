@@ -1,0 +1,14 @@
+{
+  "id": "S15",
+  "title": "Custom KI-Review failure followed by manual green review at the same head",
+  "refs": ["MQ-14", "MQ-15"],
+  "steps": [
+    {"open": "a", "ki_review": "rot"},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "failure", "timeout": 1200},
+    {"assert_unqueued": "a"},
+    {"dispatch_workflow": "ai-review.yml", "pr": "a", "ref": "main", "as": "human", "inputs": {"pr": "{pr}", "result": "success"}},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "workflow": "ai-review.yml", "custom": true, "after_checkpoint": true, "timeout": 1200},
+    {"assert_check_pair": "a", "name": "KI-Review"},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

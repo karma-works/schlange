@@ -83,6 +83,11 @@ pub struct Atom {
 /// A condition tree.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Condition {
+    /// Internal branch-protection requirement, not accepted by the config parser.
+    RequiredCheck {
+        context: String,
+        app_id: u64,
+    },
     Atom(Atom),
     And(Vec<Condition>),
     Or(Vec<Condition>),
@@ -104,7 +109,7 @@ impl Condition {
             Condition::Atom(a) => out.push(a),
             Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| c.collect(out)),
             Condition::Not(c) => c.collect(out),
-            Condition::Always => {}
+            Condition::Always | Condition::RequiredCheck { .. } => {}
         }
     }
 }

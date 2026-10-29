@@ -4,6 +4,8 @@
   "public": false,
   "default_permissions": {
     "metadata": "read",
+    "actions": "read",
+    "administration": "read",
     "contents": "read",
     "issues": "read",
     "pull_requests": "read",

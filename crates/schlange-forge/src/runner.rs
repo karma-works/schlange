@@ -156,6 +156,7 @@ pub struct Setup {
     pub branches: Vec<String>,
     /// Checks the protection of the base branch requires (`branch_protection_injection_mode`).
     pub required_checks: Vec<String>,
+    pub bound_required_checks: Vec<schlange_core::model::RequiredCheck>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -488,6 +489,11 @@ impl<G: GitStore> Simulation<G> {
                 .required_checks
                 .insert(s.base.clone(), s.setup.required_checks.clone());
         }
+        if !s.setup.bound_required_checks.is_empty() {
+            forge
+                .bound_required_checks
+                .insert(s.base.clone(), s.setup.bound_required_checks.clone());
+        }
         for d in &s.prs {
             forge.define(d.clone());
         }
@@ -752,8 +758,35 @@ impl<G: GitStore> Simulation<G> {
             self.reload_config(&mut owned_rules, &mut config_text);
         }
         let rules = &mut owned_rules;
-        for (base, checks) in self.forge.required_checks.clone() {
-            self.deliver(rules, Event::RequiredChecks { base, checks }, None);
+        let bases: std::collections::BTreeSet<_> = self
+            .forge
+            .required_checks
+            .keys()
+            .chain(self.forge.bound_required_checks.keys())
+            .cloned()
+            .collect();
+        for base in bases {
+            let checks = self
+                .forge
+                .required_checks
+                .get(&base)
+                .cloned()
+                .unwrap_or_default();
+            let bound_checks = self
+                .forge
+                .bound_required_checks
+                .get(&base)
+                .cloned()
+                .unwrap_or_default();
+            self.deliver(
+                rules,
+                Event::RequiredChecksTyped {
+                    base,
+                    checks,
+                    bound_checks,
+                },
+                None,
+            );
         }
         let initial = self.wire.snapshot_all(&self.forge, &[]);
         self.deliver(rules, initial, None);

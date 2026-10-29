@@ -124,6 +124,8 @@ pub struct IssueComment {
 /// cannot write it.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Activity {
+    #[serde(default, rename = "ref")]
+    pub ref_name: String,
     #[serde(default)]
     pub before: String,
     #[serde(default)]
@@ -156,6 +158,9 @@ pub struct Label {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Pull {
     pub number: u64,
+    /// GitHub's creation timestamp; absent or invalid is never evidence of new work.
+    #[serde(default)]
+    pub created_at: Option<String>,
     pub state: String,
     #[serde(default)]
     pub title: String,
@@ -204,6 +209,8 @@ pub struct PullFile {
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppRef {
     #[serde(default)]
+    pub id: Option<u64>,
+    #[serde(default)]
     pub slug: Option<String>,
 }
 
@@ -218,7 +225,14 @@ pub struct CheckRunJson {
     #[serde(default)]
     pub app: Option<AppRef>,
     #[serde(default)]
+    pub check_suite: Option<CheckSuiteRef>,
+    #[serde(default)]
     pub output: Option<CheckOutput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CheckSuiteRef {
+    pub id: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -234,11 +248,29 @@ pub struct CheckSuiteJson {
     pub id: u64,
     pub head_sha: String,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
     pub conclusion: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WorkflowRunJson {
+    pub id: u64,
+    pub check_suite_id: u64,
+    pub head_sha: String,
+    pub path: String,
+    pub event: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WorkflowJobJson {
+    pub run_id: u64,
+    pub head_sha: String,
+    pub check_run_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -366,6 +398,23 @@ pub struct BranchRule {
     pub parameters: Option<Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequiredContext {
+    pub context: String,
+    pub app_id: Option<u64>,
+}
+
+fn context_from_value(value: &Value, id_key: &str) -> Option<RequiredContext> {
+    let context = value.get("context")?.as_str()?.to_string();
+    let app = value.get(id_key);
+    let app_id = match app {
+        None | Some(Value::Null) => None,
+        Some(v) if v.as_i64() == Some(-1) => None,
+        Some(v) => Some(v.as_u64()?),
+    };
+    Some(RequiredContext { context, app_id })
+}
+
 impl BranchRule {
     /// The check contexts a `required_status_checks` rule requires.
     pub fn required_checks(&self) -> Vec<String> {
@@ -487,6 +536,22 @@ impl RepoApi {
         )
     }
 
+    fn checked_list<T: serde::de::DeserializeOwned>(
+        &self,
+        rest: &str,
+        prio: Priority,
+        key: &str,
+    ) -> Result<Vec<T>, Error> {
+        let sep = if rest.contains('?') { '&' } else { '?' };
+        self.client.get_paginated_checked(
+            &self.p(&format!("{rest}{sep}per_page=100")),
+            auth_inst(self.installation),
+            prio,
+            30,
+            key,
+        )
+    }
+
     // ---- reads -------------------------------------------------------------------------
 
     pub fn repository(&self, prio: Priority) -> Result<Repository, Error> {
@@ -498,7 +563,15 @@ impl RepoApi {
     }
 
     pub fn open_pulls(&self, prio: Priority) -> Result<Vec<Pull>, Error> {
-        self.list("/pulls?state=open", prio, None)
+        let pulls: Vec<Pull> = self.list("/pulls?state=open", prio, None)?;
+        let mut numbers = std::collections::BTreeSet::new();
+        if pulls.iter().any(|p| !numbers.insert(p.number)) {
+            return Err(Error::Decode {
+                path: self.p("/pulls?state=open"),
+                detail: "duplicate open pull request".into(),
+            });
+        }
+        Ok(pulls)
     }
 
     /// Open pull requests with this head branch (in this repository).
@@ -562,6 +635,20 @@ impl RepoApi {
         )
     }
 
+    /// Bounded complete pagination for replay evidence. Omitted server Link metadata remains a residual.
+    pub fn branch_activity_all(
+        &self,
+        branch: &str,
+        prio: Priority,
+    ) -> Result<Vec<Activity>, Error> {
+        let r = format!("refs/heads/{branch}");
+        self.list(
+            &format!("/activity?ref={}&direction=desc", enc_query(&r)),
+            prio,
+            None,
+        )
+    }
+
     pub fn comment_reactions(&self, id: u64, prio: Priority) -> Result<Vec<Reaction>, Error> {
         self.list(&format!("/issues/comments/{id}/reactions"), prio, None)
     }
@@ -594,25 +681,98 @@ impl RepoApi {
     }
 
     pub fn check_suites(&self, sha: &str, prio: Priority) -> Result<Vec<CheckSuiteJson>, Error> {
-        self.list(
+        self.checked_list(
             &format!("/commits/{}/check-suites", enc_path(sha)),
             prio,
-            Some("check_suites"),
+            "check_suites",
         )
+    }
+
+    /// Every run in this suite, including older attempts, with bounded full pagination.
+    pub fn check_suite_runs(&self, suite: u64, prio: Priority) -> Result<Vec<CheckRunJson>, Error> {
+        self.checked_list(
+            &format!("/check-suites/{suite}/check-runs?filter=all"),
+            prio,
+            "check_runs",
+        )
+    }
+
+    /// Actions workflow runs associated with a suite. GitHub caps filtered searches at 1,000.
+    pub fn workflow_runs_for_suite(
+        &self,
+        suite: u64,
+        prio: Priority,
+    ) -> Result<Vec<WorkflowRunJson>, Error> {
+        let path = format!("/actions/runs?check_suite_id={suite}");
+        let runs = self.checked_list(&path, prio, "workflow_runs")?;
+        if runs.len() >= 1000 {
+            return Err(Error::Decode {
+                path,
+                detail: "workflow run search may be truncated".into(),
+            });
+        }
+        Ok(runs)
+    }
+
+    /// Jobs from all attempts of a workflow run, with a complete paginated response.
+    pub fn workflow_jobs(&self, run: u64, prio: Priority) -> Result<Vec<WorkflowJobJson>, Error> {
+        self.checked_list(
+            &format!("/actions/runs/{run}/jobs?filter=all"),
+            prio,
+            "jobs",
+        )
+    }
+
+    pub fn job_matches_check(
+        &self,
+        job: &WorkflowJobJson,
+        run: u64,
+        head: &str,
+        check: u64,
+    ) -> bool {
+        job.run_id == run
+            && job.head_sha == head
+            && self
+                .client
+                .matches_api_path(&job.check_run_url, &self.p(&format!("/check-runs/{check}")))
     }
 
     /// The combined status with every page of its statuses (GitHub pages them: 30 by
     /// default, 100 at most).
     pub fn combined_status(&self, sha: &str, prio: Priority) -> Result<CombinedStatus, Error> {
-        let path = self.p(&format!("/commits/{}/status?per_page=100", enc_path(sha)));
-        let auth = auth_inst(self.installation);
-        let first = self.client.send("GET", &path, auth, prio, None)?;
-        let mut cs: CombinedStatus = first.json(&path)?;
-        if let Some(next) = first.next_link() {
-            let more: Vec<StatusJson> = self
-                .client
-                .get_paginated(&next, auth, prio, 30, |v| v.get("statuses").cloned())?;
-            cs.statuses.extend(more);
+        let rest = format!("/commits/{}/status", enc_path(sha));
+        let path = self.p(&format!("{rest}?per_page=100"));
+        let first = self
+            .client
+            .send("GET", &path, auth_inst(self.installation), prio, None)?;
+        let value: Value = first.json(&path)?;
+        let total = value
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| Error::Decode {
+                path: path.clone(),
+                detail: "missing status count".into(),
+            })?;
+        if !value.get("statuses").is_some_and(Value::is_array)
+            || !value.get("state").is_some_and(Value::is_string)
+        {
+            return Err(Error::Decode {
+                path: path.clone(),
+                detail: "missing combined status data".into(),
+            });
+        }
+        let mut cs: CombinedStatus = serde_json::from_value(value).map_err(|e| Error::Decode {
+            path: path.clone(),
+            detail: e.to_string(),
+        })?;
+        if first.next_link().is_some() {
+            cs.statuses = self.checked_list(&rest, prio, "statuses")?;
+        }
+        if cs.statuses.len() as u64 != total {
+            return Err(Error::Decode {
+                path,
+                detail: "incomplete combined statuses".into(),
+            });
         }
         Ok(cs)
     }
@@ -682,6 +842,118 @@ impl RepoApi {
     /// for; expect a 403 or 404 and use [`RepoApi::branch_rules`] instead).
     pub fn branch_protection(&self, branch: &str, prio: Priority) -> Result<Value, Error> {
         self.get(&format!("/branches/{}/protection", enc_path(branch)), prio)
+    }
+
+    /// Both active rulesets and classic protection, with app bindings preserved. A 404
+    /// on a protected branch is ambiguous and never interpreted as absence.
+    pub fn required_check_contexts(
+        &self,
+        branch: &str,
+        prio: Priority,
+    ) -> Result<Vec<RequiredContext>, Error> {
+        let installation = self
+            .client
+            .installation_with_priority(self.installation, prio)?;
+        let token_permissions = self
+            .client
+            .installation_token_permissions(self.installation)?;
+        for permission in ["actions", "administration"] {
+            if !matches!(
+                installation.permissions.get(permission).map(String::as_str),
+                Some("read" | "write" | "admin")
+            ) {
+                return Err(Error::Refused(format!(
+                    "installation lacks {permission}: read"
+                )));
+            }
+            if !matches!(
+                token_permissions.get(permission).map(String::as_str),
+                Some("read" | "write" | "admin")
+            ) {
+                return Err(Error::Refused(format!(
+                    "installation token lacks {permission}: read"
+                )));
+            }
+        }
+        let path = format!("/branches/{}", enc_path(branch));
+        let branch_info: Value = self.get(&path, prio)?;
+        let protected = branch_info
+            .get("protected")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| Error::Decode {
+                path: path.clone(),
+                detail: "missing protected status".into(),
+            })?;
+        let mut contexts = Vec::new();
+        for rule in self.branch_rules(branch, prio)? {
+            if rule.kind == "required_status_checks" {
+                let items = rule
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| p.get("required_status_checks"))
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| Error::Decode {
+                        path: path.clone(),
+                        detail: "missing ruleset required checks".into(),
+                    })?;
+                for item in items {
+                    contexts.push(context_from_value(item, "integration_id").ok_or_else(|| {
+                        Error::Decode {
+                            path: path.clone(),
+                            detail: "invalid ruleset required check".into(),
+                        }
+                    })?);
+                }
+            }
+        }
+        if protected {
+            let protection = self.branch_protection(branch, prio)?;
+            let status = protection
+                .get("required_status_checks")
+                .ok_or_else(|| Error::Decode {
+                    path: path.clone(),
+                    detail: "missing classic required_status_checks".into(),
+                })?;
+            if !status.is_null() {
+                if let Some(checks) = status.get("checks") {
+                    let checks = checks.as_array().ok_or_else(|| Error::Decode {
+                        path: path.clone(),
+                        detail: "invalid classic checks".into(),
+                    })?;
+                    for item in checks {
+                        contexts.push(context_from_value(item, "app_id").ok_or_else(|| {
+                            Error::Decode {
+                                path: path.clone(),
+                                detail: "invalid classic check".into(),
+                            }
+                        })?);
+                    }
+                } else {
+                    let items = status
+                        .get("contexts")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| Error::Decode {
+                            path: path.clone(),
+                            detail: "missing classic contexts".into(),
+                        })?;
+                    for item in items {
+                        contexts.push(RequiredContext {
+                            context: item
+                                .as_str()
+                                .ok_or_else(|| Error::Decode {
+                                    path: path.clone(),
+                                    detail: "invalid classic context".into(),
+                                })?
+                                .into(),
+                            app_id: None,
+                        });
+                    }
+                }
+            }
+        }
+        contexts.sort();
+        contexts.dedup();
+        Ok(contexts)
     }
 
     /// The rules that apply to a branch, from rulesets (readable with `metadata: read`).
@@ -827,6 +1099,27 @@ impl RepoApi {
         message: &str,
         prio: Priority,
     ) -> Result<MergeOutcome, Error> {
+        self.merge_into_impl(base, head, message, prio, false)
+    }
+
+    pub(crate) fn merge_into_receipt(
+        &self,
+        base: &str,
+        head: &str,
+        message: &str,
+        prio: Priority,
+    ) -> Result<MergeOutcome, Error> {
+        self.merge_into_impl(base, head, message, prio, true)
+    }
+
+    fn merge_into_impl(
+        &self,
+        base: &str,
+        head: &str,
+        message: &str,
+        prio: Priority,
+        require_created: bool,
+    ) -> Result<MergeOutcome, Error> {
         let resp = self.send(
             "POST",
             "/merges",
@@ -835,6 +1128,10 @@ impl RepoApi {
         );
         match resp {
             Ok(r) if r.status == 204 => Ok(MergeOutcome::NothingToMerge),
+            Ok(r) if require_created && r.status != 201 => Err(Error::Refused(format!(
+                "merge receipt requires HTTP 201, got {}",
+                r.status
+            ))),
             Ok(r) => {
                 let c: RepoCommit = r.json("/merges")?;
                 Ok(MergeOutcome::Merged {
@@ -957,6 +1254,48 @@ impl RepoApi {
             )?
             .json("comments")?;
         Ok(id.id)
+    }
+
+    pub(crate) fn comment_reserved(
+        &self,
+        n: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<u64, Error> {
+        #[derive(Deserialize)]
+        struct Id {
+            id: u64,
+        }
+        let path = self.p(&format!("/issues/{n}/comments"));
+        let id: Id = self
+            .client
+            .send_reserved_cosmetic(
+                "POST",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )?
+            .json("comments")?;
+        Ok(id.id)
+    }
+
+    pub(crate) fn update_comment_reserved(
+        &self,
+        id: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<(), Error> {
+        let path = self.p(&format!("/issues/comments/{id}"));
+        self.client
+            .send_reserved_cosmetic(
+                "PATCH",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )
+            .map(|_| ())
     }
 
     pub fn update_comment(&self, id: u64, body: &str, prio: Priority) -> Result<(), Error> {
@@ -1202,11 +1541,15 @@ impl Client {
     }
 
     pub fn installation(&self, id: u64) -> Result<Installation, Error> {
-        self.get_json(
-            &format!("/app/installations/{id}"),
-            Auth::App,
-            Priority::Normal,
-        )
+        self.installation_with_priority(id, Priority::Normal)
+    }
+
+    pub fn installation_with_priority(
+        &self,
+        id: u64,
+        prio: Priority,
+    ) -> Result<Installation, Error> {
+        self.get_json(&format!("/app/installations/{id}"), Auth::App, prio)
     }
 
     pub fn repo_installation(&self, repo: &RepoName) -> Result<Installation, Error> {
@@ -1246,5 +1589,26 @@ impl Client {
             Priority::Normal,
         )?;
         Ok(r.resources.core)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn check_suite_and_run_identity_is_retained() {
+        let run: CheckRunJson = serde_json::from_value(serde_json::json!({
+            "id": 12, "name": "ci-ok", "head_sha": "abc", "status": "completed",
+            "conclusion": "success", "app": {"slug": "github-actions", "id": 15368}, "check_suite": {"id": 9}
+        })).unwrap();
+        let suite: CheckSuiteJson = serde_json::from_value(serde_json::json!({
+            "id": 9, "head_sha": "abc", "created_at": "2026-01-01T00:00:00Z",
+            "app": {"slug": "github-actions"}
+        }))
+        .unwrap();
+        assert_eq!(run.check_suite.unwrap().id, suite.id);
+        assert_eq!(run.app.unwrap().id, Some(15368));
+        assert_eq!(suite.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
     }
 }

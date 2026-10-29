@@ -9,4 +9,4 @@ shadow mode on Arztagent: [docs/betrieb/schattenbetrieb.md](../docs/betrieb/scha
 | `apps/` | app manifests and one-click registration (`create_app.py`) |
 | `fixture/` | content of the sandbox repos: imitation of the Arztagent checks and `.mergify.yml` |
 | `driver/sandbox.py` | replays scenarios and records the behaviour of the queue |
-| `scenarios/` | scenarios S01–S11 with references to the problem catalogue |
+| `scenarios/` | scenarios S01–S13 with references to the problem catalogue |

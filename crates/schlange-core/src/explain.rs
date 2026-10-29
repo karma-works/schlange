@@ -347,6 +347,21 @@ fn clip(text: &str) -> String {
 /// Evaluates a condition tree with every node's result (three-valued, as `eval::eval`).
 pub fn evaluate(cond: &Condition, pr: &PullRequest, ctx: &Context) -> CondResult {
     match cond {
+        Condition::RequiredCheck { context, app_id } => {
+            let mut errors = Vec::new();
+            let result = eval::eval(cond, pr, ctx, &mut errors);
+            CondResult {
+                condition: format!("required check {context} (app {app_id})"),
+                result: if errors.is_empty() {
+                    Some(result)
+                } else {
+                    None
+                },
+                value: None,
+                error: errors.first().map(ToString::to_string),
+                children: vec![],
+            }
+        }
         Condition::Atom(a) => {
             let (result, error) = match eval::eval_atom(a, pr, ctx) {
                 Ok(r) => (Some(r), None),

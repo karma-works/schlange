@@ -1,5 +1,5 @@
 //! The permissions the GitHub App needs, and no more (W-22). Mergify asks for about fifteen,
-//! among them `administration: read`, `actions: write` and `members: read`. Schlange needs:
+//! among them `actions: write` and `members: read`. Schlange needs:
 //!
 //! | Permission | Level | Why |
 //! |---|---|---|
@@ -9,6 +9,8 @@
 //! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
+//! | `actions` | read | workflow and event identity of required Actions checks |
+//! | `administration` | read | classic branch protection required checks |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
 //! Webhook events: `pull_request`, `check_run`, `check_suite`, `status`, `issue_comment`,
@@ -29,6 +31,8 @@ pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("issues", "read", true),
     ("checks", "write", true),
     ("statuses", "read", true),
+    ("actions", "read", true),
+    ("administration", "read", true),
     ("workflows", "write", false),
 ];
 
@@ -40,6 +44,8 @@ pub const SHADOW_PERMISSIONS: &[(&str, &str, bool)] = &[
     ("issues", "read", true),
     ("checks", "read", true),
     ("statuses", "read", true),
+    ("actions", "read", true),
+    ("administration", "read", true),
 ];
 
 /// The permission list of a mode: shadow or acting.
@@ -134,10 +140,14 @@ mod tests {
         let r = compare(&granted);
         assert_eq!(
             r.missing,
-            vec!["contents: read → write", "issues: none → read"]
+            vec![
+                "contents: read → write",
+                "issues: none → read",
+                "actions: none → read"
+            ]
         );
         assert_eq!(r.optional_missing, vec!["workflows: none → write"]);
-        assert_eq!(r.extra, vec!["administration: read"]);
+        assert!(r.extra.is_empty());
     }
 
     #[test]
@@ -173,5 +183,13 @@ mod tests {
                 "workflows: write"
             ]
         );
+    }
+    #[test]
+    fn acting_and_shadow_require_only_read_for_check_identity() {
+        for permissions in [PERMISSIONS, SHADOW_PERMISSIONS] {
+            for name in ["actions", "administration"] {
+                assert!(permissions.iter().any(|p| *p == (name, "read", true)));
+            }
+        }
     }
 }

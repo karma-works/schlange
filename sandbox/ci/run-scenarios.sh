@@ -18,6 +18,19 @@ if [ "${1:-all}" = all ]; then
   for f in "$HERE"/scenarios/*.json; do set -- "$@" "$(basename "$f" .json)"; done
 fi
 
+# A compatibility run without reference evidence is not a passing comparison. Check all
+# selected baselines before starting any scenarios; queue-lab remains the recording path.
+if [ "$repo" = schlange-e2e ]; then
+  missing=0
+  for s in "$@"; do
+    if [ ! -f "$HERE/baselines/$s.json" ]; then
+      echo "::error::missing baseline for $s; record and review it on queue-lab first"
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ] || exit 1
+fi
+
 # schlange-e2e is Schlange's compatibility test: `schlange serve` must be running
 # (sandbox/ci/start-schlange.sh in the workflow, or by hand with SCHLANGE_URL set).
 if [ "$repo" = schlange-e2e ] && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8080}/healthz" >/dev/null 2>&1; then
@@ -25,22 +38,30 @@ if [ "$repo" = schlange-e2e ] && ! curl -fsS "${SCHLANGE_URL:-http://127.0.0.1:8
   exit 1
 fi
 
-# On schlange-e2e a wait that times out is a failure, with or without a baseline.
-[ "$repo" = schlange-e2e ] && export SANDBOX_FAIL_ON_TIMEOUT=1
+# A timed-out reference is not a valid baseline, and a timed-out comparison is not a pass.
+export SANDBOX_FAIL_ON_TIMEOUT=1
 
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 { echo "### Sandbox $repo"; echo; echo "| Scenario | Result |"; echo "|---|---|"; } >> "$summary"
 failed=0
+result_log="$(mktemp)"
+trap 'rm -f "$result_log"' EXIT
 for s in "$@"; do
   args=(run "$HERE/scenarios/$s.json" --repo "$repo")
   base="$HERE/baselines/$s.json"
   [ -f "$base" ] && args+=(--baseline "$base")
   echo "::group::$s"
-  python3 -I "$HERE/driver/sandbox.py" "${args[@]}"
-  rc=$?
+  python3 -I "$HERE/driver/sandbox.py" "${args[@]}" | tee "$result_log"
+  rc=${PIPESTATUS[0]}
   echo "::endgroup::"
   if [ $rc -eq 0 ]; then
-    result=$([ -f "$base" ] && echo "same as baseline" || echo "recorded (no baseline)")
+    if [ ! -f "$base" ]; then
+      result="recorded (no baseline)"
+    elif grep -q '^KNOWN DEVIATION (documented)' "$result_log"; then
+      result="known deviation (documented)"
+    else
+      result="same as baseline"
+    fi
   else
     result="**Deviation or error** (exit $rc)"; failed=1
   fi
