@@ -74,8 +74,35 @@ App keys and webhook secrets live only locally under `~/.config/schlange-sandbox
    comparison.
 6. **Fine-grained token** for the "human" in the driver:
    <https://github.com/settings/personal-access-tokens/new>, resource owner `schlange-sandbox`,
-   all repos, Contents/Pull requests/Issues: write, Administration: read. Store it at
-   `~/.config/schlange-sandbox/human-token` (chmod 600). It sees only the sandbox.
+   repository access **All repositories** (including future disposable repositories in that
+   organisation). Grant these repository permissions:
+
+   - **Contents**, **Pull requests**, **Issues**: read and write for scenario actions.
+   - **Administration**: read and write to create and configure disposable repositories,
+     including their rulesets.
+   - **Variables**: read and write to set the fixture's `QUEUE_BOT_LOGIN` Actions variable.
+   - **Workflows**: read and write to push the fixture's `.github/workflows/` files.
+   - **GitHub App installation repository access**: read and write
+     (`installation_repositories:write`) to add a disposable repository to the existing queue
+     and driver app installations.
+
+   Store it at `~/.config/schlange-sandbox/human-token` (chmod 600). It sees only the sandbox;
+   keep the resource owner `schlange-sandbox`. Administration read access is insufficient
+   for repository creation. GitHub documents the
+   [creation permissions](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository)
+   and the
+   [installation permissions](https://docs.github.com/en/rest/apps/installations#add-a-repository-to-an-app-installation).
+
+   After changing permissions on the existing token, upload the local value again to update
+   only the `SANDBOX_HUMAN_TOKEN` Actions secret in the Schlange repository:
+
+   ```bash
+   gh secret set SANDBOX_HUMAN_TOKEN --repo karma-works/schlange \
+     < ~/.config/schlange-sandbox/human-token
+   ```
+
+   If the token was regenerated, replace the local file first. Never paste the token into a
+   command argument, issue, pull request or job log.
 
 ### What the script does
 
