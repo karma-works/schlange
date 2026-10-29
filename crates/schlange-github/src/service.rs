@@ -7,7 +7,9 @@
 //!   handled, parses the payload and hands the hints to the repository's worker; it answers
 //!   202 at once. A delivery id is recorded only once the delivery was accepted: a delivery
 //!   answered 400 or 503 is redelivered by GitHub and handled then. `GET /healthz` answers
-//!   `ok` (503 when a worker stopped). `GET /status` needs `Authorization: Bearer <admin
+//!   `ok` (503 when a worker stopped or its loop heartbeat is stale). A long reconciliation
+//!   can also trigger the heartbeat alarm; it is an operational signal, not a restart.
+//!   `GET /status` needs `Authorization: Bearer <admin
 //!   token>` and is off without one: it shows pull request data.
 //! - **Workers.** Each is the single writer for its repository (KONZEPT.md, section 6): it owns
 //!   the engine state and the [`GithubForge`], turns hints into reads, feeds them to the
@@ -35,11 +37,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use schlange_config::rules::Rules;
 use schlange_core::engine::{Control, Freeze};
@@ -157,6 +159,22 @@ pub struct ServeConfig {
     pub lease: Option<LeaseConfig>,
     /// Tests only: pause before the first landing.
     pub pause_before_land: Option<Arc<PauseHook>>,
+    /// Tests only: adds virtual seconds to the monotonic heartbeat clock.
+    pub heartbeat_test_offset: Option<Arc<AtomicU64>>,
+    /// Tests only: counts actionable watchdog observations.
+    pub watchdog_test_observations: Option<Arc<AtomicU64>>,
+    /// Tests only: counts watchdog samples, including failed reads.
+    pub watchdog_test_samples: Option<Arc<AtomicU64>>,
+    /// Tests only: counts watchdog polling cycles, including absent views.
+    pub watchdog_test_cycles: Option<Arc<AtomicU64>>,
+    /// Tests only: highest count of completed PR reads in a deferred sample.
+    pub watchdog_test_partial_prs: Option<Arc<AtomicU64>>,
+    /// Tests only: completed, current observations including non-actionable ones.
+    pub watchdog_test_completed: Option<Arc<AtomicU64>>,
+    /// Tests only: pause an actionable observation before the generation check.
+    pub watchdog_test_pause: Option<Arc<PauseHook>>,
+    /// Tests only: pause before dispatching a watchdog reconciliation.
+    pub watchdog_test_reconcile_pause: Option<Arc<PauseHook>>,
 }
 
 pub enum Msg {
@@ -216,6 +234,13 @@ struct Shared {
     decisions: Mutex<BTreeMap<String, VecDeque<String>>>,
     /// Workers that stopped, with the reason (health check).
     dead: Mutex<BTreeMap<String, String>>,
+    heartbeat: Mutex<BTreeMap<String, Instant>>,
+    heartbeat_limit: Duration,
+    heartbeat_test_offset: Option<Arc<AtomicU64>>,
+    watchdog_views: Mutex<BTreeMap<String, WatchdogView>>,
+    watchdog_generation: AtomicU64,
+    watchdog_memo_total: Arc<AtomicUsize>,
+    watchdog_errors: Mutex<BTreeMap<String, String>>,
     /// Messages handed to workers and not yet handled (tests wait for 0).
     inflight: AtomicUsize,
     stop: AtomicBool,
@@ -223,6 +248,97 @@ struct Shared {
     /// Shadow mode: the facts of each repository, as the worker last published them.
     shadow: Mutex<BTreeMap<String, Vec<ShadowFact>>>,
     store: Option<Store>,
+}
+
+#[derive(Clone)]
+struct WatchdogView {
+    generation: u64,
+    fingerprint: String,
+    state: State,
+    rules: Rules,
+}
+
+fn watchdog_enabled(leading: bool, dead: bool, shadow: bool) -> bool {
+    leading && !dead && !shadow
+}
+
+fn watchdog_fingerprint(state: &State, rules: &Rules) -> Option<String> {
+    let mut stable_state = serde_json::to_value(state).ok()?;
+    let map = stable_state.as_object_mut()?;
+    // Cosmetics are never inputs to queue decisions (rule 9), and time is supplied afresh
+    // when evaluating the snapshot. Their changes cannot invalidate an observation.
+    map.remove("now");
+    map.remove("cosmetics");
+    Some(format!("{rules:?}:{stable_state}"))
+}
+
+fn update_watchdog_view(
+    views: &mut BTreeMap<String, WatchdogView>,
+    generation: &AtomicU64,
+    repo: &str,
+    state: &State,
+    rules: &Rules,
+    fingerprint: Option<String>,
+) {
+    let Some(fingerprint) = fingerprint else {
+        views.remove(repo);
+        return;
+    };
+    if views
+        .get(repo)
+        .is_none_or(|old| old.fingerprint != fingerprint)
+    {
+        let generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        views.insert(
+            repo.to_string(),
+            WatchdogView {
+                generation,
+                fingerprint,
+                state: state.clone(),
+                rules: rules.clone(),
+            },
+        );
+    }
+}
+
+fn supervise_watchdog(shared: &Shared, repo: &str, run: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+        shared
+            .watchdog_errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(repo.to_string(), "observer panicked".into());
+    }
+}
+
+fn stale_workers(beats: &BTreeMap<String, Instant>, now: Instant, limit: Duration) -> Vec<String> {
+    beats
+        .iter()
+        .filter(|(_, at)| now.saturating_duration_since(**at) > limit)
+        .map(|(repo, _)| repo.clone())
+        .collect()
+}
+
+impl Shared {
+    fn watchdog_views(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, WatchdogView>> {
+        self.watchdog_views
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    fn heartbeat_now(&self) -> Instant {
+        Instant::now()
+            + Duration::from_secs(
+                self.heartbeat_test_offset
+                    .as_ref()
+                    .map_or(0, |o| o.load(Ordering::SeqCst)),
+            )
+    }
+    fn beat(&self, repo: &str) {
+        self.heartbeat
+            .lock()
+            .expect("heartbeat")
+            .insert(repo.to_string(), self.heartbeat_now());
+    }
 }
 
 /// Verifies, deduplicates and routes deliveries.
@@ -354,6 +470,13 @@ impl Service {
             statuses: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(BTreeMap::new()),
             dead: Mutex::new(BTreeMap::new()),
+            heartbeat: Mutex::new(BTreeMap::new()),
+            heartbeat_limit: Duration::from_secs(1800).max(cfg.poll.saturating_mul(3)),
+            heartbeat_test_offset: cfg.heartbeat_test_offset.clone(),
+            watchdog_views: Mutex::new(BTreeMap::new()),
+            watchdog_generation: AtomicU64::new(0),
+            watchdog_memo_total: Arc::new(AtomicUsize::new(0)),
+            watchdog_errors: Mutex::new(BTreeMap::new()),
             inflight: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             events: Arc::new(EventLog::new(store.clone())),
@@ -431,6 +554,7 @@ impl Service {
                 check: cfg.check.clone(),
             };
             let forge = maker.make();
+            let observer_forge = maker.make();
             let lease = leases
                 .iter()
                 .find(|l| l.repo_full() == repo.full())
@@ -457,6 +581,17 @@ impl Service {
                 ..State::default()
             };
             let (tx, rx) = channel();
+            let observer_tx = tx.clone();
+            let observer_shared = shared.clone();
+            let observer_clock = clock.clone();
+            let observer_repo = repo.full();
+            let observer_test_observations = cfg.watchdog_test_observations.clone();
+            let observer_test_samples = cfg.watchdog_test_samples.clone();
+            let observer_test_cycles = cfg.watchdog_test_cycles.clone();
+            let observer_test_partial_prs = cfg.watchdog_test_partial_prs.clone();
+            let observer_test_completed = cfg.watchdog_test_completed.clone();
+            let observer_test_pause = cfg.watchdog_test_pause.clone();
+            let observer_test_reconcile_pause = cfg.watchdog_test_reconcile_pause.clone();
             sinks.insert(repo.full(), tx.clone());
             senders.push(tx);
             let mut worker = Worker {
@@ -493,13 +628,159 @@ impl Service {
                 dead: false,
             };
             if worker.lease.is_none() && worker.shadow.is_none() {
-                worker.recover()?;
+                worker.recover().inspect_err(|_| {
+                    shared.stop.store(true, Ordering::SeqCst);
+                })?;
             }
+            shared.beat(&repo.full());
+            let worker_alive = Arc::new(AtomicBool::new(true));
+            let alive_on_exit = worker_alive.clone();
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("worker {}", repo.full()))
-                    .spawn(move || worker.run())
-                    .map_err(|e| e.to_string())?,
+                    .spawn(move || {
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run()));
+                        alive_on_exit.store(false, Ordering::SeqCst);
+                        if let Err(e) = result {
+                            std::panic::resume_unwind(e);
+                        }
+                    })
+                    .map_err(|e| {
+                        shared.stop.store(true, Ordering::SeqCst);
+                        e.to_string()
+                    })?,
+            );
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("watchdog {observer_repo}"))
+                    .spawn(move || {
+                        supervise_watchdog(&observer_shared, &observer_repo, || {
+                            let mut tracker = crate::watchdog::Watchdog::default();
+                            let mut rotation = crate::watchdog::Rotation::default();
+                            let mut probes = crate::watchdog::Probes::with_total(
+                                observer_shared.watchdog_memo_total.clone(),
+                            );
+                            let started = observer_shared.heartbeat_now();
+                            let mut next_sample = started;
+                            while !observer_shared.stop.load(Ordering::SeqCst)
+                                && worker_alive.load(Ordering::SeqCst)
+                            {
+                                let now = observer_shared.heartbeat_now();
+                                if now < next_sample {
+                                    std::thread::sleep(Duration::from_secs(1));
+                                    continue;
+                                }
+                                next_sample = now + Duration::from_secs(60);
+                                let view = observer_shared
+                                    .watchdog_views()
+                                    .get(&observer_repo)
+                                    .cloned();
+                                let Some(view) = view else {
+                                    tracker.observe(0, None, 0, 60);
+                                    probes = crate::watchdog::Probes::with_total(
+                                        observer_shared.watchdog_memo_total.clone(),
+                                    );
+                                    if let Some(count) = &observer_test_cycles {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    continue;
+                                };
+                                let sample = crate::watchdog::candidate(
+                                    &observer_forge,
+                                    &mut probes,
+                                    crate::watchdog::CandidateInput {
+                                        state: &view.state,
+                                        rules: &view.rules,
+                                        now: &|| observer_clock.now(),
+                                        generation: view.generation,
+                                        cursor: rotation.cursor,
+                                        clock: &|| observer_shared.heartbeat_now(),
+                                        valid: &|| {
+                                            !observer_shared.stop.load(Ordering::SeqCst)
+                                                && worker_alive.load(Ordering::SeqCst)
+                                                && observer_shared
+                                                    .watchdog_views()
+                                                    .get(&observer_repo)
+                                                    .is_some_and(|v| {
+                                                        v.generation == view.generation
+                                                    })
+                                        },
+                                    },
+                                );
+                                let crate::watchdog::Sample::Done(candidate, deadline) = sample
+                                else {
+                                    if let crate::watchdog::Sample::Pending(completed) = sample
+                                        && let Some(count) = &observer_test_partial_prs
+                                    {
+                                        count.fetch_max(completed as u64, Ordering::SeqCst);
+                                    }
+                                    rotation.advance(false, false);
+                                    if let Some(count) = &observer_test_samples {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    if let Some(count) = &observer_test_cycles {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    continue;
+                                };
+                                if candidate.is_some()
+                                    && let Some(hook) = &observer_test_pause
+                                {
+                                    hook.pause_once();
+                                }
+                                let current = !observer_shared.stop.load(Ordering::SeqCst)
+                                    && worker_alive.load(Ordering::SeqCst)
+                                    && deadline
+                                        .is_none_or(|end| observer_shared.heartbeat_now() <= end)
+                                    && observer_shared
+                                        .watchdog_views()
+                                        .get(&observer_repo)
+                                        .is_some_and(|v| v.generation == view.generation);
+                                let candidate = if current { candidate.as_deref() } else { None };
+                                if current
+                                    && deadline.is_some()
+                                    && let Some(count) = &observer_test_completed
+                                {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                if candidate.is_some()
+                                    && let Some(count) = &observer_test_observations
+                                {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                let reconcile = tracker.observe(
+                                    view.generation,
+                                    candidate,
+                                    observer_shared
+                                        .heartbeat_now()
+                                        .saturating_duration_since(started)
+                                        .as_secs(),
+                                    60,
+                                );
+                                rotation.advance(candidate.is_some(), reconcile);
+                                if reconcile {
+                                    if let Some(hook) = &observer_test_reconcile_pause {
+                                        hook.pause_once();
+                                    }
+                                    observer_shared.inflight.fetch_add(1, Ordering::SeqCst);
+                                    if observer_tx.send(Msg::Reconcile).is_err() {
+                                        observer_shared.inflight.fetch_sub(1, Ordering::SeqCst);
+                                    }
+                                }
+                                if let Some(count) = &observer_test_samples {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                if let Some(count) = &observer_test_cycles {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                            }
+                        });
+                    })
+                    .map_err(|e| {
+                        shared.stop.store(true, Ordering::SeqCst);
+                        e.to_string()
+                    })?,
             );
         }
         let router = Arc::new(Router {
@@ -513,8 +794,10 @@ impl Service {
         let admin = cfg.admin_token.clone();
         let handler: Handler =
             Arc::new(move |req: &Request| route(req, &router, &sh, admin.as_deref()));
-        let server = Server::start(cfg.listen, cfg.http.clone(), handler)
-            .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
+        let server = Server::start(cfg.listen, cfg.http.clone(), handler).map_err(|e| {
+            shared.stop.store(true, Ordering::SeqCst);
+            format!("cannot listen on {}: {e}", cfg.listen)
+        })?;
         Ok(Service {
             addr: server.addr,
             shared,
@@ -543,6 +826,12 @@ impl Service {
 
     pub fn webhook_url(&self) -> String {
         format!("http://{}/webhook", self.addr)
+    }
+
+    /// Tests: observe shutdown without holding the service or signalling it.
+    pub fn shutdown_probe(&self) -> impl Fn() -> bool + Send + 'static {
+        let shared = self.shared.clone();
+        move || shared.stop.load(Ordering::SeqCst)
     }
 
     /// Messages not yet handled by a worker.
@@ -969,16 +1258,30 @@ fn route(req: &Request, router: &Router, shared: &Shared, admin: Option<&str>) -
         }
         ("GET", "/healthz") => {
             let dead = shared.dead.lock().expect("dead").clone();
-            if dead.is_empty() {
+            let stale = stale_workers(
+                &shared.heartbeat.lock().expect("heartbeat"),
+                shared.heartbeat_now(),
+                shared.heartbeat_limit,
+            );
+            let watchdog_errors = shared
+                .watchdog_errors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if dead.is_empty() && stale.is_empty() && watchdog_errors.is_empty() {
                 Response::text(200, "ok")
             } else {
-                Response::text(
-                    503,
-                    dead.iter()
-                        .map(|(r, why)| format!("worker {r} stopped: {why}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
+                let mut problems: Vec<String> = dead
+                    .iter()
+                    .map(|(r, why)| format!("worker {r} stopped: {why}"))
+                    .collect();
+                problems.extend(stale.iter().map(|r| format!("worker {r} heartbeat stale")));
+                problems.extend(
+                    watchdog_errors
+                        .iter()
+                        .map(|(r, why)| format!("watchdog {r}: {why}")),
+                );
+                Response::text(503, problems.join("\n"))
             }
         }
         ("GET", "/status") => {
@@ -1117,8 +1420,10 @@ impl Worker {
         // last leader (no other process acted since its last write).
         if self.lease.as_ref().is_some_and(|l| l.journal_is_current()) {
             if let Err(e) = self.recover() {
-                self.forge
-                    .note(format!("journal not used after taking the lease: {e}"));
+                self.die(format!(
+                    "cannot recover journal after taking the lease: {e}"
+                ));
+                return;
             }
         } else if self.journal.is_some() {
             self.forge.note(
@@ -1160,6 +1465,7 @@ impl Worker {
 
     fn run(mut self) {
         loop {
+            self.shared.beat(&self.forge.api.repo.full());
             let mut hints = BTreeSet::new();
             let mut handled = 0;
             let mut reconcile = false;
@@ -1210,6 +1516,9 @@ impl Worker {
                 let held = l.ensure();
                 if held && !self.leading {
                     self.take_over();
+                    if self.dead {
+                        return;
+                    }
                 } else if !held && self.leading {
                     self.step_down("another process holds the lease");
                 }
@@ -1748,6 +2057,26 @@ impl Worker {
     }
 
     fn publish(&self) {
+        {
+            let repo = self.forge.api.repo.full();
+            let mut views = self.shared.watchdog_views();
+            if watchdog_enabled(self.leading, self.dead, self.shadow.is_some()) {
+                if let Some(rules) = &self.rules {
+                    update_watchdog_view(
+                        &mut views,
+                        &self.shared.watchdog_generation,
+                        &repo,
+                        &self.state,
+                        rules,
+                        watchdog_fingerprint(&self.state, rules),
+                    );
+                } else {
+                    views.remove(&repo);
+                }
+            } else {
+                views.remove(&repo);
+            }
+        }
         let mut state = serde_json::to_value(&self.state).unwrap_or_default();
         if let Some(o) = state.get_mut("outcomes").and_then(|o| o.as_object_mut()) {
             let extra = o.len().saturating_sub(STATUS_OUTCOMES);
@@ -1853,6 +2182,142 @@ fn is_queue_command(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watchdog_view_ignores_cosmetic_churn_but_not_a_pause() {
+        let rules = Rules::default();
+        let state = State::default();
+        let original = watchdog_fingerprint(&state, &rules);
+        let mut cosmetic = state.clone();
+        cosmetic.now = 500;
+        cosmetic
+            .cosmetics
+            .status
+            .insert(17, "status changed".into());
+        assert_eq!(watchdog_fingerprint(&cosmetic, &rules), original);
+        cosmetic.pause = Some(schlange_core::engine::Pause {
+            reason: "maintenance".into(),
+            at: 500,
+            by: None,
+        });
+        assert_ne!(watchdog_fingerprint(&cosmetic, &rules), original);
+    }
+
+    #[test]
+    fn invalid_watchdog_fingerprint_removes_view_and_prevents_aba() {
+        let rules = Rules::default();
+        let state = State::default();
+        let mut views = BTreeMap::new();
+        let generation = AtomicU64::new(0);
+        update_watchdog_view(
+            &mut views,
+            &generation,
+            "o/r",
+            &state,
+            &rules,
+            watchdog_fingerprint(&state, &rules),
+        );
+        let first = views["o/r"].generation;
+        update_watchdog_view(&mut views, &generation, "o/r", &state, &rules, None);
+        assert!(!views.contains_key("o/r"));
+        update_watchdog_view(
+            &mut views,
+            &generation,
+            "o/r",
+            &state,
+            &rules,
+            watchdog_fingerprint(&state, &rules),
+        );
+        assert_ne!(views["o/r"].generation, first);
+    }
+
+    #[test]
+    fn watchdog_observes_only_a_live_non_shadow_leader() {
+        assert!(watchdog_enabled(true, false, false));
+        assert!(!watchdog_enabled(false, false, false));
+        assert!(!watchdog_enabled(true, true, false));
+        assert!(!watchdog_enabled(true, false, true));
+    }
+
+    #[test]
+    fn heartbeat_alarm_clears_when_worker_resumes() {
+        let now = std::time::Instant::now();
+        let mut beats = BTreeMap::new();
+        beats.insert("o/r".to_string(), now);
+        let limit = Duration::from_secs(60);
+        assert!(stale_workers(&beats, now + limit, limit).is_empty());
+        assert_eq!(
+            stale_workers(&beats, now + limit + Duration::from_secs(1), limit),
+            vec!["o/r"]
+        );
+        beats.insert("o/r".to_string(), now + limit + Duration::from_secs(1));
+        assert!(stale_workers(&beats, now + limit + Duration::from_secs(1), limit).is_empty());
+    }
+
+    #[test]
+    fn health_endpoint_reports_and_clears_stale_worker() {
+        let shared = Arc::new(Shared {
+            statuses: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(BTreeMap::new()),
+            dead: Mutex::new(BTreeMap::new()),
+            heartbeat: Mutex::new(BTreeMap::new()),
+            heartbeat_limit: Duration::from_secs(60),
+            heartbeat_test_offset: None,
+            watchdog_views: Mutex::new(BTreeMap::new()),
+            watchdog_generation: AtomicU64::new(0),
+            watchdog_memo_total: Arc::new(AtomicUsize::new(0)),
+            watchdog_errors: Mutex::new(BTreeMap::new()),
+            inflight: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            events: Arc::new(EventLog::new(None)),
+            shadow: Mutex::new(BTreeMap::new()),
+            store: None,
+        });
+        let router = Router {
+            secret: vec![],
+            dedup: Mutex::new(Dedup::new(10)),
+            store: None,
+            sinks: HashMap::new(),
+            shared: shared.clone(),
+        };
+        let request = Request {
+            method: "GET".into(),
+            url: "/healthz".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        shared.beat("o/r");
+        assert_eq!(route(&request, &router, &shared, None).status, 200);
+        shared
+            .heartbeat
+            .lock()
+            .unwrap()
+            .insert("o/r".into(), Instant::now() - Duration::from_secs(61));
+        let alarm = route(&request, &router, &shared, None);
+        assert_eq!(alarm.status, 503);
+        assert!(
+            String::from_utf8(alarm.body)
+                .unwrap()
+                .contains("worker o/r heartbeat stale")
+        );
+        shared.beat("o/r");
+        assert_eq!(route(&request, &router, &shared, None).status, 200);
+        supervise_watchdog(&shared, "o/r", || {
+            let _guard = shared.watchdog_views.lock().unwrap();
+            panic!("injected observer panic");
+        });
+        assert!(
+            shared.watchdog_views().is_empty(),
+            "worker can still publish after observer panic"
+        );
+        let alarm = route(&request, &router, &shared, None);
+        assert_eq!(alarm.status, 503);
+        assert!(
+            String::from_utf8(alarm.body)
+                .unwrap()
+                .contains("watchdog o/r: observer panicked")
+        );
+    }
 
     #[test]
     fn token_scope_asks_only_for_granted_needed_permissions() {

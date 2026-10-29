@@ -1,0 +1,22 @@
+{
+  "id": "S14",
+  "title": "Same-name Actions checks on the same head in different workflows",
+  "refs": ["MQ-14", "MQ-15"],
+  "steps": [
+    {"open": "a", "draft": true},
+    {"label": "a", "add": "halt", "as": "human"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
+    {"ready": "a"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "after_checkpoint": true, "timeout": 1200},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
+    {"assert_unqueued": "a"},
+    {"dispatch_workflow": "collision-red.yml", "pr": "a", "ref": "pr", "as": "human"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "failure", "workflow": "collision-red.yml", "after_checkpoint": true, "timeout": 1200},
+    {"dispatch_workflow": "collision-green.yml", "pr": "a", "ref": "pr", "as": "human"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "workflow": "collision-green.yml", "after_checkpoint": true, "timeout": 1200},
+    {"assert_check_pair": "a", "name": "ci-ok", "distinct_suites": true},
+    {"assert_unqueued": "a"},
+    {"label": "a", "remove": "halt", "as": "human"},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

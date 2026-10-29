@@ -11,10 +11,15 @@
 # Only the schlange-sandbox organisation and the sandbox credentials are ever used.
 set -euo pipefail
 umask 077
+[ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo 'refused: only schlange-sandbox' >&2; exit 1; }
+case "${SANDBOX_REPO:-schlange-e2e}" in
+  schlange-e2e|schlange-e2e-isolated) ;;
+  *) echo 'refused: unknown active sandbox repository' >&2; exit 1 ;;
+esac
 BIN="${1:-target/release/schlange}"
 CONFIG="${SCHLANGE_SANDBOX_CONFIG:?run write-config.sh first}"
 TMP="${RUNNER_TEMP:?only in the runner}"
-REPO="schlange-sandbox/schlange-e2e"
+REPO="schlange-sandbox/${SANDBOX_REPO:-schlange-e2e}"
 PORT="${SCHLANGE_PORT:-8080}"
 RECONCILE="${RECONCILE:-10}"
 

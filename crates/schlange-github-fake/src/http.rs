@@ -171,6 +171,8 @@ pub(crate) fn serve(server: &tiny_http::Server, inner: &Inner) {
             );
             let path = url.split('?').next().unwrap_or("").to_string();
             st.requests.push(format!("{method} {path} {}", r.status));
+            st.requests_with_query
+                .push(format!("{method} {url} {}", r.status));
             r
         };
         inner.outbox_cv.notify_all();
@@ -260,6 +262,11 @@ fn handle(
         }
         st.run_then(&then);
         match kind {
+            FaultKind::Redirect { status, location } => {
+                let mut r = reply(status, json!({}));
+                r.headers.push(("location".into(), location));
+                return r;
+            }
             FaultKind::Status(s) => return err(s, "injected fault"),
             FaultKind::StatusMessage(s, m) => return err(s, &m),
             FaultKind::RateLimit { retry_after } => {

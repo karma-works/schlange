@@ -157,6 +157,55 @@ fn landing_refused_because_the_base_moved_resets_the_queue() {
 }
 
 #[test]
+fn external_reset_context_survives_restart_and_stale_car_replies() {
+    let mut dr = Driver::new();
+    let old_car = dr.queued_car();
+    dr.snapshot(vec![], &[("main", "b9")]);
+    assert!(dr.state.queued[&1].external_reset);
+    // A checkpoint/restart and replies from the discarded car cannot clear the new context.
+    dr.state = serde_json::from_slice(&serde_json::to_vec(&dr.state).unwrap()).unwrap();
+    dr.feed(Event::Restarted);
+    dr.feed(Event::CarBuilt {
+        car: old_car,
+        branch: "old".into(),
+        head_sha: "old".into(),
+        tree: "old".into(),
+        draft: 999,
+    });
+    dr.feed(Event::CarConflict {
+        car: old_car,
+        number: 1,
+        with_base: true,
+        with: vec![],
+    });
+    assert!(
+        dr.state.queued[&1].external_reset,
+        "stale replies must not clear reset context"
+    );
+    let current = dr.state.trains["main"]
+        .cars
+        .iter()
+        .find(|c| matches!(c.status, schlange_core::queue::CarStatus::Building { .. }))
+        .expect("replacement car")
+        .id;
+    dr.feed(Event::CarConflict {
+        car: current,
+        number: 1,
+        with_base: true,
+        with: vec![],
+    });
+    let schlange_core::engine::Outcome::Dequeued { reason } = &dr.state.outcomes[&1] else {
+        panic!("expected dequeue")
+    };
+    assert_eq!(reason.code, Some(code::PR_DEQUEUED));
+    assert!(reason.text.contains("does not merge onto the base branch"));
+    assert_eq!(
+        dr.state.blocked_heads.get(&1).map(String::as_str),
+        Some("h1")
+    );
+}
+
+#[test]
 fn landing_refused_because_the_head_moved_dequeues() {
     let mut dr = Driver::new();
     let car = dr.queued_car();

@@ -197,6 +197,8 @@ pub fn guard_labels(labels: &[&str]) -> MergeGuard {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultKind {
+    /// Redirect a request to a synthetic location.
+    Redirect { status: u16, location: String },
     /// Answer with this status, do nothing.
     Status(u16),
     /// 429 with `Retry-After`.
@@ -376,6 +378,7 @@ pub(crate) struct St {
     pub hook_seq: u64,
     pub webhook_target: Option<String>,
     pub requests: Vec<String>,
+    pub requests_with_query: Vec<String>,
     pub squashes: Vec<Squash>,
     pub external: BTreeSet<Sha>,
     /// Workflow dispatches: workflow and request body.
@@ -1092,6 +1095,7 @@ impl FakeGithub {
             hook_seq: 0,
             webhook_target: None,
             requests: Vec::new(),
+            requests_with_query: Vec::new(),
             squashes: Vec::new(),
             external: BTreeSet::new(),
             dispatches: Vec::new(),
@@ -1437,6 +1441,11 @@ impl FakeGithub {
         self.with(|s| s.add_comment(n, user, body))
     }
 
+    /// Remove a comment to exercise stale comment IDs in the adapter.
+    pub fn delete_comment(&self, id: u64) {
+        self.with(|s| s.comments.retain(|c| c.id != id));
+    }
+
     /// Sends the `issue_comment.created` webhook of comment `id` again, with a new delivery
     /// id (a webhook redelivered by hand, or a second delivery GitHub does not deduplicate).
     pub fn resend_comment(&self, id: u64) {
@@ -1673,6 +1682,11 @@ impl FakeGithub {
 
     pub fn requests(&self) -> Vec<String> {
         self.with(|s| s.requests.clone())
+    }
+
+    /// Requests with query strings, for pagination assertions.
+    pub fn requests_with_query(&self) -> Vec<String> {
+        self.with(|s| s.requests_with_query.clone())
     }
 
     pub fn deliveries(&self) -> Vec<Delivery> {

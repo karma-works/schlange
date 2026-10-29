@@ -394,6 +394,9 @@ pub struct QueueEntry {
     /// Start of the batch wait (`batch_max_wait_time`).
     pub waiting_since: Time,
     pub status: EntryStatus,
+    /// The base moved outside the queue; clear after the next successful car build.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external_reset: bool,
     /// Who queued it with a command or checkbox; `None` when a rule queued it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
@@ -811,6 +814,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
+            external_reset: false,
             by,
             priority: default_priority(),
             priority_rule: None,

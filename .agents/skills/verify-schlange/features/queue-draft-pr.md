@@ -41,7 +41,7 @@ one pull request at a time in serial mode without retries and with single-step C
 
 ## How to get to it (user POV)
 
-- A draft pull request of the bot appears; in Arztagent `pr-gate.yml` recognises it by branch prefix and bot login.
+- A draft pull request of the bot appears. Arztagent's `pr-gate.yml` recognizes Mergify's bot by branch prefix and login; Schlange drafts instead run the normal gate.
 
 ## Driving it with schlange
 
@@ -55,5 +55,5 @@ Preconditions:
 
 ## Gotchas
 
-- `pr-gate.yml` checks the login `mergify[bot]`; Schlange has another login, which needs one more workflow line (KONZEPT section 2).
+- `pr-gate.yml` exempts only `mergify[bot]`. Schlange drafts contain the required Datenschutz heading, but the real classifier still runs on the combined diff and needs sandbox verification; explicitly recognizing the Schlange bot remains a switchover option.
 - Never clean up user branches, only the strict name pattern (MQ-36).

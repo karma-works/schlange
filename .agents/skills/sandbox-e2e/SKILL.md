@@ -42,7 +42,9 @@ gh run watch "$run" --exit-status
 gh run download "$run" -D evidence/sandbox-$run      # outcome.json, run.json, scenario.json
 ```
 
-`scenarios=all` runs all eleven (about 3–4 hours). The job summary has one row per scenario.
+`scenarios=all` runs every scenario. The job summary has one row per scenario. A Schlange
+compatibility run fails before starting if any selected scenario lacks a reviewed baseline;
+record new baselines on `queue-lab` first.
 
 Local:
 
@@ -61,7 +63,8 @@ $D run sandbox/scenarios/s01-single-pr.json --repo queue-lab
 | Dequeue on `halt`, new push, draft (MQ-07, MQ-09, MQ-11) | S05, S06, S07 | both |
 | `commands_restrictions`, constitution paths (MQ-50, MQ-52) | S08, S11 | both |
 | Checks that never pass, missing check (MQ-16, MQ-37) | S09 | both |
-| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10 | both |
+| Base moves outside the queue, conflicts (MQ-06, MQ-27, MQ-47) | S10, S12, S13, S16, S17 | both; record new reference scenarios first |
+| Same-name Actions checks and manual custom-review retry (MQ-14, MQ-15) | S14, S15 | both; record reference first |
 
 No scenario fits? Write one (section 6) before changing code: the scenario is the test.
 
@@ -99,8 +102,8 @@ target/release/schlange doctor          # must show no FAIL before driving
 $D run sandbox/scenarios/<scenario>.json --repo schlange-e2e --baseline sandbox/baselines/<scenario>.json
 ```
 
-The repository variable `QUEUE_BOT_LOGIN` on `schlange-e2e` is the queue app's bot, so
-`pr-gate.yml` treats Schlange's drafts as queue drafts, the change Arztagent needs at cut-over.
+The fixture exempts only `mergify[bot]` from its PR gate, as Arztagent currently does. Schlange
+drafts take the fixture's heading check; its simplified gate does not run Arztagent's classifier.
 
 **Shadow, on `queue-lab`**, next to Mergify: the same `serve` with `--shadow` and
 `--repo schlange-sandbox/queue-lab`, then `$D run … --repo queue-lab` and
@@ -146,6 +149,10 @@ CI behaviour comes from flags the pull request itself changes (`sandbox/fixture/
 `sleep-full <s>`. Actors: `driver` (the driver app's bot, not allowed to send commands) and
 `human` (the organisation-scoped token, the allowed sender). End every scenario with a `wait`;
 the driver closes the scenario's pull requests after recording unless `--keep` is given.
+
+S14 and S15 use a human token authorized to dispatch workflows. S14 verifies the Actions job's
+check association, workflow, event and head. S15's synthetic manual result uses a custom check:
+its run link is supplied by the app and is only a hint, even after the linked run is validated.
 
 ## 7. Cleanup and troubleshooting
 

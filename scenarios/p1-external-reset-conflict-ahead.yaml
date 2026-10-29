@@ -1,0 +1,20 @@
+# A harmless external reset must not mask a later conflict caused by a queued PR.
+name: p1-external-reset-conflict-ahead
+description: A conflict with an earlier pull request remains specific after an unrelated base reset.
+config: configs/two-step.yml
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: full, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, files: { shared.txt: "first\n" } }
+  - { number: 2, author: bot, files: { shared.txt: "second\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, push_base: { files: { hotfix.txt: "unrelated\n" } } }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: CONFLICT_WITH_BASE_BRANCH }
+expect_log:
+  - "CONFLICT_WITH_PULL_AHEAD"
+  - "MERGE_QUEUE_RESET"

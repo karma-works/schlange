@@ -894,6 +894,7 @@ mod tests {
                 seq: 1,
                 waiting_since: 0,
                 status: EntryStatus::Waiting,
+                external_reset: false,
                 by: None,
                 priority: 2000,
                 priority_rule: None,

@@ -1,0 +1,38 @@
++0:00:00  action    #1 opened by arztagent-bot on main, files: a.txt
++0:00:00  action    #2 opened by arztagent-bot on main, files: shared.txt
++0:01:00  ci        #1 check `Risk class and data protection` completed on 84886d8: success
++0:01:00  ci        #1 check `ci-ok` completed on 84886d8: success
++0:01:00  ci        #1 check `KI-Review` completed on 84886d8: success
++0:01:00  ci        #2 check `Risk class and data protection` completed on ca61873: success
++0:01:00  ci        #2 check `ci-ok` completed on ca61873: success
++0:01:00  ci        #2 check `KI-Review` completed on ca61873: success
++0:01:00  webhook   #1 check `Risk class and data protection` completed on 84886d8: success
++0:01:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:01:00  decision  labels #1 +queued
++0:01:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
++0:01:00  webhook   #2 check `Risk class and data protection` completed on ca61873: success
++0:01:00  decision  enqueue #2 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:01:00  decision  labels #2 +queued
++0:01:00  decision  status comment #2: **Merge queue** · queue `default` — Waiting for its turn: position 2 in queue `default`, behind #1.
++0:02:00  action    direct push to main: c917c3c
++0:06:00  webhook   timer
++0:06:00  decision  build car 3 on mergify/merge-queue/6353138441: base c917c3c + #1 #2 (checks #1 #2)
++0:06:00  reply     car 3: #2 conflicts with the base branch
++0:06:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:06:00  decision  status comment #2: **Merge queue** · queue `default` — Being checked.
++0:06:00  decision  dequeue #2 from `default`: PR_DEQUEUED: the pull request does not merge onto the base branch
++0:06:00  decision  build car 4 on mergify/merge-queue/34fd968ed0: base c917c3c + #1 (checks #1)
++0:06:00  reply     car 4 built at eeeb84f, draft #1000
++0:06:00  decision  labels #2 +dequeued -queued
++0:06:00  decision  status comment #2: **Merge queue** · left the queue — Reason: PR_DEQUEUED: the pull request does not merge onto the base branch — - [ ] Put this pull request back into the queue
++0:06:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:16:00  ci        #1000 check `ci-ok` completed on eeeb84f: success
++0:16:00  webhook   #1000 check `ci-ok` completed on eeeb84f: success
++0:16:00  decision  read #1 #1000 main mergify/merge-queue/34fd968ed0 before acting
++0:16:00  decision  land car 4: squash #1 onto main if it is still c917c3c
++0:16:00  message   #1: Pull request 1 (#1)
++0:16:00  reply     car 4 landed #1 as 4234cfa
++0:16:00  decision  close car 4, delete mergify/merge-queue/34fd968ed0, close #1000
++0:16:00  decision  #1 merged as 4234cfa
++0:16:00  decision  labels #1 -queued
++0:16:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 4234cfa.

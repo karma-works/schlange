@@ -149,6 +149,40 @@ fn the_e2e_flows_in_shadow_send_no_write_request() {
 }
 
 #[test]
+fn watchdog_does_not_observe_shadow_queues() {
+    use schlange_github::service::PauseHook;
+    use std::sync::atomic::Ordering;
+    let hook = PauseHook::new();
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .pause_before_land(hook)
+        .start();
+    let pr = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(pr).wait_queued();
+    let cycles = t.serve_cfg.watchdog_test_cycles.as_ref().unwrap();
+    let samples = t.serve_cfg.watchdog_test_samples.as_ref().unwrap();
+    t.wait_until("initial watchdog cycle", |_| {
+        cycles.load(Ordering::SeqCst) >= 1
+    });
+    let before = cycles.load(Ordering::SeqCst);
+    t.serve_cfg
+        .heartbeat_test_offset
+        .as_ref()
+        .unwrap()
+        .store(61, Ordering::SeqCst);
+    t.wait_until("shadow watchdog cycle", |_| {
+        cycles.load(Ordering::SeqCst) > before
+    });
+    assert_eq!(
+        samples.load(Ordering::SeqCst),
+        0,
+        "shadow state must never be observed"
+    );
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
 fn the_report_agrees_with_the_other_queue_and_names_each_difference() {
     let t = arztagent_ci(Tester::new(ARZTAGENT)).shadow().start();
     // a, b: both queues queue them, test them together and land them in this order.

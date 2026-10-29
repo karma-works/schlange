@@ -21,6 +21,7 @@ pub mod service;
 pub mod shadow;
 pub mod store;
 pub mod time;
+mod watchdog;
 pub mod webhook;
 
 pub use api::RepoName;
