@@ -1,0 +1,16 @@
+{
+  "batches": [],
+  "landed": [],
+  "prs": {
+    "a": {
+      "dequeue_codes": [
+        "PR_DEQUEUED"
+      ],
+      "end": "open",
+      "enter_count": 1,
+      "queued": true
+    }
+  },
+  "repo": "queue-lab",
+  "scenario": "S05"
+}

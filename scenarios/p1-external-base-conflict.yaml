@@ -1,0 +1,20 @@
+# S10 (two independent Mergify sandbox observations): a queued pull request that becomes
+# conflicted after an external base push leaves with PR_DEQUEUED, retaining a conflict reason.
+name: p1-external-base-conflict
+description: An external base push conflicts with a queued pull request.
+config: configs/two-step.yml
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: full, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { shared.txt: "pull request\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 5m, push_base: { files: { shared.txt: "external push\n" } } }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: PR_DEQUEUED, held: dequeued-waits-for-new-head }
+expect_log:
+  - "PR_DEQUEUED: the pull request does not merge onto the base branch"

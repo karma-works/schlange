@@ -1,0 +1,64 @@
+{
+  "feature": "pr",
+  "verdict": "deviating",
+  "findings": [
+    {
+      "subfeature": "Phase 1 acceptance",
+      "verdict": "missing",
+      "evidence": "KONZEPT.md:300 requires two weeks of shadow operation without a differing decision; .agents/skills/verify-schlange/features/S-SHADOW.md:60 says that run has not happened.",
+      "severity": "blocker"
+    },
+    {
+      "subfeature": "GitHub webhook delivery",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/github-integration.md:32 documents that an acknowledged checkbox edit can be lost before processing while its delivery ID survives; service.rs:353 handles deduplication separately from routing.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "S-AUDIT",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/S-AUDIT.md:21 describes merge records and CLI/API queries; line 24 says the MCP query is missing.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "S-CLI",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/S-CLI.md:25 lists queue show as missing.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "S-EXPLAIN",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/S-EXPLAIN.md:38 lists configuration source lines as missing; line 39 lists MCP as missing.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "S-SHADOW",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/S-SHADOW.md:60 identifies the missing real acceptance run and unmeasured comparison latency.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "S-MCP",
+      "verdict": "missing",
+      "evidence": ".agents/skills/verify-schlange/features/S-MCP.md:5 marks the server missing.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "S-SIMULATE",
+      "verdict": "deviating",
+      "evidence": ".agents/skills/verify-schlange/features/S-SIMULATE.md:26 lists repository-wide simulation as missing.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "Sandbox CI helpers",
+      "verdict": "conformant",
+      "evidence": "python3 -m unittest discover -s sandbox/ci/tests: 38 tests passed.",
+      "severity": "info"
+    }
+  ],
+  "missing_tests": [],
+  "clean_room_ok": true,
+  "summary": "Phase 1 is not accepted. This is an incomplete branch review: the normal Cargo commands waited on a build lock, and an isolated workspace build was interrupted before tests, scenarios, or configuration validation completed. The MQ coverage and clean-room checks were not exhaustive; the empty missing_tests list and clean_room_ok value are therefore not verified conclusions. No repository verdict file was written.",
+  "commit": "72eb9296467237a3bfef1463a8dd4292b114528f"
+}

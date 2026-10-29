@@ -299,6 +299,37 @@ impl Checker {
                 .get(&l.base_branch)
                 .cloned()
                 .unwrap_or_default();
+            // An accepted `allow_queue_branch_edit` (a method that lands the batch branch): the
+            // queue branch was pushed on top of the tested head and the conditions are judged
+            // on the draft at that pushed head (the view below), so that head is the tested
+            // one. Without the option, or for any other shape, the car's own head stays the
+            // only tested head and a different one is a violation.
+            let edit_head: Option<String> = rule
+                .filter(|r| {
+                    r.allow_queue_branch_edit
+                        && matches!(
+                            r.merge_method.as_deref(),
+                            Some("merge-batch" | "fast-forward")
+                        )
+                })
+                .and_then(|_| l.draft_before.as_ref().filter(|_| !car.in_place))
+                .map(|d| d.head_sha.clone())
+                .filter(|h| {
+                    *h != car.head
+                        && forge
+                            .repo
+                            .first_parent_history(h)
+                            .iter()
+                            .any(|sha| sha == &car.head)
+                });
+            let car_head = edit_head.clone().unwrap_or_else(|| car.head.clone());
+            let edit_tree = edit_head.as_ref().map(|h| forge.repo.tree_id_of(h));
+            if let Some(h) = &edit_head {
+                // Only the original car and the newly checked tip have evidence. Intermediate
+                // edits are not automatically tested prefixes and must be accounted separately.
+                self.landed_commits.insert(h.clone());
+                self.landed_commits.insert(car.head.clone());
+            }
             let merge_conds = rule.map(|r| {
                 let mut v = if r.merge_conditions.is_empty() {
                     r.queue_conditions.clone()
@@ -351,7 +382,7 @@ impl Checker {
                 self.check("I1", q_ok, t, || {
                     format!("#{} landed while its queue_conditions were false", c.number)
                 });
-                let view = merge_view(before, l.draft_before.as_ref(), &car.head);
+                let view = merge_view(before, l.draft_before.as_ref(), &car_head);
                 let (m_ok, _) = eval::eval_list(conds, &view, &ctx, &mut vec![]);
                 self.check("I1", m_ok, t, || {
                     format!("#{} landed while its merge conditions were false", c.number)
@@ -373,7 +404,7 @@ impl Checker {
                     car.head == before.head_sha
                 } else {
                     l.draft_before.as_ref().is_some_and(|d| {
-                        d.head_sha == car.head
+                        d.head_sha == car_head
                             && d.head_ref == car.branch.clone().unwrap_or_default()
                     })
                 };
@@ -382,7 +413,7 @@ impl Checker {
                         "#{} landed although the draft's head was not the car's tested head {} \
                          (or the conditions were not evaluated on a queue branch)",
                         c.number,
-                        &car.head[..car.head.len().min(7)]
+                        &car_head[..car_head.len().min(7)]
                     )
                 });
             }
@@ -407,8 +438,25 @@ impl Checker {
             let in_place_ff_on_base = car.in_place
                 && idx0 == 0
                 && l.method == MergeMethod::FastForward
-                && forge.repo.is_ancestor(&car.base_sha, &l.commits[0].sha);
+                && in_place_fast_forward_ok(
+                    &forge.repo,
+                    &car.base_sha,
+                    &l.expected_base,
+                    &l.commits[0].sha,
+                );
+            // An accepted branch edit landed by fast-forward: main moves from the tip it had
+            // (whose tree is the tested base's) onto the pushed head, through the tested head.
+            let edited_ff_on_base = edit_head.is_some()
+                && idx0 == 0
+                && l.method == MergeMethod::FastForward
+                && in_place_fast_forward_ok(
+                    &forge.repo,
+                    &car.base_sha,
+                    &l.expected_base,
+                    &l.commits[l.commits.len() - 1].sha,
+                );
             let parent_ok = in_place_ff_on_base
+                || edited_ff_on_base
                 || parent
                     .as_ref()
                     .is_some_and(|p| forge.repo.tree_id_of(p) == expected_parent_tree);
@@ -530,10 +578,11 @@ impl Checker {
                 );
                 let sha = &l.commits[0].sha;
                 let real_tree = forge.repo.tree_id_of(sha);
-                let last_tree = car
-                    .prefix
-                    .get(idx0 + l.commits.len() - 1)
-                    .map(|(_, _, tr)| tr.clone());
+                let last_tree = edit_tree.clone().or_else(|| {
+                    car.prefix
+                        .get(idx0 + l.commits.len() - 1)
+                        .map(|(_, _, tr)| tr.clone())
+                });
                 let ok = l.commits.iter().all(|c| c.sha == *sha)
                     && Some(real_tree) == last_tree
                     && l.commits.iter().enumerate().all(|(k, c)| {
@@ -573,10 +622,14 @@ impl Checker {
                 // The tree as the repository has it, not as the forge's reply claims.
                 let real_tree = forge.repo.tree_id_of(&c.sha);
                 let ok = real_tree == c.tree
-                    && car
-                        .prefix
-                        .get(idx0 + k)
-                        .is_some_and(|(n, _, tree)| *n == c.number && *tree == real_tree);
+                    && car.prefix.get(idx0 + k).is_some_and(|(n, _, tree)| {
+                        let want = if k + 1 == l.commits.len() {
+                            edit_tree.as_ref().unwrap_or(tree)
+                        } else {
+                            tree
+                        };
+                        *n == c.number && *want == real_tree
+                    });
                 self.check("I0", ok, t, || {
                     format!(
                         "commit {} of #{} has a tree that car {} did not build",
@@ -592,7 +645,8 @@ impl Checker {
                     .last()
                     .map(|c| forge.repo.tree_id_of(&c.sha))
                     .unwrap_or_default();
-                let ok = l.commits.len() == 1 && tip == car.tree;
+                let ok = l.commits.len() == 1
+                    && (tip == car.tree || edit_tree.as_ref().is_some_and(|e| *e == tip));
                 self.check("I0", ok, t, || {
                     format!(
                         "strict mode: car {} landed {} commits; the landed tree is not the tree \
@@ -796,6 +850,22 @@ fn merge_view(pr: &PullRequest, draft: Option<&PullRequest>, head: &str) -> Pull
     v
 }
 
+/// An in-place fast-forward lands the pull request's own head. It moves main from the tip it
+/// really had (`actual_tip`, the compare-and-swap value) onto the head, so the head must
+/// contain that tip, and that tip must carry the tree the car was tested on (`tested_base`):
+/// the tested change then sits on the tested base even though the head's first parent is the
+/// pull request's own commit (a rule's `update` merged the base into it).
+fn in_place_fast_forward_ok<G: GitStore>(
+    repo: &G,
+    tested_base: &str,
+    actual_tip: &str,
+    head: &str,
+) -> bool {
+    repo.is_ancestor(actual_tip, head)
+        && repo.is_ancestor(tested_base, head)
+        && repo.tree_id_of(actual_tip) == repo.tree_id_of(tested_base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Checker;
@@ -826,6 +896,7 @@ mod tests {
                 seq: 1,
                 waiting_since: 0,
                 status: EntryStatus::Waiting,
+                external_reset: false,
                 by: None,
                 priority: 2000,
                 priority_rule: None,
@@ -839,6 +910,36 @@ mod tests {
             "{:?}",
             c.results["I2"]
         );
+    }
+
+    /// The in-place fast-forward guard: positive for the update-merge shape, and it rejects a
+    /// landing on a main that moved (different tree than the tested base), on a head that does
+    /// not contain main's tip, and on a head that does not contain the tested base.
+    #[test]
+    fn the_in_place_fast_forward_guard_is_tight() {
+        use super::in_place_fast_forward_ok;
+        let mut f = SimForge::new("main", Tree::new(), vec![], 0);
+        let base = f.read_branch("main").unwrap();
+        let tree = |k: &str, v: &str| -> Tree { [(k.to_string(), v.to_string())].into() };
+        // The pull request's own commit on the tested base, then the base merged into it.
+        let own = f.repo.commit(tree("a", "1"), vec![base.clone()], "own");
+        let merged = f
+            .repo
+            .commit(tree("a", "1"), vec![own.clone(), base.clone()], "merge");
+        assert!(in_place_fast_forward_ok(&f.repo, &base, &base, &merged));
+        // main moved to another tree (an external commit): the tested base is not main's tip.
+        let moved = f
+            .repo
+            .commit(tree("x", "ext"), vec![base.clone()], "external");
+        assert!(!in_place_fast_forward_ok(&f.repo, &base, &moved, &merged));
+        // main moved and the head contains the new tip, but the tip's tree is not the tested one.
+        let on_moved = f
+            .repo
+            .commit(tree("x", "ext"), vec![moved.clone(), own.clone()], "m2");
+        assert!(!in_place_fast_forward_ok(&f.repo, &base, &moved, &on_moved));
+        // A head that does not contain the tested base.
+        let unrelated = f.repo.commit(tree("u", "1"), vec![], "root");
+        assert!(!in_place_fast_forward_ok(&f.repo, &base, &base, &unrelated));
     }
 
     #[test]

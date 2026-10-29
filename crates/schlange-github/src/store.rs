@@ -45,6 +45,8 @@ pub enum StoreError {
     },
     #[error("database {path} has schema version {found}, this binary knows {SCHEMA_VERSION}")]
     Version { path: PathBuf, found: i64 },
+    #[error("database {path} has an invalid schema version")]
+    InvalidVersion { path: PathBuf },
 }
 
 /// One landed pull request (S-AUDIT).
@@ -150,7 +152,13 @@ impl Store {
             })
             .optional()
             .map_err(&e)?;
-        match version.and_then(|v| v.parse::<i64>().ok()) {
+        let version = version
+            .map(|v| {
+                v.parse::<i64>()
+                    .map_err(|_| StoreError::InvalidVersion { path: path.clone() })
+            })
+            .transpose()?;
+        match version {
             None => {
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?1)",
@@ -518,6 +526,47 @@ impl Store {
         })
     }
 
+    /// Advance local fence lineage only while the same unexpired lease owns the journal.
+    pub fn lease_advance_fence(
+        &self,
+        repo: &str,
+        holder: &str,
+        now: impl FnOnce() -> u64,
+        predecessor: Option<&str>,
+        successor: &str,
+    ) -> rusqlite::Result<bool> {
+        self.with(|c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let now = i64::try_from(now())
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT holder, expires FROM lease WHERE repo = ?1",
+                    params![repo],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if !current.is_some_and(|(h, expires)| h == holder && expires > now) {
+                return Ok(false);
+            }
+            let key = format!("fence:{repo}");
+            let before: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if before.as_deref() != predecessor {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                params![key, successor],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// Gives the lease up (a clean shutdown), if `holder` has it.
     pub fn lease_release(&self, repo: &str, holder: &str) -> rusqlite::Result<()> {
         self.with(|c| {
@@ -647,16 +696,19 @@ impl SqliteJournal {
 
     /// The highest intent sequence number on record (to continue numbering after a restart).
     pub fn max_seq(&self) -> Result<u64, JournalError> {
-        self.store
+        let (invalid, max): (bool, i64) = self.store
             .with(|c| {
                 c.query_row(
-                    "SELECT COALESCE(MAX(seq), 0) FROM intents WHERE repo = ?1",
+                    "SELECT EXISTS(SELECT 1 FROM intents WHERE repo = ?1 AND (typeof(seq) != 'integer' OR seq < 0)), COALESCE(MAX(CASE WHEN typeof(seq) = 'integer' THEN seq END), 0) FROM intents WHERE repo = ?1",
                     params![self.repo],
-                    |r| r.get::<_, i64>(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
             })
-            .map(|n| n as u64)
-            .map_err(storage)
+            .map_err(storage)?;
+        if invalid {
+            return Err(JournalError::Storage("invalid intent sequence".into()));
+        }
+        u64::try_from(max).map_err(|_| JournalError::Storage("negative intent sequence".into()))
     }
 }
 
@@ -697,6 +749,8 @@ impl Journal for SqliteJournal {
     }
 
     fn intent(&mut self, seq: u64, decision: &Decision) -> Result<(), JournalError> {
+        let seq = i64::try_from(seq)
+            .map_err(|_| JournalError::Storage("intent sequence out of range".into()))?;
         let text = serde_json::to_string(decision)?;
         let holder = self.holder.clone();
         self.store
@@ -704,8 +758,8 @@ impl Journal for SqliteJournal {
                 let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 check_holder(&tx, &self.repo, holder.as_deref())?;
                 tx.execute(
-                    "INSERT OR REPLACE INTO intents (repo, seq, decision) VALUES (?1, ?2, ?3)",
-                    params![self.repo, seq as i64, text],
+                    "INSERT INTO intents (repo, seq, decision) VALUES (?1, ?2, ?3)",
+                    params![self.repo, seq, text],
                 )?;
                 tx.commit()
             })
@@ -713,14 +767,19 @@ impl Journal for SqliteJournal {
     }
 
     fn done(&mut self, seq: u64) -> Result<(), JournalError> {
+        let seq = i64::try_from(seq)
+            .map_err(|_| JournalError::Storage("intent sequence out of range".into()))?;
+        let holder = self.holder.clone();
         self.store
             .with(|c| {
-                c.execute(
+                let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                check_holder(&tx, &self.repo, holder.as_deref())?;
+                tx.execute(
                     "DELETE FROM intents WHERE repo = ?1 AND seq = ?2",
-                    params![self.repo, seq as i64],
-                )
+                    params![self.repo, seq],
+                )?;
+                tx.commit()
             })
-            .map(|_| ())
             .map_err(storage)
     }
 
@@ -736,28 +795,25 @@ impl Journal for SqliteJournal {
                 .optional()
             })
             .map_err(storage)?;
-        let intents: Vec<(u64, String)> = self
+        let intents: Vec<(i64, String)> = self
             .store
             .with(|c| {
                 let mut st =
                     c.prepare("SELECT seq, decision FROM intents WHERE repo = ?1 ORDER BY seq")?;
                 let rows = st.query_map(params![self.repo], |r| {
-                    Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
                 })?;
                 rows.collect()
             })
             .map_err(storage)?;
         let history = self.store.history(&self.repo).map_err(storage)?;
         let state = match text {
-            Some(t) => match serde_json::from_str::<State>(&t) {
-                Ok(s) => Some(s),
-                // A snapshot this binary cannot read (an older format): start from GitHub's
-                // state, but keep the runtime history.
-                Err(_) => Some(State {
-                    history: history.clone(),
-                    ..State::default()
-                }),
-            },
+            Some(t) => Some(serde_json::from_str::<State>(&t)?),
+            None if !intents.is_empty() => {
+                return Err(JournalError::Storage(
+                    "pending intents have no checkpoint".into(),
+                ));
+            }
             None if history.is_empty() && intents.is_empty() => None,
             None => Some(State {
                 history,
@@ -769,8 +825,12 @@ impl Journal for SqliteJournal {
         };
         let in_doubt = intents
             .into_iter()
-            .filter_map(|(seq, d)| serde_json::from_str(&d).ok().map(|d| (seq, d)))
-            .collect();
+            .map(|(seq, d)| {
+                let seq = u64::try_from(seq)
+                    .map_err(|_| JournalError::Storage("negative intent sequence".into()))?;
+                Ok((seq, serde_json::from_str(&d)?))
+            })
+            .collect::<Result<Vec<_>, JournalError>>()?;
         Ok(Some(Recovered { state, in_doubt }))
     }
 }
@@ -787,6 +847,205 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn corrupt_journal_records_are_not_silently_discarded() {
+        let d = dir("corrupt-records");
+        let s = Store::open(&d).unwrap();
+        let mut j = s.journal("o/r");
+        j.checkpoint(&State::default()).unwrap();
+        s.with(|c| {
+            c.execute(
+                "UPDATE checkpoints SET state = ?1 WHERE repo = ?2",
+                params!["{", "o/r"],
+            )
+        })
+        .unwrap();
+        assert!(
+            j.recover().is_err(),
+            "corrupt checkpoint must not become empty state"
+        );
+        let stored: String = s
+            .with(|c| {
+                c.query_row(
+                    "SELECT state FROM checkpoints WHERE repo = ?1",
+                    params!["o/r"],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(stored, "{");
+        j.checkpoint(&State::default()).unwrap();
+        j.intent(1, &Decision::WakeAt { at: 99 }).unwrap();
+        j.intent(2, &Decision::WakeAt { at: 100 }).unwrap();
+        s.with(|c| {
+            c.execute(
+                "UPDATE intents SET decision = ?1 WHERE repo = ?2 AND seq = 2",
+                params!["{", "o/r"],
+            )
+        })
+        .unwrap();
+        assert!(j.recover().is_err(), "corrupt intent must not disappear");
+        let stored: String = s
+            .with(|c| {
+                c.query_row(
+                    "SELECT decision FROM intents WHERE repo = ?1 AND seq = 2",
+                    params!["o/r"],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(stored, "{");
+        j.done(2).unwrap();
+        s.with(|c| c.execute("DELETE FROM checkpoints WHERE repo = ?1", params!["o/r"]))
+            .unwrap();
+        assert!(
+            j.recover().is_err(),
+            "intents without their checkpoint must not be replayed against empty state"
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn malformed_schema_version_is_not_rewritten() {
+        let d = dir("invalid-schema-version");
+        {
+            let s = Store::open(&d).unwrap();
+            s.with(|c| c.execute("UPDATE meta SET value = 'invalid' WHERE key = 'schema'", []))
+                .unwrap();
+        }
+        assert!(matches!(
+            Store::open(&d),
+            Err(StoreError::InvalidVersion { .. })
+        ));
+        let c = Connection::open(d.join("schlange.db")).unwrap();
+        let version: String = c
+            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, "invalid");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn invalid_intent_sequences_fail_without_changing_rows() {
+        let d = dir("invalid-intent-seq");
+        let s = Store::open(&d).unwrap();
+        let mut j = s.journal("o/r");
+        j.checkpoint(&State::default()).unwrap();
+        let original = Decision::WakeAt { at: 99 };
+        j.intent(7, &original).unwrap();
+        let text = serde_json::to_string(&original).unwrap();
+        s.with(|c| {
+            c.execute(
+                "INSERT INTO intents (repo, seq, decision) VALUES (?1, -1, ?2)",
+                params!["o/r", text],
+            )
+        })
+        .unwrap();
+        assert!(j.recover().is_err(), "negative sequence must fail recovery");
+        assert!(
+            j.max_seq().is_err(),
+            "a positive maximum must not hide a negative sequence"
+        );
+        assert!(
+            j.done(u64::MAX).is_err(),
+            "unsigned overflow must not delete the negative row"
+        );
+        assert!(
+            j.intent(u64::MAX, &original).is_err(),
+            "unsigned overflow must not insert"
+        );
+        let count: i64 = s
+            .with(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM intents WHERE repo = ?1",
+                    params!["o/r"],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+        s.with(|c| {
+            c.execute(
+                "DELETE FROM intents WHERE repo = ?1 AND seq = -1",
+                params!["o/r"],
+            )
+        })
+        .unwrap();
+        j.intent(i64::MAX as u64, &original).unwrap();
+        assert_eq!(j.max_seq().unwrap(), i64::MAX as u64);
+        assert_eq!(j.recover().unwrap().unwrap().in_doubt.len(), 2);
+        assert!(j.intent(i64::MAX as u64 + 1, &original).is_err());
+        s.with(|c| {
+            c.execute(
+                "INSERT INTO intents (repo, seq, decision) VALUES (?1, 7.5, ?2)",
+                params!["o/r", text],
+            )
+        })
+        .unwrap();
+        assert!(
+            j.max_seq().is_err(),
+            "an interior non-integer sequence must not be hidden by valid extrema"
+        );
+        assert!(j.recover().is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn lost_holder_cannot_complete_successors_intent() {
+        let d = dir("intent-holder");
+        let s = Store::open(&d).unwrap();
+        assert!(s.lease_acquire("o/r", "a", 100, 130).unwrap());
+        let mut a = s.journal("o/r").fenced("a");
+        a.checkpoint(&State::default()).unwrap();
+        assert!(s.lease_acquire("o/r", "b", 130, 160).unwrap());
+        let mut b = s.journal("o/r").fenced("b");
+        let decision = Decision::WakeAt { at: 99 };
+        b.intent(1, &decision).unwrap();
+        assert!(
+            a.done(1).is_err(),
+            "old holder cannot delete successor's intent"
+        );
+        assert_eq!(b.recover().unwrap().unwrap().in_doubt, vec![(1, decision)]);
+        b.done(1).unwrap();
+        assert!(b.recover().unwrap().unwrap().in_doubt.is_empty());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn duplicate_intent_does_not_replace_existing_decision() {
+        let d = dir("intent-duplicate");
+        let s = Store::open(&d).unwrap();
+        let mut j = s.journal("o/r");
+        j.checkpoint(&State::default()).unwrap();
+        let original = Decision::WakeAt { at: 99 };
+        j.intent(1, &original).unwrap();
+        assert!(j.intent(1, &Decision::WakeAt { at: 100 }).is_err());
+        assert_eq!(j.recover().unwrap().unwrap().in_doubt, vec![(1, original)]);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn journal_recovers_older_state_with_defaulted_fields() {
+        let d = dir("legacy-state");
+        let s = Store::open(&d).unwrap();
+        let mut j = s.journal("o/r");
+        j.checkpoint(&State::default()).unwrap();
+        let mut value = serde_json::to_value(State::default()).unwrap();
+        value.as_object_mut().unwrap().remove("seen_comments");
+        let text = serde_json::to_string(&value).unwrap();
+        s.with(|c| {
+            c.execute(
+                "UPDATE checkpoints SET state = ?1 WHERE repo = ?2",
+                params![text, "o/r"],
+            )
+        })
+        .unwrap();
+        assert!(j.recover().unwrap().unwrap().state.seen_comments.is_empty());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
@@ -861,6 +1120,94 @@ mod tests {
     }
 
     #[test]
+    fn fence_metadata_update_requires_current_unexpired_holder_and_matching_predecessor() {
+        let d = dir("fence-metadata-holder");
+        let a = Store::open(&d).unwrap();
+        let b = Store::open(&d).unwrap();
+        assert!(a.lease_acquire("o/r", "a", 100, 130).unwrap());
+        assert!(
+            a.lease_advance_fence("o/r", "a", || 110, None, "first")
+                .unwrap()
+        );
+        assert!(
+            !a.lease_advance_fence("o/r", "a", || 130, Some("first"), "expired")
+                .unwrap()
+        );
+        assert!(b.lease_acquire("o/r", "b", 130, 160).unwrap());
+        assert!(
+            !a.lease_advance_fence("o/r", "a", || 131, Some("first"), "stale")
+                .unwrap()
+        );
+        assert!(
+            !b.lease_advance_fence("o/r", "b", || 131, Some("wrong"), "wrong")
+                .unwrap()
+        );
+        assert_eq!(b.meta("fence:o/r").unwrap().as_deref(), Some("first"));
+        assert!(
+            b.lease_advance_fence("o/r", "b", || 131, Some("first"), "second")
+                .unwrap()
+        );
+        assert_eq!(a.meta("fence:o/r").unwrap().as_deref(), Some("second"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn fence_metadata_samples_expiry_after_waiting_for_the_sqlite_lock() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let d = dir("fence-metadata-lock");
+        let a = Store::open(&d).unwrap();
+        assert!(a.lease_acquire("o/r", "a", 100, 130).unwrap());
+        let mut other = rusqlite::Connection::open(d.join("schlange.db")).unwrap();
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let time = Arc::new(AtomicU64::new(110));
+        let worker_time = Arc::clone(&time);
+        let (started, start_received) = mpsc::channel();
+        let (sampled, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            a.lease_advance_fence(
+                "o/r",
+                "a",
+                || {
+                    sampled.send(()).unwrap();
+                    worker_time.load(Ordering::SeqCst)
+                },
+                None,
+                "first",
+            )
+        });
+        start_received.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+        time.store(130, Ordering::SeqCst);
+        tx.rollback().unwrap();
+        assert!(!worker.join().unwrap().unwrap());
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn fence_metadata_clock_is_read_under_the_write_lock() {
+        use std::time::Duration;
+
+        let d = dir("fence-clock-under-lock");
+        let s = Store::open(&d).unwrap();
+        assert!(s.lease_acquire("o/r", "a", 100, 130).unwrap());
+        let other = rusqlite::Connection::open(d.join("schlange.db")).unwrap();
+        other.busy_timeout(Duration::ZERO).unwrap();
+        assert!(s.lease_advance_fence("o/r", "a", || {
+            let e = other.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+            assert!(matches!(e, rusqlite::Error::SqliteFailure(err, _) if err.code == rusqlite::ErrorCode::DatabaseBusy));
+            110
+        }, None, "first").unwrap());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn events_filter_by_pull_request_time_and_page() {
         let d = dir("events");
         let s = Store::open(&d).unwrap();
@@ -914,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_snapshot_keeps_the_history_and_deliveries_are_bounded() {
+    fn an_unreadable_snapshot_is_rejected_and_history_is_preserved() {
         let d = dir("compat");
         let s = Store::open(&d).unwrap();
         let mut state = State::default();
@@ -930,9 +1277,8 @@ mod tests {
             )
         })
         .unwrap();
-        let r = j.recover().unwrap().unwrap();
-        assert_eq!(r.state.history, state.history);
-        assert!(r.state.queued.is_empty());
+        assert!(j.recover().is_err());
+        assert_eq!(s.history("o/r").unwrap(), state.history);
         for i in 0..20 {
             s.record_delivery(&format!("g{i}"), i, 5).unwrap();
         }

@@ -1,6 +1,7 @@
 //! End-to-end: `schlange serve` against the fake GitHub, everything over HTTP (REST calls,
 //! signed webhooks), with Arztagent's real `.mergify.yml` read from the repository.
 
+use schlange_github::time::Clock;
 use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, FaultKind, FaultRule, HookFaults, Tester};
 
@@ -51,6 +52,13 @@ fn arztagent_one_pull_request_through_the_draft_to_a_squash_landing() {
     assert_eq!(d.head_ref.len(), QUEUE_PREFIX.len() + 10);
     assert_eq!(d.user, "schlange[bot]");
     assert_eq!(d.title, format!("merge queue: embarking #{pr}"));
+    // Arztagent's PR gate applies its normal data-protection heading check to Schlange drafts.
+    assert!(
+        d.body.lines().any(|line| line == "## Datenschutz"),
+        "{}",
+        d.body
+    );
+    assert!(d.body.contains(&format!("- #{pr} at ")), "{}", d.body);
     assert_eq!(
         t.gh.tree_of(&d.head_sha)
             .get("backend/a.py")
@@ -60,7 +68,21 @@ fn arztagent_one_pull_request_through_the_draft_to_a_squash_landing() {
     // merge_conditions (`check-success = ci-ok`) are judged on the draft: while the full
     // suite runs there, the pull request's own green ci-ok does not count.
     let full_suite = draft.check("ci-ok").start();
-    draft.check("Risk class and data protection").succeed();
+    // Model the heading part of pr-gate's non-Mergify path. The classifier still runs in
+    // the real workflow; this assertion does not simulate or bypass it.
+    let heading = d.body.lines().any(|line| {
+        let hashes = line.bytes().take_while(|b| *b == b'#').count();
+        (1..=6).contains(&hashes)
+            && line[hashes..]
+                .trim_start()
+                .to_lowercase()
+                .starts_with("datenschutz")
+    });
+    if heading {
+        draft.check("Risk class and data protection").succeed();
+    } else {
+        draft.check("Risk class and data protection").fail();
+    }
     t.settle();
     assert!(!t.gh.pr(pr).unwrap().merged);
     assert!(t.status().unwrap().queued.contains(&pr));
@@ -195,8 +217,17 @@ fn lost_webhooks_are_recovered_by_reconciliation() {
             break;
         }
         t.advance("60s");
+        let advanced_to = t.clock.now();
+        t.wait_until("reconciliation after clock advance", |t| {
+            t.status()
+                .is_some_and(|s| s.last_reconcile.is_some_and(|at| at >= advanced_to))
+        });
         t.settle();
     }
+    assert!(
+        t.gh.pr(a).unwrap().merged && t.gh.pr(b).unwrap().merged,
+        "lost webhooks must be recovered within 15 reconciliation intervals"
+    );
     t.pr(a).wait_merged();
     t.pr(b).wait_merged();
     assert_eq!(t.status().unwrap().webhooks, 0, "no webhook arrived");

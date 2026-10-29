@@ -387,6 +387,13 @@
       "supported": true
     },
     {
+      "id": "default:merge_queue.batch_pull_request",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
+    },
+    {
       "id": "default:merge_queue.max_parallel_checks",
       "feature": "queue-speculation",
       "priority": "P1",
@@ -417,13 +424,6 @@
     {
       "id": "default:queue_rules.batch_max_wait_time",
       "feature": "queue-batch",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.batch_pull_request",
-      "feature": "queue-draft-pr",
       "priority": "P1",
       "status": "partial",
       "supported": true

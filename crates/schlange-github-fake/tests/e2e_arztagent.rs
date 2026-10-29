@@ -1,0 +1,322 @@
+//! Arztagent's `.mergify.yml` (the golden copy), the parts the other end-to-end tests do not
+//! pin down, over HTTP against the fake GitHub: Dependabot update types, the
+//! `KI-Review or dependabot` condition, `batch_max_wait_time: 5 minutes`, and
+//! `commands_restrictions` with the real logins `karma-works` and `julianhaegele-create`.
+
+use schlange_github_fake::tester::Running;
+use schlange_github_fake::{CiOn, CiRule, Tester};
+
+const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
+const DEPENDABOT: &str = "dependabot[bot]";
+const BOT: &str = "arztagent-bot";
+
+fn start() -> Running {
+    Tester::new(ARZTAGENT)
+        // Checks are reported by hand so that each test decides which ones exist.
+        .ci(CiRule::fails_on("ci-ok", CiOn::Queue, "BREAKS_FULL_SUITE"))
+        .fake(|c| {
+            c.permissions.insert("workflows".into(), "write".into());
+        })
+        .start()
+}
+
+fn green(t: &Running, n: u64, ki_review: bool) {
+    t.pr(n).check("ci-ok").succeed();
+    t.pr(n).check("Risk class and data protection").succeed();
+    if ki_review {
+        t.pr(n).check("KI-Review").succeed();
+    }
+}
+
+fn dependabot(t: &Running, update_type: &str, path: &str) -> u64 {
+    // The update type comes from the commit message, as Dependabot writes it.
+    t.open_pr(DEPENDABOT)
+        .file(path, "bumped\n")
+        .title(&format!(
+            "Bump a dependency\n\n---\nupdated-dependencies:\n- dependency-name: a\n  update-type: {update_type}\n..."
+        ))
+        .create()
+}
+
+fn queued(t: &Running, n: u64) -> bool {
+    t.status().is_some_and(|s| s.queued.contains(&n))
+}
+
+#[test]
+fn dependabot_patch_and_minor_are_queued_without_ki_review() {
+    let t = start();
+    let patch = dependabot(&t, "version-update:semver-patch", "package.json");
+    let minor = dependabot(&t, "version-update:semver-minor", "lock.json");
+    for n in [patch, minor] {
+        green(&t, n, false);
+    }
+    t.pr(patch).wait_queued();
+    t.pr(minor).wait_queued();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn dependabot_major_and_constitution_updates_are_not_queued() {
+    let t = start();
+    t.permission("karma-works", "admin");
+    let major = dependabot(&t, "version-update:semver-major", "package.json");
+    let workflow = dependabot(
+        &t,
+        "version-update:semver-patch",
+        ".github/workflows/ci.yml",
+    );
+    // A patch update with a failing check on the side: `#check-failure = 0` holds it back.
+    let red = dependabot(&t, "version-update:semver-patch", "other.json");
+    for n in [major, workflow, red] {
+        green(&t, n, false);
+    }
+    t.pr(red).check("lint").fail();
+    t.settle();
+    for (n, why) in [
+        (major, "major update: a human queues it"),
+        (workflow, "workflow update is constitution"),
+        (red, "a failing check"),
+    ] {
+        assert!(!queued(&t, n), "#{n} must not be queued: {why}");
+    }
+    // The major update is queued by a listed human, with the command.
+    t.pr(major).comment("karma-works", "@mergifyio queue");
+    t.pr(major).wait_queued();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn ki_review_is_required_from_everyone_but_dependabot() {
+    let t = start();
+    let agent = t.open_pr(BOT).file("a.py", "a\n").create();
+    let human = t.open_pr("karma-works").file("b.py", "b\n").create();
+    let bump = dependabot(&t, "version-update:semver-patch", "c.json");
+    for n in [agent, human, bump] {
+        green(&t, n, false);
+    }
+    t.pr(bump).wait_queued();
+    t.settle();
+    assert!(!queued(&t, agent) && !queued(&t, human), "no KI-Review yet");
+    t.pr(agent).check("KI-Review").succeed();
+    t.pr(agent).wait_queued();
+    // A failing KI-Review keeps the human's pull request out.
+    t.pr(human).check("KI-Review").fail();
+    t.settle();
+    assert!(!queued(&t, human));
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn a_partial_batch_waits_exactly_five_minutes() {
+    let t = start();
+    let a = t.open_pr(BOT).file("a.py", "a\n").create();
+    let b = t.open_pr(BOT).file("b.py", "b\n").create();
+    for n in [a, b] {
+        green(&t, n, true);
+    }
+    t.pr(a).wait_queued();
+    t.pr(b).wait_queued();
+    t.settle();
+    t.advance("4m");
+    t.settle();
+    assert!(
+        t.gh.open_queue_drafts().is_empty(),
+        "nothing is built before batch_max_wait_time (5 minutes) is over"
+    );
+    t.advance("1m");
+    let draft = t.queue_pr().get();
+    let tree = t.gh.tree_of(&draft.head_sha);
+    assert!(
+        tree.contains_key("a.py") && tree.contains_key("b.py"),
+        "one batch holds both pull requests"
+    );
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(a).wait_merged();
+    t.pr(b).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn only_the_two_listed_humans_may_queue_by_command() {
+    let t = start();
+    for (login, perm) in [
+        ("karma-works", "admin"),
+        ("julianhaegele-create", "write"),
+        (BOT, "write"),
+        ("mallory", "write"),
+    ] {
+        t.permission(login, perm);
+    }
+    let prs: Vec<u64> = (0..4)
+        .map(|i| {
+            t.open_pr(BOT)
+                .file(&format!(".github/workflows/w{i}.yml"), "on: [push]\n")
+                .create()
+        })
+        .collect();
+    for &n in &prs {
+        green(&t, n, true);
+    }
+    t.settle();
+    for (&n, user, allowed) in [
+        (&prs[0], "karma-works", true),
+        (&prs[1], "julianhaegele-create", true),
+        (&prs[2], BOT, false),
+        (&prs[3], "mallory", false),
+    ] {
+        t.pr(n).comment(user, "@mergifyio queue");
+        if allowed {
+            t.pr(n).wait_queued();
+        } else {
+            t.pr(n)
+                .wait_comment(&format!("@{user}, you may not run `queue`"));
+            t.settle();
+            assert!(!queued(&t, n), "#{n}: {user} must not queue");
+        }
+    }
+    t.assert_invariants();
+    t.shutdown();
+}
+
+fn holds(t: &Running, n: u64) -> String {
+    t.status()
+        .map(|s| s.state["holds"][n.to_string()].to_string())
+        .unwrap_or_default()
+}
+
+/// Sticky dequeue (sandbox s05, s07, s11; Mergify's observed behaviour): a pull request that
+/// left the queue because `halt` was set or it went back to draft is not queued again when
+/// the cause goes away. The wait is a hold with a reason; a new head lifts it, and so does a
+/// `queue` command from a listed human (a documented deviation), not one from the agent.
+#[test]
+fn a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human() {
+    let t = start();
+    t.permission("karma-works", "admin");
+    t.permission(BOT, "write");
+    let halted = t.open_pr(BOT).file("a.py", "a\n").create();
+    let drafted = t.open_pr(BOT).file("b.py", "b\n").create();
+    for n in [halted, drafted] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.pr(halted).label("halt");
+    t.gh.set_draft(drafted, true);
+    t.wait_until("both dequeued", |t| {
+        !queued(t, halted) && !queued(t, drafted)
+    });
+    // The agent removes `halt` (it may: it has write access) and the draft is ready again.
+    t.pr(halted).unlabel("halt");
+    t.gh.set_draft(drafted, false);
+    t.settle();
+    t.advance("10m");
+    t.settle();
+    for n in [halted, drafted] {
+        assert!(!queued(&t, n), "#{n} must not rejoin on its own");
+        let h = holds(&t, n);
+        assert!(h.contains("dequeued-waits-for-new-head"), "#{n}: {h}");
+    }
+    assert!(t.gh.open_queue_drafts().is_empty(), "no merge restarted");
+    // The agent's command does not lift it.
+    t.pr(halted).comment(BOT, "@mergifyio queue");
+    t.pr(halted)
+        .wait_comment("@arztagent-bot, you may not run `queue`");
+    t.settle();
+    assert!(!queued(&t, halted));
+    // A new head does; a listed human's command does.
+    t.pr(halted).push("a.py", "a2\n");
+    green(&t, halted, true);
+    t.pr(halted).wait_queued();
+    t.pr(drafted).comment("karma-works", "@mergifyio queue");
+    t.pr(drafted).wait_queued();
+    t.advance("5m");
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(halted).wait_merged();
+    t.pr(drafted).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn manual_dequeue_requires_a_listed_human_to_queue_again() {
+    // Leave queue CI pending so the dequeue happens while a batch is running.
+    let t = Tester::new(ARZTAGENT).start();
+    t.permission("karma-works", "admin");
+    t.permission(BOT, "write");
+    let n = t.open_pr(BOT).file("a.py", "a\n").create();
+    green(&t, n, true);
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    let _draft = t.queue_pr();
+
+    t.pr(n).comment("karma-works", "@mergifyio dequeue");
+    t.wait_until("manually dequeued", |t| !queued(t, n));
+    t.wait_until("old batch retired", |t| t.gh.open_queue_drafts().is_empty());
+    t.settle();
+    assert!(!queued(&t, n));
+    t.pr(n).comment(BOT, "@mergifyio queue");
+    t.pr(n)
+        .wait_comment("@arztagent-bot, you may not run `queue`");
+    t.settle();
+    assert!(!queued(&t, n));
+
+    t.pr(n).comment("karma-works", "@mergifyio queue");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(n).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn external_base_conflict_context_survives_service_restart() {
+    let mut t = Tester::new(ARZTAGENT).persistent().start();
+    let a = t.open_pr(BOT).file("a.py", "a\n").create();
+    let b = t.open_pr(BOT).file("shared.py", "pull request\n").create();
+    for n in [a, b] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.gh.push_base(&[("shared.py".into(), "external push\n".into())]);
+    t.wait_until("queued PR records external reset", |t| {
+        t.status()
+            .is_some_and(|s| s.state["queued"][b.to_string()]["external_reset"] == true)
+    });
+    t.stop_service();
+    t.start_service();
+    assert_eq!(
+        t.status().unwrap().state["queued"][b.to_string()]["external_reset"],
+        true
+    );
+    for _ in 0..8 {
+        t.advance("5m");
+        t.settle();
+        for draft in t.gh.open_queue_drafts() {
+            t.pr(draft.number).check("ci-ok").succeed();
+        }
+        if t.dequeue_code(b).is_some() && t.gh.pr(a).unwrap().merged {
+            break;
+        }
+    }
+    t.wait_until("conflict dequeued", |t| t.dequeue_code(b).is_some());
+    assert_eq!(t.dequeue_code(b).as_deref(), Some("PR_DEQUEUED"));
+    let state = t.status().unwrap().state;
+    assert!(
+        state["outcomes"][b.to_string()]["reason"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not merge onto the base branch")
+    );
+    assert!(
+        state["holds"][b.to_string()]
+            .to_string()
+            .contains("dequeued-waits-for-new-head")
+    );
+    t.pr(a).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}

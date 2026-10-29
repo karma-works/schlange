@@ -226,9 +226,24 @@ fn unknown_mergeability_is_not_taken_for_no_conflict() {
     }
     t.pr(a).wait_merged();
     t.wait_until("#c left the queue", |t| t.dequeue_code(c).is_some());
-    assert_eq!(
-        t.dequeue_code(c).as_deref(),
-        Some("CONFLICT_WITH_BASE_BRANCH")
+    assert_eq!(t.dequeue_code(c).as_deref(), Some("PR_DEQUEUED"));
+    let s = t.status().unwrap();
+    assert!(
+        s.state["outcomes"][c.to_string()]["reason"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not merge onto the base branch")
+    );
+    assert!(
+        s.state["holds"][c.to_string()]
+            .to_string()
+            .contains("dequeued-waits-for-new-head")
+    );
+    t.advance("10m");
+    t.settle();
+    assert!(
+        !t.status().unwrap().queued.contains(&c),
+        "same head remains held"
     );
     t.assert_invariants();
     t.shutdown();

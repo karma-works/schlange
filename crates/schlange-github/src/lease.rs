@@ -134,17 +134,19 @@ impl Lease {
         self.lock().journal_current
     }
 
-    fn meta_key(&self) -> String {
-        format!("fence:{}", self.api.repo.full())
-    }
-
     /// Records the fence commit this data directory's leader wrote, and whether it built on the
     /// one recorded before.
     fn won(&self, built_on: Option<&str>, sha: &str) {
         let Some(s) = &self.store else { return };
-        let before = s.meta(&self.meta_key()).ok().flatten();
-        let current = before.as_deref() == built_on;
-        let _ = s.set_meta(&self.meta_key(), sha);
+        let current = s
+            .lease_advance_fence(
+                &self.repo_full(),
+                &self.cfg.holder,
+                || self.clock.now(),
+                built_on,
+                sha,
+            )
+            .unwrap_or(false);
         self.lock().journal_current = current;
     }
 

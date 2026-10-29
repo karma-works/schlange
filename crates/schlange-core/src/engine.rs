@@ -394,6 +394,9 @@ pub struct QueueEntry {
     /// Start of the batch wait (`batch_max_wait_time`).
     pub waiting_since: Time,
     pub status: EntryStatus,
+    /// The base moved outside the queue; clear after the next successful car build.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external_reset: bool,
     /// Who queued it with a command or checkbox; `None` when a rule queued it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
@@ -811,6 +814,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
+            external_reset: false,
             by,
             priority: default_priority(),
             priority_rule: None,
@@ -1038,6 +1042,11 @@ fn evaluate_pull_request(
                     let conds = crate::gates::queue_conditions(state, q, &entry.base);
                     let (ok, results) = eval::eval_list(&conds, pr, &ctx, &mut errors);
                     if !ok {
+                        // Sticky (observed on Mergify, sandbox s05 and s07): when the cause goes
+                        // away (the label is removed, the draft is ready again) the pull request
+                        // is not queued again at this head; a new head or a `queue` command
+                        // lifts it (`dequeued-waits-for-new-head`).
+                        state.blocked_heads.insert(number, pr.head_sha.clone());
                         Some(DequeueReason::assumed(
                             code::PR_DEQUEUED,
                             format!(
@@ -1074,11 +1083,27 @@ fn evaluate_pull_request(
             store_holds(state, number, holds);
             return;
         }
-        store_holds(state, number, holds.clone());
-        if !holds.is_empty() {
+        if state.blocked_heads.get(&number) == Some(&pr.head_sha) {
+            // Rule 10: the wait is a hold with a reason, never a silent skip.
+            let why = match state.outcomes.get(&number) {
+                Some(Outcome::Dequeued { reason }) => format!(
+                    "{}{}",
+                    reason.code.map(|c| format!("{c}: ")).unwrap_or_default(),
+                    reason.text
+                ),
+                _ => "it left the queue at this head".into(),
+            };
+            holds.push(Hold::wait(
+                "dequeued-waits-for-new-head",
+                format!(
+                    "dequeued ({why}); it rejoins with a new head (a push) or a `queue` command"
+                ),
+            ));
+            store_holds(state, number, holds);
             return;
         }
-        if state.blocked_heads.get(&number) == Some(&pr.head_sha) {
+        store_holds(state, number, holds.clone());
+        if !holds.is_empty() {
             return;
         }
         state.blocked_heads.remove(&number);

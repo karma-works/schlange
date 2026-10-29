@@ -8,23 +8,34 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+      result:
+        description: Synthetic manual review result
+        required: true
+        type: choice
+        options: [success, failure]
 
 permissions:
   contents: read
   checks: write
 
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}
+  group: ai-review-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 jobs:
   review:
     name: Review
     if: >-
-      !github.event.pull_request.draft
+      github.event_name == 'workflow_dispatch' || (!github.event.pull_request.draft
       && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
       && github.event.pull_request.user.login != 'dependabot[bot]'
-      && (github.event.action != 'edited' || github.event.changes.body != null)
+      && (github.event.action != 'edited' || github.event.changes.body != null))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -32,12 +43,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
           BODY: ${{ github.event.pull_request.body }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          MANUAL_RESULT: ${{ inputs.result }}
         run: |
           set -euo pipefail
+          if [ -z "$SHA" ]; then SHA=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha); fi
           id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name=KI-Review -f head_sha="$SHA" \
             -f status=in_progress -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .id)
           sleep "${KI_REVIEW_DELAY:-20}"
-          if printf '%s' "$BODY" | grep -qiE 'KI-Review:[[:space:]]*rot'; then
+          if [ "$MANUAL_RESULT" = failure ] || { [ -z "$MANUAL_RESULT" ] && printf '%s' "$BODY" | grep -qiE 'KI-Review:[[:space:]]*rot'; }; then
             conclusion=failure; summary="Finding (required by the scenario)."
           else
             conclusion=success; summary="No findings."

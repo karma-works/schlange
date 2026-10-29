@@ -40,13 +40,6 @@
       "stage": "support",
       "severity": "unsupported",
       "pointer": "",
-      "message": "default `defaults.queue_rule.batch_pull_request` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
-      "feature": "config-defaults"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
-      "pointer": "",
       "message": "default `defaults.queue_rule.batch_size` is in effect but not supported by Schlange yet (feature config-defaults, P2, partial: not built in this partial feature (`default:defaults.queue_rule.*`))",
       "feature": "config-defaults"
     },
@@ -255,17 +248,6 @@
       }
     },
     {
-      "id": "default:defaults.queue_rule.batch_pull_request",
-      "feature": "config-defaults",
-      "priority": "P2",
-      "status": "partial",
-      "supported": false,
-      "reason": {
-        "kind": "not_built",
-        "pattern": "default:defaults.queue_rule.*"
-      }
-    },
-    {
       "id": "default:defaults.queue_rule.batch_size",
       "feature": "config-defaults",
       "priority": "P2",
@@ -308,6 +290,13 @@
         "kind": "not_built",
         "pattern": "default:defaults.queue_rule.*"
       }
+    },
+    {
+      "id": "default:merge_queue.batch_pull_request",
+      "feature": "queue-draft-pr",
+      "priority": "P1",
+      "status": "partial",
+      "supported": true
     },
     {
       "id": "default:merge_queue.dequeued_label",
@@ -361,13 +350,6 @@
     {
       "id": "default:queue_rules.batch_max_wait_time",
       "feature": "queue-batch",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
-      "id": "default:queue_rules.batch_pull_request",
-      "feature": "queue-draft-pr",
       "priority": "P1",
       "status": "partial",
       "supported": true

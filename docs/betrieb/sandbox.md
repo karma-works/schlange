@@ -16,13 +16,14 @@ and so is Mergify for open source. The content is synthetic.
 |---|---|---|---|
 | `queue-lab` | Mergify | shadow (read only) | differential test: same PRs, compare decisions |
 | `schlange-e2e` | Schlange | active | E2E: queue PRs, rulesets, merges |
+| `schlange-e2e-isolated` | Schlange | active | Disposable E2E without the existing Dependabot fixtures |
 
-Both repos get the same fixture ([sandbox/fixture/](../../sandbox/fixture/)):
+The repos use the same fixture ([sandbox/fixture/](../../sandbox/fixture/)):
 
 - `ci.yml` with the required result `ci-ok`, `light` on PRs and `full` on `mergify/merge-queue/*`.
-- `pr-gate.yml` with the check `Risk class and data protection` (it checks the Datenschutz
-  section). The queue bot login is in the repo variable `QUEUE_BOT_LOGIN` (the line that
-  changes at the switchover).
+- `pr-gate.yml` with the check `Risk class and data protection`. Like Arztagent, it exempts
+  only Mergify's queue bot; Schlange drafts take the Datenschutz heading check. This fixture
+  does not reproduce Arztagent's risk classifier.
 - `ai-review.yml` with the check run `KI-Review` via `pull_request_target`, without a model.
   Red if the PR description contains "KI-Review: rot".
 - Arztagent's `.mergify.yml`, only the logins are replaced.
@@ -118,6 +119,37 @@ then install) → `setup.sh repos` → install Mergify → `setup.sh check`.
 label `halt`, `QUEUE_BOT_LOGIN` and the ruleset. `setup.sh fixture` rewrites the fixture on
 `main`; this resets the content.
 
+For the separate active-test repository, `bash sandbox/setup.sh repos-isolated` creates only
+`schlange-sandbox/schlange-e2e-isolated`; it refuses an existing repository. It writes the
+fixture, adds that repository to the existing queue and driver app installations, verifies
+their repo-scoped tokens, and requires the queue app's ruleset bypass. The sandbox human token
+must be able to create the repository, administer its ruleset and grant a repository to an app
+installation; GitHub documents installation-repository access write for the latter. Actual
+token capabilities must be checked in the sandbox; the script stops on a refusal.
+The isolated setup preflight verifies the token is an administrator of the existing
+`schlange-e2e` repository without requiring access to the organization-membership API. That
+check does not prove organization ownership or permission to create repositories: GitHub
+enforces those permissions when the setup requests each operation.
+
+If setup stops after the fixture was pushed, `bash sandbox/setup.sh finish-isolated` resumes
+only after confirming the exact repository identity, an exact fixture Git tree, and no open pull
+requests. It does not reset existing contents. A failure before the fixture was pushed, or an
+unexpected tree, needs manual inspection; the resume command refuses it. Both app
+installations may need their repository selection approved by an organization owner. The
+existing `schlange-e2e` Dependabot pull requests are not part of this setup.
+
+In Actions, select `repo=schlange-e2e-isolated` and `isolated_setup=create` (or `resume` after
+a verified partial setup). This is a provisioning-only run: it cannot be combined with
+inspection or fixture reset and does not start Schlange or run scenarios. It uses the sandbox
+secrets already installed in Actions. A missing permission fails the run; a successful run
+does not itself establish scenario compatibility.
+
+For the Actions `update_fixture` input, the workflow first waits for the selected sandbox
+repository to be idle and then replaces all tracked files on its `main` branch with the fixture.
+This removes previously merged scenario files; it is only for these disposable repositories. The workflow's
+concurrency group prevents overlapping Actions runs on the same repository, but the idle
+check and push are not atomic against a separately started local run.
+
 Webhooks: `setup.sh smee` creates a channel on smee.io. The queue app sends its webhooks
 there, and locally `npx smee-client -u <channel> -t http://127.0.0.1:8080/webhook` forwards
 them. For continuous operation the app's webhook URL points to the Schlange instance on the
@@ -143,6 +175,8 @@ python3 -I sandbox/driver/sandbox.py reset --repo queue-lab   # close open scena
 | S09 | red quick check, missing Datenschutz section, red KI-Review | MQ-16, MQ-37 |
 | S10 | `main` moves, text conflict with `main` | MQ-06, MQ-27, MQ-47 |
 | S11 | `@mergifyio dequeue` and `queue` again | MQ-45, MQ-50 |
+| S12 | base moves after both pull requests have entered the queue | MQ-06, MQ-27, MQ-47 |
+| S13 | base moves while the conflicting pull request is still a draft | MQ-06, MQ-27, MQ-47 |
 
 Every run writes `.sandbox-runs/<run>/` (not checked in):
 
@@ -174,10 +208,13 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   work only in `schlange-sandbox`.
 - **Lock:** one run per sandbox repo (`concurrency`). In addition, the driver waits until no
   scenario or queue PRs are open any more, so that local runs and CI runs do not mix.
+  The isolated repository requires *all* pull requests closed before serve starts and before
+  every scenario. A separately started local process can still race the check; confirm no other
+  process is running before dispatch.
 - **Baselines:** `sandbox/baselines/<scenario>.json` in our own `outcome.json` format, without
   Mergify texts. A reviewed Mergify run becomes a baseline by copying its `outcome.json`
   there. After that, every run compares: on `queue-lab`, whether Mergify has changed; on
-  `schlange-e2e`, whether Schlange behaves like Mergify (`sandbox.py compare`).
+  `schlange-e2e` and `schlange-e2e-isolated`, whether Schlange behaves like Mergify (`sandbox.py compare`).
 - **Schedule:** Sundays, all scenarios on `queue-lab` (about 3–4 hours; free in a public
   repo).
 - **Result:** table in the job summary. As an artifact (14 days) only `outcome.json`,
@@ -187,13 +224,32 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   `schedule`, never through PRs from forks. The secrets work only in `schlange-sandbox`.
 - **`schlange-e2e` in the runner:** the job builds the release binary and starts
   `sandbox/ci/start-schlange.sh`: `schlange serve` with the queue app against
-  `schlange-sandbox/schlange-e2e`, webhooks through `vars.SANDBOX_SMEE_URL` (smee-client), and
-  reconciliation every 20 s as a fallback. A wait that times out fails the run on this repo
-  (`SANDBOX_FAIL_ON_TIMEOUT`). During the run a probe prints `/status` and `explain` into the
-  job log (step "Stop schlange serve").
+  `schlange-sandbox/schlange-e2e`, no webhooks (no forwarder runs next to the app key): reconciliation polls every 10 s. A wait that times out fails the run on this repo
+  (`SANDBOX_FAIL_ON_TIMEOUT`). The job log gets only problem lines of the serve log (it mentions
+  pull request titles).
 - **Mergify must not be installed on `schlange-e2e`.** If the Mergify app is installed on all
   repositories of the organisation, it posts the check run `Rule: … (queue)` with the conclusion
   `action_required` ("Merge Queue needs to be activated"). `#check-failure = 0` counts it as a
   failure (as it does for Mergify itself), so nothing is queued and every `schlange-e2e`
   scenario times out. Fix by hand: Mergify installation, "Only select repositories",
   `queue-lab` only.
+
+## Results of the first full comparison (2026-10-28)
+
+All eleven scenarios ran on `queue-lab` (Mergify, run 40665292551) and on `schlange-e2e`
+(Schlange, run 40665289089; `s03` and `s10` again in run 40699830249 after the driver's
+`quiet` wait learned that an open queue pull request or a moving `main` is activity).
+
+- Baselines in `sandbox/baselines/` exist for `s01 s02 s03 s04 s06 s08 s09 s10`. Against them,
+  `sandbox.py compare` says SAME for all eight on Schlange (the first `s03`/`s10` run said
+  DEVIATION only because the old `quiet` wait ended while Schlange still tested batches).
+- In `s05` (label `halt` removed) and `s07` (draft made ready), the reference pull requests
+  stayed open during the recorded wait. Schlange now keeps those pull requests held at the
+  same head; a new head or an allowed human queue command can release the hold.
+- The committed `s11` reference is provisional: its original run and timeout status cannot
+  be verified, so it does not establish Mergify's behavior after manual dequeue and requeue.
+  Compatibility runs reject it until a fresh reference is recorded. `s18` is prepared to
+  observe a queue entry and manual dequeue before the bounded requeue wait.
+- Current outcomes include `queued`, `enter_count` and `dequeue_codes`. Strict comparison
+  requires those fields; scenarios that request strict batch comparison also compare recorded
+  batch membership and the `ci-ok` conclusion.

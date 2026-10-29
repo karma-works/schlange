@@ -42,6 +42,385 @@ fn api(gh: &FakeGithub, c: &Client) -> RepoApi {
 }
 
 #[test]
+fn deferred_status_update_reuses_comment_and_recovers_after_deletion() {
+    use schlange_core::Decision;
+    use schlange_core::cosmetics::Cosmetic;
+    use schlange_github::forge::{ForgeOptions, GithubForge};
+    use schlange_github::time::ManualClock;
+    let gh = FakeGithub::start(FakeConfig::default());
+    let pr = gh.open_pr("someone", "test", &[("a".into(), "a".into())], false, &[]);
+    let id = gh.comment(pr, "schlange[bot]", "<!-- schlange:status -->\nold");
+    let c = client(&gh, roomy());
+    let mut forge = GithubForge::new(
+        api(&gh, &c),
+        Arc::new(ManualClock::new(1_800_000_000)),
+        ForgeOptions {
+            bot_login: "schlange[bot]".into(),
+            app_slug: "schlange".into(),
+            check_name: "queue".into(),
+        },
+    );
+    gh.add_fault(FaultRule::new(
+        "PATCH",
+        &format!("/issues/comments/{id}"),
+        FaultKind::RateLimit { retry_after: 0 },
+        1,
+    ));
+    let update = |body: &str| Decision::Cosmetic {
+        cosmetic: Cosmetic::StatusComment {
+            number: pr,
+            body: format!("<!-- schlange:status -->\n{body}"),
+        },
+    };
+    forge.execute(&update("first"));
+    forge.flush_cosmetics();
+    assert_eq!(forge.cosmetic_count(), 1, "429 defers the update");
+    let after_defer = gh.requests().len();
+    forge.flush_cosmetics();
+    assert_eq!(forge.cosmetic_count(), 0);
+    let retries = &gh.requests()[after_defer..];
+    assert!(retries.iter().any(|r| r.starts_with(&format!(
+        "PATCH /repos/karma-works/arzt-agent/issues/comments/{id} 200"
+    ))));
+    assert!(
+        !retries
+            .iter()
+            .any(|r| r.contains(&format!("/issues/{pr}/comments"))),
+        "retry must not repeat lookup"
+    );
+    assert_eq!(
+        gh.comments_on(pr)
+            .iter()
+            .filter(|c| c.body.contains("<!-- schlange:status -->"))
+            .count(),
+        1
+    );
+    gh.delete_comment(id);
+    forge.execute(&update("replacement"));
+    forge.flush_cosmetics();
+    let comments = gh.comments_on(pr);
+    assert_eq!(
+        comments
+            .iter()
+            .filter(|c| c.body.contains("<!-- schlange:status -->"))
+            .count(),
+        1
+    );
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.body.contains("replacement") && c.id != id)
+    );
+    gh.shutdown();
+}
+
+#[test]
+fn empty_marker_lookup_reserves_creation_and_ambiguous_create_is_not_duplicated() {
+    use schlange_core::Decision;
+    use schlange_core::cosmetics::Cosmetic;
+    use schlange_github::forge::{ForgeOptions, GithubForge};
+    use schlange_github::time::ManualClock;
+    let gh = FakeGithub::start(FakeConfig::default());
+    let pr = gh.open_pr("someone", "test", &[("a".into(), "a".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    repo.open_pulls(Priority::Normal).unwrap(); // installation token before constraining budget
+    let mut forge = GithubForge::new(
+        repo,
+        Arc::new(ManualClock::new(1_800_000_000)),
+        ForgeOptions {
+            bot_login: "schlange[bot]".into(),
+            app_slug: "schlange".into(),
+            check_name: "queue".into(),
+        },
+    );
+    let decision = Decision::Cosmetic {
+        cosmetic: Cosmetic::StatusComment {
+            number: pr,
+            body: "<!-- schlange:status -->\nnew".into(),
+        },
+    };
+    forge.execute(&decision);
+    let constrained = BudgetConfig {
+        capacity: 13.0,
+        refill_per_sec: 0.0001,
+        cosmetic_reserve: 12.0,
+    };
+    let start = gh.requests().len();
+    for _ in 0..2 {
+        c.test_set_budget(constrained.clone());
+        forge.flush_cosmetics();
+    }
+    assert_eq!(forge.cosmetic_count(), 1);
+    assert!(
+        !gh.requests()[start..]
+            .iter()
+            .any(|r| r.contains(&format!("/issues/{pr}/comments"))),
+        "must defer before a lookup that cannot be followed by its write"
+    );
+    c.test_set_budget(BudgetConfig {
+        capacity: 14.0,
+        ..constrained
+    });
+    forge.flush_cosmetics();
+    assert_eq!(forge.cosmetic_count(), 0);
+    assert_eq!(
+        gh.comments_on(pr)
+            .iter()
+            .filter(|c| c.body.contains("<!-- schlange:status -->"))
+            .count(),
+        1
+    );
+
+    let other = gh.open_pr("someone", "second", &[("b".into(), "b".into())], false, &[]);
+    gh.add_fault(FaultRule::new(
+        "POST",
+        &format!("/issues/{other}/comments"),
+        FaultKind::Lie(502),
+        1,
+    ));
+    let other_decision = Decision::Cosmetic {
+        cosmetic: Cosmetic::StatusComment {
+            number: other,
+            body: "<!-- schlange:status -->\nsecond".into(),
+        },
+    };
+    c.test_set_budget(roomy());
+    forge.execute(&other_decision);
+    forge.flush_cosmetics();
+    forge.execute(&other_decision);
+    forge.flush_cosmetics();
+    assert_eq!(
+        gh.comments_on(other)
+            .iter()
+            .filter(|c| c.body.contains("<!-- schlange:status -->"))
+            .count(),
+        1,
+        "ambiguous create must be found on the next lookup"
+    );
+    gh.shutdown();
+}
+
+#[test]
+fn redirected_write_is_fenced_against_actual_destination() {
+    use schlange_github::client::WriteGate;
+    struct Gate;
+    impl WriteGate for Gate {
+        fn permit(&self, _: &str, path: &str) -> Result<(), String> {
+            if path.contains("/other-repo/") {
+                Err("destination is not leased".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for code in [307, 308] {
+        let gh = FakeGithub::start(FakeConfig::default());
+        gh.open_pr(
+            "alice",
+            "redirect",
+            &[("a".into(), "old".into())],
+            false,
+            &[],
+        );
+        let before = gh.requests_with_query().len();
+        gh.add_fault(FaultRule::new(
+            "DELETE",
+            "/git/refs/heads/pr-1",
+            FaultKind::Redirect {
+                status: code,
+                location: "/repos/karma-works/other-repo/git/refs/heads/pr-1".into(),
+            },
+            1,
+        ));
+        let c = client(&gh, roomy());
+        let repo = api(&gh, &c);
+        c.set_write_gate(Some(Arc::new(Gate)));
+        let error = repo.delete_ref("pr-1", Priority::Normal).unwrap_err();
+        assert!(
+            error.to_string().contains("destination is not leased"),
+            "{error}"
+        );
+        assert!(
+            !gh.requests_with_query()[before..]
+                .iter()
+                .any(|r| r.contains("/other-repo/"))
+        );
+        assert!(gh.branch_sha("pr-1").is_some());
+        gh.shutdown();
+    }
+}
+
+#[test]
+fn write_rechecks_lease_after_budget_wait() {
+    use schlange_github::client::WriteGate;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Gate(AtomicBool);
+    impl WriteGate for Gate {
+        fn permit(&self, _: &str, _: &str) -> Result<(), String> {
+            if self.0.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err("lease lost".into())
+            }
+        }
+    }
+    let gh = FakeGithub::start(FakeConfig::default());
+    gh.open_pr("alice", "budget", &[("a".into(), "old".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    repo.open_pulls(Priority::Normal).unwrap();
+    c.test_set_budget(BudgetConfig {
+        capacity: 1.0,
+        refill_per_sec: 0.5,
+        cosmetic_reserve: 0.0,
+    });
+    repo.open_pulls(Priority::Normal).unwrap();
+    let gate = Arc::new(Gate(AtomicBool::new(true)));
+    c.set_write_gate(Some(gate.clone()));
+    let before = gh.requests_with_query().len();
+    let worker = std::thread::spawn(move || repo.delete_ref("pr-1", Priority::Normal));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while c.test_budget_waits() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "write did not reach budget wait"
+        );
+        std::thread::yield_now();
+    }
+    gate.0.store(false, Ordering::SeqCst);
+    c.test_set_budget(roomy());
+    assert!(
+        worker
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("lease lost")
+    );
+    assert!(
+        !gh.requests_with_query()[before..]
+            .iter()
+            .any(|r| r.starts_with("DELETE "))
+    );
+    assert!(gh.branch_sha("pr-1").is_some());
+    gh.shutdown();
+}
+
+#[test]
+fn retrying_write_rechecks_fence_before_each_http_attempt() {
+    use schlange_github::client::WriteGate;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Gate(AtomicUsize);
+    impl WriteGate for Gate {
+        fn permit(&self, _: &str, _: &str) -> Result<(), String> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(())
+            } else {
+                Err("ingress changed".into())
+            }
+        }
+    }
+    for code in [500, 401] {
+        let gh = FakeGithub::start(FakeConfig::default());
+        let _pr = gh.open_pr(
+            "alice",
+            "write gate",
+            &[("a".into(), "old".into())],
+            false,
+            &[],
+        );
+        let original = gh.branch_sha("pr-1").unwrap();
+        gh.add_fault(FaultRule::new(
+            "DELETE",
+            "/git/refs/heads/pr-1",
+            FaultKind::Status(code),
+            1,
+        ));
+        let c = client(&gh, roomy());
+        let repo = api(&gh, &c);
+        c.set_write_gate(Some(Arc::new(Gate(AtomicUsize::new(0)))));
+        let before = gh.requests_with_query().len();
+        let error = repo.delete_ref("pr-1", Priority::Normal).unwrap_err();
+        assert!(error.to_string().contains("ingress changed"), "{error}");
+        assert_eq!(gh.branch_sha("pr-1").unwrap(), original);
+        assert_eq!(
+            gh.requests_with_query()[before..]
+                .iter()
+                .filter(|r| r.starts_with("DELETE "))
+                .count(),
+            1
+        );
+        if code == 401 {
+            assert_eq!(
+                gh.requests_with_query()[before..]
+                    .iter()
+                    .filter(|r| r.starts_with("POST ") && r.contains("/access_tokens"))
+                    .count(),
+                2,
+                "initial token and replacement must both be issued"
+            );
+        }
+        gh.shutdown();
+    }
+}
+
+#[test]
+fn reserved_comment_write_still_obeys_fence_and_refunds_on_refusal() {
+    use schlange_core::Decision;
+    use schlange_core::cosmetics::Cosmetic;
+    use schlange_github::client::WriteGate;
+    use schlange_github::forge::{ForgeOptions, GithubForge};
+    use schlange_github::time::ManualClock;
+    struct LostLease;
+    impl WriteGate for LostLease {
+        fn permit(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("lease lost".into())
+        }
+    }
+    let gh = FakeGithub::start(FakeConfig::default());
+    let pr = gh.open_pr("someone", "test", &[("a".into(), "a".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    repo.open_pulls(Priority::Normal).unwrap();
+    let mut forge = GithubForge::new(
+        repo.clone(),
+        Arc::new(ManualClock::new(1_800_000_000)),
+        ForgeOptions {
+            bot_login: "schlange[bot]".into(),
+            app_slug: "schlange".into(),
+            check_name: "queue".into(),
+        },
+    );
+    c.set_write_gate(Some(Arc::new(LostLease)));
+    c.test_set_budget(BudgetConfig {
+        capacity: 14.0,
+        refill_per_sec: 0.0001,
+        cosmetic_reserve: 12.0,
+    });
+    let before = gh.requests().len();
+    forge.execute(&Decision::Cosmetic {
+        cosmetic: Cosmetic::StatusComment {
+            number: pr,
+            body: "<!-- schlange:status -->\ntest".into(),
+        },
+    });
+    forge.flush_cosmetics();
+    assert!(
+        !gh.requests()[before..]
+            .iter()
+            .any(|r| r.starts_with("POST ")),
+        "fenced write must not be sent"
+    );
+    assert!(gh.comments_on(pr).is_empty());
+    assert!(
+        repo.issue_comments(pr, Priority::Cosmetic).is_ok(),
+        "unused reserved token was refunded"
+    );
+    gh.shutdown();
+}
+
+#[test]
 fn installation_tokens_are_cached_and_etags_save_requests() {
     let gh = FakeGithub::start(FakeConfig::default());
     let c = client(&gh, roomy());
