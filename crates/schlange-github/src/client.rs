@@ -106,6 +106,10 @@ pub enum Error {
         path: String,
         detail: String,
     },
+    /// A fresh check-identity read failed. The worker must hold every queue of `bases`
+    /// (fail closed) until a complete read succeeds again.
+    #[error("check identity unavailable for {bases:?}: {detail}")]
+    IdentityUnavailable { bases: Vec<String>, detail: String },
     /// GitHub asked us to wait longer than the client may block.
     #[error("{path}: rate limited for {wait_secs} s")]
     RateLimited { path: String, wait_secs: u64 },

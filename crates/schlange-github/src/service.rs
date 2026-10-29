@@ -623,12 +623,17 @@ impl Service {
                 journal,
                 seq: 0,
                 restart_pending: false,
+                identity_hold_failed: false,
                 recovered: None,
+                recovered_intents: Vec::new(),
                 crash: cfg.crash,
                 dead: false,
             };
             if worker.lease.is_none() && worker.shadow.is_none() {
                 worker.recover().inspect_err(|_| {
+                    shared.stop.store(true, Ordering::SeqCst);
+                })?;
+                worker.begin_identity_hold().inspect_err(|_| {
                     shared.stop.store(true, Ordering::SeqCst);
                 })?;
             }
@@ -1356,7 +1361,14 @@ struct Worker {
     seq: u64,
     /// `Event::Restarted` is fed once the configuration is loaded.
     restart_pending: bool,
+    /// A check-identity hold could not be established at reconciliation time (for example
+    /// because the default branch could not be read and no base is known yet). The worker stays
+    /// fail-closed and retries, just as it does for a persisted hold.
+    identity_hold_failed: bool,
     recovered: Option<Vec<String>>,
+    /// Decisions recovered without a confirmed outcome. Build-car intents become resolvable
+    /// after `Restarted` handled the state and the sweep; other intents stay in doubt.
+    recovered_intents: Vec<(u64, Decision)>,
     crash: Option<CrashPoint>,
     dead: bool,
     /// Comments whose sender's permission could not be read yet (retried each round), each
@@ -1366,8 +1378,103 @@ struct Worker {
 }
 
 impl Worker {
+    /// Establishes a durable fail-closed hold before any reconciliation or recovery work.
+    /// The hold is persisted in the journal, so a restart stays held until a complete
+    /// check-identity read succeeds.
+    fn begin_identity_hold(&mut self) -> Result<(), String> {
+        let mut bases: BTreeSet<String> = self.state.trains.keys().cloned().collect();
+        bases.extend(self.state.pull_requests.values().map(|p| p.base.clone()));
+        bases.extend(self.state.queued.values().map(|e| e.base.clone()));
+        match self.forge.default_branch(Priority::Normal) {
+            Ok(default) => {
+                bases.insert(default);
+            }
+            Err(e) if bases.is_empty() => {
+                return Err(format!("cannot determine identity-hold base: {e}"));
+            }
+            Err(e) => self.forge.note(format!(
+                "default branch not read for the identity hold: {e}"
+            )),
+        }
+        for base in &bases {
+            self.state.check_identity_unavailable.insert(base.clone());
+        }
+        for pr in self
+            .state
+            .pull_requests
+            .values()
+            .filter(|p| !p.closed && !p.merged)
+        {
+            let holds = self.state.holds.entry(pr.number).or_default();
+            if !holds.iter().any(|h| h.kind == "check-identity-unavailable") {
+                holds.push(schlange_core::protections::Hold::wait(
+                    "check-identity-unavailable",
+                    "a fresh check identity read is unavailable",
+                ));
+            }
+        }
+        if let Some(journal) = &mut self.journal {
+            journal
+                .checkpoint(&self.state)
+                .map_err(|e| format!("identity hold checkpoint failed: {e}"))?;
+        }
+        self.identity_hold_failed = false;
+        Ok(())
+    }
+
+    /// Resolves recovered `BuildCar` intents once `Restarted` has expired their state. A
+    /// building car is abandoned and a close (or the orphan sweep) owns the branch; a car
+    /// whose reply arrived is `Running`. In both cases the state is authoritative, so the old
+    /// intent must not keep the journal in doubt. Other intents stay in doubt.
+    fn resolve_recovered_build_intents(&mut self) -> Result<(), String> {
+        if self.recovered_intents.is_empty() {
+            return Ok(());
+        }
+        let intents = std::mem::take(&mut self.recovered_intents);
+        let mut unresolved = Vec::new();
+        for (seq, decision) in intents {
+            let resolvable = match &decision {
+                Decision::BuildCar { car, .. } => !self.state.trains.values().any(|t| {
+                    t.cars.iter().any(|c| {
+                        c.id == *car
+                            && matches!(c.status, schlange_core::queue::CarStatus::Building { .. })
+                    })
+                }),
+                _ => false,
+            };
+            if !resolvable {
+                unresolved.push((seq, decision));
+                continue;
+            }
+            if let Some(journal) = &mut self.journal
+                && let Err(e) = journal.done(seq)
+            {
+                if e.to_string().contains(LEASE_LOST) {
+                    self.step_down("the journal belongs to the process that took the lease");
+                    return Ok(());
+                }
+                return Err(format!(
+                    "journal could not resolve a recovered build intent: {e}"
+                ));
+            }
+        }
+        self.recovered_intents = unresolved;
+        self.recovered = if self.recovered_intents.is_empty() {
+            None
+        } else {
+            Some(
+                self.recovered_intents
+                    .iter()
+                    .map(|(seq, decision)| format!("#{seq} {}", describe(decision)))
+                    .collect(),
+            )
+        };
+        Ok(())
+    }
+
     /// Restores the state from the journal, if there is one.
     fn recover(&mut self) -> Result<(), String> {
+        self.recovered_intents.clear();
         let Some(j) = &self.journal else {
             return Ok(());
         };
@@ -1392,6 +1499,7 @@ impl Worker {
                     format!(": {}", doubt.join("; "))
                 }
             ));
+            self.recovered_intents = r.in_doubt.clone();
             self.state = r.state;
             self.restart_pending = true;
             self.recovered = Some(doubt);
@@ -1431,6 +1539,10 @@ impl Worker {
             );
         }
         self.restart_pending = true;
+        if let Err(e) = self.begin_identity_hold() {
+            self.die(e);
+            return;
+        }
         self.forge.note(format!(
             "took the lease ({}); acting for {}",
             self.lease.as_ref().map(|l| l.holder()).unwrap_or(""),
@@ -1451,6 +1563,9 @@ impl Worker {
         self.timers.clear();
         self.comments_waiting.clear();
         self.restart_pending = false;
+        self.identity_hold_failed = false;
+        self.recovered = None;
+        self.recovered_intents.clear();
     }
 
     fn die(&mut self, why: String) {
@@ -1552,6 +1667,13 @@ impl Worker {
                 .collect();
             if reconcile {
                 self.reconcile();
+            }
+            if !self.state.check_identity_unavailable.is_empty() || self.identity_hold_failed {
+                // Fail closed: hints, timers, deferred effects and cosmetics wait for a
+                // complete check-identity read. The next reconciliation retries it soon.
+                self.publish();
+                self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
+                continue;
             }
             if !hints.is_empty() {
                 if !reconcile {
@@ -1700,25 +1822,70 @@ impl Worker {
             .collect();
         let now = self.clock.now();
         self.next_reconcile = now + self.every;
+        // Fail closed first: no configuration event, recovery decision or retry may reach the
+        // queue until this round's check identity has been read completely.
+        if self.shadow.is_none()
+            && self.state.check_identity_unavailable.is_empty()
+            && let Err(e) = self.begin_identity_hold()
+        {
+            self.identity_hold_failed = true;
+            self.forge
+                .note(format!("identity hold not established: {e}"));
+            self.next_reconcile = now + self.every.min(60);
+            self.last_reconcile = Some(now);
+            self.reconciliations += 1;
+            return;
+        }
         self.load_config();
         let Some(rules) = self.rules.clone() else {
             return;
         };
-        if self.restart_pending {
-            self.restart_pending = false;
-            self.feed(Event::Restarted);
-        }
+        let held_bases: Vec<String> = self
+            .state
+            .check_identity_unavailable
+            .iter()
+            .cloned()
+            .collect();
+        // `Restarted` is deferred: a restart decision must not be made while the check
+        // identity is unverified. It runs after the hold is released below.
         let view = match &self.shadow {
             Some(sh) => sh.real_view(&self.state),
             None => self.state.clone(),
         };
         match self.forge.reconcile(&view, &rules) {
-            Ok((ev, sweep)) => {
+            Ok(read) => {
                 let ev = match &mut self.shadow {
-                    Some(sh) => sh.patch(ev, &self.forge, now),
-                    None => ev,
+                    Some(sh) => sh.patch(read.event, &self.forge, now),
+                    None => read.event,
                 };
+                // The snapshot is stored while the hold is still in place; clearing the hold
+                // then re-evaluates the queue against this fresh read.
                 self.feed(ev);
+                if let Some((bases, detail)) = read.identity_error {
+                    self.forge
+                        .note(format!("check identity read failed: {detail}"));
+                    self.feed(Event::CheckIdentityUnavailable { bases });
+                    // Retry soon: a transient outage must clear without waiting a full period.
+                    self.next_reconcile = now + self.every.min(60);
+                    self.last_reconcile = Some(now);
+                    self.reconciliations += 1;
+                    return;
+                }
+                let released = !held_bases.is_empty();
+                if released {
+                    // Clears the hold only (no decision); the queue is re-evaluated against
+                    // the fresh snapshot by `Restarted` or `Tick` below.
+                    self.feed(Event::CheckIdentityAvailable { bases: held_bases });
+                }
+                if self.restart_pending {
+                    self.restart_pending = false;
+                    self.feed(Event::Restarted);
+                    if self.dead || !self.leading {
+                        return;
+                    }
+                } else if released {
+                    self.feed(Event::Tick);
+                }
                 if self.dead || !self.leading {
                     return;
                 }
@@ -1729,8 +1896,15 @@ impl Worker {
                 if let Some(sh) = &mut self.shadow {
                     sh.observe(&mut self.forge, &self.state, now);
                 } else {
-                    self.forge.sweep(&sweep, &self.state);
+                    self.forge.sweep(&read.sweep, &self.state);
                     self.forge.hurry_pending();
+                    // The sweep (or a close) owns recovered build branches; only now may the
+                    // recovered intent be marked done. The state is authoritative after
+                    // `Restarted` expired the build.
+                    if let Err(e) = self.resolve_recovered_build_intents() {
+                        self.die(e);
+                        return;
+                    }
                 }
                 self.last_reconcile = Some(now);
                 self.reconciliations += 1;
@@ -1744,9 +1918,13 @@ impl Worker {
                         .note(format!("comments not reconciled (provisional): {e}")),
                 }
             }
-            Err(e) => self
-                .forge
-                .note(format!("reconciliation skipped (provisional): {e}")),
+            Err(e) => {
+                self.forge
+                    .note(format!("reconciliation skipped (provisional): {e}"));
+                self.next_reconcile = now + self.every.min(60);
+                self.last_reconcile = Some(now);
+                self.reconciliations += 1;
+            }
         }
     }
 

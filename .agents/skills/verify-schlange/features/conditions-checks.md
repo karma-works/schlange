@@ -56,3 +56,4 @@ Preconditions:
 - Required checks from rulesets are read per workflow file and event, not only per newest suite.
 - A skipped GitHub Actions job reports no check; the queue then waits (Arztagent `ai-review.yml`).
 - The GitHub adapter's missing workflow/event identity can let a later same-name success hide a failure from another workflow. `sandbox/scenarios/s14-check-workflow-collision.json` is designed to observe this with real Actions jobs; `s15-review-manual-retry.json` examines a custom KI-Review failure followed by a synthetic manual success. Neither scenario has a reviewed sandbox baseline yet. The custom check's validated Actions run link is supplied by the app and is not proof of job provenance.
+- A check-suite read failure now holds the queue instead of acting on the last checks (`check-identity` in `github-integration.md`); workflow/event association within a suite is still not implemented.

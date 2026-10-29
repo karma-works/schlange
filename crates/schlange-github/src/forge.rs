@@ -631,11 +631,83 @@ impl GithubForge {
         }
     }
 
+    /// Reads the check suite identity of every open pull request head. A complete read of
+    /// every suite (id, head and app) is required before the queue may act: a failure or an
+    /// inconsistent suite fails closed with [`Error::IdentityUnavailable`]. GitHub reads are
+    /// not atomic; this is a conservative gate, not a proof that no new check appeared
+    /// between the two requests.
+    fn verify_check_identity(&self, open: &[Pull]) -> Result<BTreeSet<String>, Error> {
+        let bases: BTreeSet<String> = open.iter().map(|p| p.base.ref_name.clone()).collect();
+        let mut heads = BTreeSet::new();
+        for p in open {
+            if !heads.insert(p.head.sha.clone()) {
+                continue;
+            }
+            let mut last = String::new();
+            let mut valid = false;
+            // The client already retries a failed read. Provisional failures (5xx, rate
+            // limits, transport) are retried a few more times so a short storm drains inside
+            // one reconciliation without acting on stale checks. A definitive refusal (for
+            // example 403) holds at once.
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                let suites = match self.api.check_suites(&p.head.sha, Priority::Normal) {
+                    Ok(suites) => suites,
+                    Err(e) => {
+                        last = e.to_string();
+                        if !e.is_provisional() || attempts >= 32 {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let mut ids = BTreeSet::new();
+                let mut ok = true;
+                for suite in &suites {
+                    let app = suite.app.as_ref().and_then(|a| a.slug.as_deref());
+                    if suite.id == 0
+                        || !ids.insert(suite.id)
+                        || suite.head_sha != p.head.sha
+                        || app.is_none_or(str::is_empty)
+                    {
+                        ok = false;
+                        last = format!(
+                            "invalid check suite identity on {} (pull request #{})",
+                            short(&p.head.sha),
+                            p.number
+                        );
+                        break;
+                    }
+                }
+                if ok {
+                    valid = true;
+                    break;
+                }
+                if attempts >= 8 {
+                    break;
+                }
+            }
+            if !valid {
+                return Err(Error::IdentityUnavailable {
+                    bases: bases.iter().cloned().collect(),
+                    detail: last,
+                });
+            }
+        }
+        Ok(bases)
+    }
+
     /// The full reconciliation read: every open pull request, the ones the engine knows,
     /// base branches, the engine's branches and every queue branch on GitHub. Also returns
     /// what the orphan sweep needs.
-    pub fn reconcile(&mut self, state: &State, rules: &Rules) -> Result<(Event, Sweep), Error> {
+    pub fn reconcile(&mut self, state: &State, rules: &Rules) -> Result<ReconcileRead, Error> {
         let open = self.api.open_pulls(Priority::Normal)?;
+        let identity_error = match self.verify_check_identity(&open) {
+            Ok(_) => None,
+            Err(Error::IdentityUnavailable { bases, detail }) => Some((bases, detail)),
+            Err(e) => return Err(e),
+        };
         let prefixes = queue_prefixes(rules);
         let mut queue_refs = Vec::new();
         for p in &prefixes {
@@ -677,14 +749,15 @@ impl GithubForge {
             })
             .map(|p| (p.number, p.head.ref_name.clone()))
             .collect();
-        Ok((
-            ev,
-            Sweep {
+        Ok(ReconcileRead {
+            event: ev,
+            sweep: Sweep {
                 queue_refs,
                 drafts,
                 prefixes,
             },
-        ))
+            identity_error,
+        })
     }
 
     /// Deletes queue branches and closes queue drafts that belong to no car of the engine
@@ -2020,6 +2093,16 @@ impl GithubForge {
         }
         Ok(fallback)
     }
+}
+
+/// One reconciliation read: the snapshot, the sweep view and an optional check-identity
+/// failure that must hold the queue (the snapshot is still returned so short API storms can
+/// drain without acting on it).
+#[derive(Debug)]
+pub struct ReconcileRead {
+    pub event: Event,
+    pub sweep: Sweep,
+    pub identity_error: Option<(Vec<String>, String)>,
 }
 
 /// What the orphan sweep needs from a reconciliation read.
