@@ -93,6 +93,15 @@ fn null_chooses(path: &str) -> bool {
     path.ends_with(".merge_method") || path.ends_with(".method")
 }
 
+/// These experimental options are choices even when set to false or an empty object.
+/// Their behavior has not been implemented, so explicit settings must remain visible.
+fn explicit_choice(path: &str) -> bool {
+    matches!(
+        path,
+        "merge_queue.batch_pull_request" | "merge_queue.resolve_conflicts"
+    )
+}
+
 /// A value that leaves a feature switched off: `null`, `false`, `0`, an empty list or map. A
 /// default or an explicit option with such a value does not use the feature (value-level: an
 /// option written as `false` is not a gap, the same option written as `true` is).
@@ -129,7 +138,7 @@ fn walk(
                     format!("{path}.{key}")
                 };
                 let child_ptr = format!("{pointer}/{}", crate::yaml::escape(key));
-                if !is_off(child) || path.ends_with("actions") {
+                if !is_off(child) || path.ends_with("actions") || explicit_choice(&child_path) {
                     add(uses, map, format!("config:{child_path}"), &child_ptr);
                 } else if child.is_null() && null_chooses(&child_path) {
                     // An explicit `null` merge method is the default: the repository picks.

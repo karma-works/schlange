@@ -20,11 +20,11 @@
     "attr": 76,
     "cli": 42,
     "cmd": 8,
-    "config": 295,
-    "default": 156,
-    "enum": 153
+    "config": 297,
+    "default": 157,
+    "enum": 162
   },
-  "total": 827,
+  "total": 839,
   "entries": [
     {
       "id": "action:assign",
@@ -2271,12 +2271,6 @@
       "type": "string"
     },
     {
-      "id": "config:defaults.queue_rule.batch_pull_request",
-      "kind": "config",
-      "type": "boolean",
-      "experimental": true
-    },
-    {
       "id": "config:defaults.queue_rule.batch_size",
       "kind": "config",
       "type": "integer|object"
@@ -2434,6 +2428,12 @@
       "type": "object"
     },
     {
+      "id": "config:merge_queue.batch_pull_request",
+      "kind": "config",
+      "type": "boolean",
+      "experimental": true
+    },
+    {
       "id": "config:merge_queue.checking_label",
       "kind": "config",
       "type": "string?"
@@ -2465,6 +2465,22 @@
     },
     {
       "id": "config:merge_queue.reset_on_external_merge",
+      "kind": "config",
+      "type": "string"
+    },
+    {
+      "id": "config:merge_queue.resolve_conflicts",
+      "kind": "config",
+      "type": "object",
+      "experimental": true
+    },
+    {
+      "id": "config:merge_queue.resolve_conflicts.comment",
+      "kind": "config",
+      "type": "boolean"
+    },
+    {
+      "id": "config:merge_queue.resolve_conflicts.pull_requests",
       "kind": "config",
       "type": "string"
     },
@@ -2998,12 +3014,6 @@
       "id": "config:queue_rules.batch_max_wait_time",
       "kind": "config",
       "type": "string"
-    },
-    {
-      "id": "config:queue_rules.batch_pull_request",
-      "kind": "config",
-      "type": "boolean",
-      "experimental": true
     },
     {
       "id": "config:queue_rules.batch_size",
@@ -3563,11 +3573,6 @@
       "value": "30 seconds"
     },
     {
-      "id": "default:defaults.queue_rule.batch_pull_request",
-      "kind": "default",
-      "value": true
-    },
-    {
       "id": "default:defaults.queue_rule.batch_size",
       "kind": "default",
       "value": 1
@@ -3658,6 +3663,11 @@
       "value": "check-runs"
     },
     {
+      "id": "default:merge_queue.batch_pull_request",
+      "kind": "default",
+      "value": true
+    },
+    {
       "id": "default:merge_queue.checking_label",
       "kind": "default",
       "value": null
@@ -3691,6 +3701,16 @@
       "id": "default:merge_queue.reset_on_external_merge",
       "kind": "default",
       "value": "always"
+    },
+    {
+      "id": "default:merge_queue.resolve_conflicts.comment",
+      "kind": "default",
+      "value": true
+    },
+    {
+      "id": "default:merge_queue.resolve_conflicts.pull_requests",
+      "kind": "default",
+      "value": "none"
     },
     {
       "id": "default:merge_queue.skip_intermediate_results",
@@ -3985,11 +4005,6 @@
       "value": "30 seconds"
     },
     {
-      "id": "default:queue_rules.batch_pull_request",
-      "kind": "default",
-      "value": true
-    },
-    {
       "id": "default:queue_rules.batch_size",
       "kind": "default",
       "value": 1
@@ -4150,6 +4165,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:language:dockerfile",
+      "kind": "enum"
+    },
+    {
       "id": "enum:language:github-actions",
       "kind": "enum"
     },
@@ -4266,6 +4285,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:package-manager:docker",
+      "kind": "enum"
+    },
+    {
       "id": "enum:package-manager:gomod",
       "kind": "enum"
     },
@@ -4283,6 +4306,10 @@
     },
     {
       "id": "enum:package-manager:opentofu",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:pip",
       "kind": "enum"
     },
     {
@@ -4307,6 +4334,18 @@
     },
     {
       "id": "enum:priority:medium",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:pull_requests:all",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:pull_requests:none",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:pull_requests:queueable",
       "kind": "enum"
     },
     {
@@ -4395,6 +4434,10 @@
     },
     {
       "id": "enum:queue-dequeue-reason:DROPPED_BY_BISECTION_ELIMINATION",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:queue-dequeue-reason:GITHUB_REBASE_MERGE_REFUSED",
       "kind": "enum"
     },
     {
@@ -4522,6 +4565,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:dockerfile",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:go",
       "kind": "enum"
     },
@@ -4559,6 +4606,10 @@
     },
     {
       "id": "enum:strategy:ours",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:pip",
       "kind": "enum"
     },
     {

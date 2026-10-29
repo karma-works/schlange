@@ -147,7 +147,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (305) | – | built 256, partial 13 | 36 |
+| Sub-features (306) | – | built 256, partial 13 | 37 |
 | Sub-features Arztagent uses (166) | – | built 149, partial 8 | 9 |
 
 <details>
@@ -242,7 +242,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Further file and line attributes](.agents/skills/verify-schlange/features/conditions-files-other.md) | missing | 0 / 0 / 0 |  |
 | [Review attributes](.agents/skills/verify-schlange/features/conditions-reviews.md) | missing | 0 / 0 / 0 |  |
 | [Time and schedule](.agents/skills/verify-schlange/features/conditions-time.md) | missing | 0 / 0 / 0 |  |
-| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 0 |  |
+| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 1 |  |
 | [Update method of a pull request](.agents/skills/verify-schlange/features/queue-update-method.md) | missing | 1 / 0 / 2 |  |
 
 </details>

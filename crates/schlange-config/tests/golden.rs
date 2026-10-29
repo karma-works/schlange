@@ -64,6 +64,13 @@ fn arztagent_is_valid_and_strict_exit_codes() {
     let arzt = std::fs::read_to_string(dir.join("arztagent.yml")).unwrap();
     let report = validate("arztagent.yml", &arzt, &schema, &features, false);
     assert_eq!(report.exit_code, exit::VALID);
+    let strict_arzt = validate("arztagent.yml", &arzt, &schema, &features, true);
+    assert_eq!(
+        strict_arzt.exit_code,
+        exit::VALID,
+        "{}",
+        strict_arzt.to_text()
+    );
     assert!(
         report
             .findings
@@ -94,6 +101,65 @@ fn arztagent_is_valid_and_strict_exit_codes() {
     let unsupported = std::fs::read_to_string(dir.join("unsupported.yml")).unwrap();
     let strict = validate("unsupported.yml", &unsupported, &schema, &features, true);
     assert_eq!(strict.exit_code, exit::UNSUPPORTED);
+}
+
+#[test]
+fn experimental_merge_queue_options_are_not_silently_supported() {
+    let schema = schema();
+    let features = FeatureMap::embedded().unwrap();
+    for (setting, expected) in [
+        (
+            "batch_pull_request: true",
+            "config:merge_queue.batch_pull_request",
+        ),
+        (
+            "batch_pull_request: false",
+            "config:merge_queue.batch_pull_request",
+        ),
+        (
+            "resolve_conflicts: {}",
+            "config:merge_queue.resolve_conflicts",
+        ),
+        (
+            "resolve_conflicts: {pull_requests: none, comment: false}",
+            "config:merge_queue.resolve_conflicts",
+        ),
+        (
+            "resolve_conflicts: {pull_requests: queueable}",
+            "config:merge_queue.resolve_conflicts",
+        ),
+        (
+            "resolve_conflicts: {pull_requests: all, comment: true}",
+            "config:merge_queue.resolve_conflicts",
+        ),
+    ] {
+        let src = format!("merge_queue:\n  {setting}\n");
+        let report = validate("t.yml", &src, &schema, &features, true);
+        assert_eq!(
+            report.exit_code,
+            exit::UNSUPPORTED,
+            "{setting}: {}",
+            report.to_text()
+        );
+        assert!(
+            report
+                .support
+                .iter()
+                .any(|r| r.id == expected && !r.supported),
+            "{setting}: {}",
+            report.to_text()
+        );
+    }
+    for setting in ["batch_pull_request: null", "resolve_conflicts: null"] {
+        let src = format!("merge_queue:\n  {setting}\n");
+        let report = validate("t.yml", &src, &schema, &features, true);
+        assert_eq!(
+            report.exit_code,
+            exit::INVALID,
+            "{setting}: {}",
+            report.to_text()
+        );
+    }
 }
 
 /// Critic 1abc: `--strict` exits 2 only when the configuration uses something Schlange does

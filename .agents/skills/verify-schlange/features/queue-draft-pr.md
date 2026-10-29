@@ -9,10 +9,10 @@ inventory:
   - "config:queue_rules.allow_inplace_checks"
   - "default:queue_rules.queue_branch_prefix"
   - "default:queue_rules.allow_inplace_checks"
-  - "config:queue_rules.batch_pull_request"
-  - "default:queue_rules.batch_pull_request"
+  - "config:merge_queue.batch_pull_request"
+  - "default:merge_queue.batch_pull_request"
 unsupported:
-  - "config:queue_rules.batch_pull_request"
+  - "config:merge_queue.batch_pull_request"
 problems:
   - "MQ-18"
   - "MQ-36"
@@ -36,7 +36,7 @@ one pull request at a time in serial mode without retries and with single-step C
 - `draft-pr`: built in the simulated forge (one draft per car); the exact title and body Mergify writes are not reproduced.
 - `in-place`: built. Computed, not configured: only when `max_parallel_checks` is 1, mode `serial`, batch size 1 (the max of a range), `max_checks_retries` 0 and `merge_conditions` empty or equal to `queue_conditions`, and the pull request is up to date with its base; then no queue branch and no draft. A pull request behind its base is tested through a draft instead of being updated in place (deviation, see `p1-in-place.yaml`).
 - `allow-inplace-checks`: the deprecated option is accepted and ignored, as the documentation says the value is computed; not flagged by `config validate`.
-- `batch-pull-request`: missing (listed as `unsupported`). Experimental option `batch_pull_request` (default true), added to the schema on 2026-10-27 without a description; presumably whether the queue opens a batch pull request at all. Only setting it explicitly is flagged: the default presumably matches what Schlange does, and flagging it would flag every configuration with a queue rule.
+- `batch-pull-request`: missing (listed as `unsupported`). The schema marks `batch_pull_request` as experimental, with a default of `true`, but does not describe its behavior. Explicit `true` and `false` settings are flagged. The implicit default is accepted for compatibility; its parity has not been verified.
 - `cleanup`: built. Queue branch and draft disappear after landing, failure, dequeue, reset and foreign push; I3 checks it after every step.
 
 ## How to get to it (user POV)
