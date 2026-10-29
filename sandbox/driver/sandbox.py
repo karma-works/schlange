@@ -524,6 +524,8 @@ class Run:
                       and e["type"].endswith("enter") for e in self.queue_events())
         if self.pr_state(key)[0] != "open" or entered:
             raise RuntimeError(f"PR {key} was closed or entered the queue before the authorized command")
+        # This timestamps completion of two separate reads; the event log may be delayed.
+        self.checkpoints.append({"kind": "unqueued", "at": now_iso(), "pr": key})
         log(f"PR {key} is open and has not entered the queue")
 
     def step_wait(self, s):

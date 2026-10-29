@@ -275,12 +275,17 @@ class CheckpointTests(unittest.TestCase):
     def test_rejects_queued_or_closed_pull_request(self):
         run = object.__new__(driver.Run)
         run.prs = {'a': {'number': 42}}
+        run.checkpoints = []
         run.pr_state = lambda _: ('open', '')
         run.queue_events = lambda: []
         run.step_assert_unqueued({'assert_unqueued': 'a'})
+        self.assertEqual(run.checkpoints[0]['kind'], 'unqueued')
+        self.assertEqual(run.checkpoints[0]['pr'], 'a')
+        self.assertTrue(run.checkpoints[0]['at'])
         run.queue_events = lambda: [{'pull_request': 42, 'type': 'queue.enter'}]
         with self.assertRaises(RuntimeError):
             run.step_assert_unqueued({'assert_unqueued': 'a'})
+        self.assertEqual(len(run.checkpoints), 1)
         run.queue_events = lambda: []
         run.pr_state = lambda _: ('merged', '')
         with self.assertRaises(RuntimeError):
