@@ -803,6 +803,42 @@ def open_pr_inventory(org, repo):
             for p in prs]
 
 
+def close_isolated_dependabot(org, repo):
+    """Close only verified Dependabot PRs in the disposable fixture repository."""
+    if (org, repo) != (ALLOWED_ORG, "schlange-e2e-isolated"):
+        raise RuntimeError("cleanup is restricted to the disposable sandbox repository")
+    client = human_client()
+    root = f"/repos/{org}/{repo}"
+    expected_repo = f"{org}/{repo}"
+
+    def identity(pr):
+        user, head, base = pr.get("user") or {}, pr.get("head") or {}, pr.get("base") or {}
+        number = pr.get("number")
+        sha = head.get("sha")
+        if (type(number) is not int or number <= 0 or pr.get("state") != "open"
+                or user.get("login") != "dependabot[bot]" or user.get("id") != 49699333
+                or user.get("type") != "Bot" or not isinstance(head.get("ref"), str)
+                or not head["ref"].startswith("dependabot/") or not isinstance(sha, str)
+                or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
+                or (head.get("repo") or {}).get("full_name") != expected_repo
+                or (base.get("repo") or {}).get("full_name") != expected_repo
+                or base.get("ref") != "main"):
+            raise RuntimeError("open pull request is not a verified disposable Dependabot fixture")
+        return (number, head["ref"], sha)
+
+    prs = client.paged(f"{root}/pulls?state=open")
+    candidates = [identity(pr) for pr in prs]  # Reject unknown PRs before making any change.
+    print(json.dumps({"verified_dependabot_prs": [number for number, _, _ in candidates]}))
+    for expected in candidates:
+        number = expected[0]
+        if identity(client.call("GET", f"{root}/pulls/{number}")) != expected:
+            raise RuntimeError("pull request changed during cleanup")
+        closed = client.call("PATCH", f"{root}/pulls/{number}", {"state": "closed"}, retry=False)
+        if closed.get("number") != number or closed.get("state") != "closed":
+            raise RuntimeError("pull request closure was not confirmed")
+        log(f"Closed verified disposable Dependabot PR #{number}")
+
+
 def busy(org, repo, all_open=False):
     """Open scenario or queue PRs: then something is running there (local, CI or another agent)."""
     open_prs = human_client().paged(f"/repos/{org}/{repo}/pulls?state=open")
@@ -955,6 +991,7 @@ def main():
     idle.add_argument("--all-open", action="store_true", help="wait for every open pull request")
     inspect = sub.add_parser("inspect-open")
     inspect.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
+    sub.add_parser("close-isolated-dependabot")
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--repo", choices=ALLOWED_REPOS)
     sub.add_parser("install-isolated")
@@ -970,6 +1007,7 @@ def main():
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "wait-idle": lambda a: wait_idle(a.org, a.repo, a.timeout, all_open=a.all_open),
      "inspect-open": lambda a: print(json.dumps(open_pr_inventory(a.org, a.repo))),
+     "close-isolated-dependabot": lambda a: close_isolated_dependabot(a.org, "schlange-e2e-isolated"),
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),
      "doctor": cmd_doctor, "token": cmd_token, "install-isolated": cmd_install_isolated}[a.cmd](a)

@@ -12,7 +12,7 @@ class IsolatedProvisionTests(unittest.TestCase):
     def test_provisioning_workflow_is_separate_from_scenarios(self):
         workflow = WORKFLOW.read_text()
         self.assertIn('isolated_setup:', workflow)
-        self.assertIn('options: [none, create, resume]', workflow)
+        self.assertIn('options: [none, create, resume, close-dependabot]', workflow)
         self.assertIn("inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') && !inputs.update_fixture && '-inspect' || ''", workflow)
         self.assertIn('bash sandbox/ci/provision-isolated.sh "$REPO" "$SETUP" "$INSPECT" "$UPDATE"', workflow)
         for name in ('Start schlange serve', 'Scenarios', 'Reset selected sandbox fixture'):

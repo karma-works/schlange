@@ -34,9 +34,9 @@ on:
         type: boolean
         default: false
       isolated_setup:
-        description: Provision only the disposable E2E repo, or resume a verified partial setup
+        description: Provision or maintain only the disposable E2E repository
         type: choice
-        options: [none, create, resume]
+        options: [none, create, resume, close-dependabot]
         default: none
   schedule:
     # Sundays: all scenarios on queue-lab, to detect behaviour changes in Mergify.

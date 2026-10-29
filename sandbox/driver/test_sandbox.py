@@ -129,6 +129,46 @@ class CheckpointTests(unittest.TestCase):
                 {'number': 2, 'draft': True, 'actor': 'other', 'head_kind': 'scenario'},
             ])
 
+    def test_disposable_dependabot_cleanup_rechecks_identity_and_never_touches_other_prs(self):
+        def pr(number, login='dependabot[bot]', ref='dependabot/github_actions/example', sha='a' * 40):
+            return {'number': number, 'state': 'open', 'user': {'login': login, 'id': 49699333, 'type': 'Bot'},
+                    'head': {'ref': ref, 'sha': sha, 'repo': {'full_name': 'schlange-sandbox/schlange-e2e-isolated'}},
+                    'base': {'ref': 'main', 'repo': {'full_name': 'schlange-sandbox/schlange-e2e-isolated'}}}
+        client = unittest.mock.Mock()
+        client.paged.return_value = [pr(1), pr(2)]
+        client.call.side_effect = [pr(1), {'number': 1, 'state': 'closed'}, pr(2), {'number': 2, 'state': 'closed'}]
+        with patch.object(driver, 'human_client', return_value=client):
+            driver.close_isolated_dependabot('schlange-sandbox', 'schlange-e2e-isolated')
+        writes = [c for c in client.call.call_args_list if c.args[0] == 'PATCH']
+        self.assertEqual(len(writes), 2)
+        self.assertTrue(all(c.kwargs.get('retry') is False for c in writes))
+        self.assertFalse(any(c.args[0] == 'DELETE' for c in client.call.call_args_list))
+        client.reset_mock()
+        client.paged.return_value = [pr(1), pr(3, login='other')]
+        with patch.object(driver, 'human_client', return_value=client):
+            with self.assertRaises(RuntimeError):
+                driver.close_isolated_dependabot('schlange-sandbox', 'schlange-e2e-isolated')
+        client.call.assert_not_called()
+        client.reset_mock(side_effect=True)
+        client.paged.return_value = [pr(1)]
+        client.call.return_value = pr(1, sha='b' * 40)
+        with patch.object(driver, 'human_client', return_value=client):
+            with self.assertRaises(RuntimeError):
+                driver.close_isolated_dependabot('schlange-sandbox', 'schlange-e2e-isolated')
+        self.assertFalse(any(c.args[0] == 'PATCH' for c in client.call.call_args_list))
+        client.reset_mock(side_effect=True)
+        bad = pr(1)
+        bad['user']['id'] = 1
+        client.paged.return_value = [bad]
+        with patch.object(driver, 'human_client', return_value=client):
+            with self.assertRaises(RuntimeError):
+                driver.close_isolated_dependabot('schlange-sandbox', 'schlange-e2e-isolated')
+        client.call.assert_not_called()
+        with self.assertRaises(RuntimeError):
+            driver.close_isolated_dependabot('schlange-sandbox', 'queue-lab')
+        with self.assertRaises(RuntimeError):
+            driver.close_isolated_dependabot('other', 'schlange-e2e-isolated')
+
     def test_wait_idle_cli_targets_only_selected_sandbox_repo(self):
         with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'schlange-e2e', '--all-open']), \
              patch.object(driver, 'wait_idle') as wait:

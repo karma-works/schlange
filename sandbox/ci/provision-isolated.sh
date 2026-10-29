@@ -7,7 +7,11 @@ set -euo pipefail
 case "${2:-}" in
   create) command=repos-isolated ;;
   resume) command=finish-isolated ;;
-  *) echo 'refused: expected create or resume' >&2; exit 1 ;;
+  close-dependabot)
+    HERE="$(cd "$(dirname "$0")/.." && pwd)"
+    exec python3 -I "$HERE/driver/sandbox.py" close-isolated-dependabot
+    ;;
+  *) echo 'refused: expected create, resume, or close-dependabot' >&2; exit 1 ;;
 esac
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$HERE/setup.sh" "$command"
