@@ -1,6 +1,6 @@
 # Experimental Arztagent queue work — handoff
 
-Status: incomplete and **not ready to promote**. Work stopped at the user's request. The primary worktree was not changed by this handoff. This isolated worktree contains a broad snapshot of existing dirty primary changes as well as experimental work; its `git diff` is not a clean, independently reviewable patch. Preserve its source and user files. The earlier, broader prototype is in `/tmp/schlange-check-identity` and is likewise unpromoted. Do not mix its Cargo artifacts with the main tree: use `CARGO_TARGET_DIR=/tmp/schlange-check-slice-target` for this slice. The real schema used by fake service tests is `/home/ubuntu/Projects/schlange/.research/mergify/schema.json`.
+Status: incomplete and **not ready to promote**. Work stopped at the user's request. The primary worktree was not changed by this handoff. This isolated worktree contains a broad snapshot of existing dirty primary changes as well as experimental work; its `git diff` is not a clean, independently reviewable patch. Preserve its source and user files. The earlier, broader prototype is preserved on branch `agent/codex/arztagent-identity-prototype-wip` and is likewise unpromoted. Do not mix its Cargo artifacts with the main tree: use `CARGO_TARGET_DIR=/tmp/schlange-check-slice-target` for this slice. The real schema used by fake service tests is `/home/ubuntu/Projects/schlange/.research/mergify/schema.json`.
 
 ## Goal and current result
 
