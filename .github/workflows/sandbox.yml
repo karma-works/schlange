@@ -48,7 +48,7 @@ permissions:
 # One run per sandbox repo; parallel scenarios would end up in each other's batch.
 # The driver also waits until no scenario or queue PRs are open any more (local runs).
 concurrency:
-  group: sandbox-${{ inputs.repo || 'queue-lab' }}
+  group: sandbox-${{ inputs.repo || 'queue-lab' }}${{ inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') && !inputs.update_fixture && '-inspect' || '' }}
   cancel-in-progress: false
 
 jobs:
