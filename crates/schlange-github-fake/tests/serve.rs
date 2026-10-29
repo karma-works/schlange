@@ -11,6 +11,27 @@ use schlange_github_fake::{CiOn, CiRule, Tester};
 const ONE_BY_ONE: &str = "queue_rules:\n  - name: default\n    merge_method: squash\n    queue_conditions:\n      - base = main\n      - check-success = ci\n    merge_conditions:\n      - check-success = ci\n\
                           pull_request_rules:\n  - name: all\n    conditions:\n      - base = main\n    actions:\n      queue:\n";
 
+#[test]
+fn wait_returns_after_worker_crashes_with_watchdog_running() {
+    let mut t = Tester::new(ONE_BY_ONE)
+        .ci(CiRule::success("ci", CiOn::PullRequest))
+        .crash_at(CrashPoint::AfterLand)
+        .start();
+    let pr = t.open_pr("someone").file("a.txt", "a\n").create();
+    t.pr(pr).wait_queued();
+    t.queue_pr().check("ci").succeed();
+    t.wait_dead();
+    let service = t.service.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        service.wait();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("watchdog must exit when its worker dies");
+    t.shutdown();
+}
+
 fn post(url: &str, event: &str, id: &str, body: &str, secret: &[u8]) -> (u16, String) {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()

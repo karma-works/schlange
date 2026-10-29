@@ -404,6 +404,7 @@ pub struct SimForge<G: GitStore = Repo> {
     pub undelivered_controls: Vec<Control>,
     /// Checks the base branches' protection requires (`branch_protection_injection_mode`).
     pub required_checks: BTreeMap<String, Vec<String>>,
+    pub bound_required_checks: BTreeMap<String, Vec<schlange_core::model::RequiredCheck>>,
 }
 
 /// `Name <email>` of a simulated account.
@@ -474,6 +475,7 @@ impl<G: GitStore> SimForge<G> {
             controls: Vec::new(),
             undelivered_controls: Vec::new(),
             required_checks: BTreeMap::new(),
+            bound_required_checks: BTreeMap::new(),
         }
     }
 

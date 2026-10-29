@@ -138,6 +138,7 @@ pub struct FakeComment {
 #[derive(Clone, Debug)]
 pub struct FakeRun {
     pub id: u64,
+    pub suite_id: u64,
     pub name: String,
     pub head_sha: Sha,
     pub status: String,
@@ -197,6 +198,12 @@ pub fn guard_labels(labels: &[&str]) -> MergeGuard {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultKind {
+    /// Return a synthetic JSON response for API identity tests.
+    Json(Value),
+    /// Return synthetic JSON with an explicit HTTP status.
+    JsonStatus(u16, Value),
+    /// Redirect a request to a synthetic location.
+    Redirect { status: u16, location: String },
     /// Answer with this status, do nothing.
     Status(u16),
     /// 429 with `Retry-After`.
@@ -376,6 +383,7 @@ pub(crate) struct St {
     pub hook_seq: u64,
     pub webhook_target: Option<String>,
     pub requests: Vec<String>,
+    pub requests_with_query: Vec<String>,
     pub squashes: Vec<Squash>,
     pub external: BTreeSet<Sha>,
     /// Workflow dispatches: workflow and request body.
@@ -399,6 +407,7 @@ pub(crate) struct St {
     pub rulesets: Vec<Value>,
     /// Checks a ruleset on the default branch requires (`GET /rules/branches/…`).
     pub required_checks: Vec<String>,
+    pub classic_required_checks: Option<Vec<String>>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
     /// How many files `GET /pulls/{n}/files` lists at most (GitHub: 3000).
@@ -839,7 +848,8 @@ impl St {
             .collect();
         json!({
             "id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status,
-            "conclusion": r.conclusion, "app": { "slug": r.app_slug },
+            "conclusion": r.conclusion, "app": { "slug": r.app_slug, "id": if r.app_slug == "github-actions" { 15368 } else { 888 } },
+            "check_suite": { "id": r.suite_id },
             "output": { "title": r.output_title },
             "pull_requests": prs,
         })
@@ -928,6 +938,7 @@ impl St {
         let completed = conclusion.is_some();
         self.runs.push(FakeRun {
             id,
+            suite_id: id,
             name: name.into(),
             head_sha: sha.into(),
             status: if completed {
@@ -1092,6 +1103,7 @@ impl FakeGithub {
             hook_seq: 0,
             webhook_target: None,
             requests: Vec::new(),
+            requests_with_query: Vec::new(),
             squashes: Vec::new(),
             external: BTreeSet::new(),
             dispatches: Vec::new(),
@@ -1106,6 +1118,7 @@ impl FakeGithub {
             old_names: Vec::new(),
             rulesets: Vec::new(),
             required_checks: Vec::new(),
+            classic_required_checks: None,
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
             comment_clock: 1_800_000_000,
@@ -1228,6 +1241,12 @@ impl FakeGithub {
     /// A ruleset on the default branch that requires these checks.
     pub fn set_required_checks(&self, checks: &[&str]) {
         self.with(|s| s.required_checks = checks.iter().map(|c| c.to_string()).collect());
+    }
+
+    pub fn set_classic_required_checks(&self, checks: Option<&[&str]>) {
+        self.with(|s| {
+            s.classic_required_checks = checks.map(|c| c.iter().map(|s| s.to_string()).collect())
+        });
     }
 
     pub fn add_ruleset(&self, ruleset: Value) {
@@ -1435,6 +1454,11 @@ impl FakeGithub {
     /// `user` comments `body` on pull request `n`; returns the comment id.
     pub fn comment(&self, n: u64, user: &str, body: &str) -> u64 {
         self.with(|s| s.add_comment(n, user, body))
+    }
+
+    /// Remove a comment to exercise stale comment IDs in the adapter.
+    pub fn delete_comment(&self, id: u64) {
+        self.with(|s| s.comments.retain(|c| c.id != id));
     }
 
     /// Sends the `issue_comment.created` webhook of comment `id` again, with a new delivery
@@ -1673,6 +1697,11 @@ impl FakeGithub {
 
     pub fn requests(&self) -> Vec<String> {
         self.with(|s| s.requests.clone())
+    }
+
+    /// Requests with query strings, for pagination assertions.
+    pub fn requests_with_query(&self) -> Vec<String> {
+        self.with(|s| s.requests_with_query.clone())
     }
 
     pub fn deliveries(&self) -> Vec<Delivery> {

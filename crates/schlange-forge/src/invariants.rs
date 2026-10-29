@@ -299,6 +299,11 @@ impl Checker {
                 .get(&l.base_branch)
                 .cloned()
                 .unwrap_or_default();
+            let bound = forge
+                .bound_required_checks
+                .get(&l.base_branch)
+                .cloned()
+                .unwrap_or_default();
             // An accepted `allow_queue_branch_edit` (a method that lands the batch branch): the
             // queue branch was pushed on top of the tested head and the conditions are judged
             // on the draft at that pushed head (the view below), so that head is the tested
@@ -336,6 +341,12 @@ impl Checker {
                 };
                 if r.injection_mode != schlange_config::rules::InjectionMode::None {
                     v.extend(required_conditions(&required));
+                    v.extend(bound.iter().map(|r| {
+                        schlange_config::conditions::Condition::RequiredCheck {
+                            context: r.context.clone(),
+                            app_id: r.app_id,
+                        }
+                    }));
                 }
                 v
             });
@@ -343,6 +354,12 @@ impl Checker {
                 let mut v = r.queue_conditions.clone();
                 if r.injection_mode == schlange_config::rules::InjectionMode::Queue {
                     v.extend(required_conditions(&required));
+                    v.extend(bound.iter().map(|r| {
+                        schlange_config::conditions::Condition::RequiredCheck {
+                            context: r.context.clone(),
+                            app_id: r.app_id,
+                        }
+                    }));
                 }
                 v
             });
@@ -894,6 +911,7 @@ mod tests {
                 seq: 1,
                 waiting_since: 0,
                 status: EntryStatus::Waiting,
+                external_reset: false,
                 by: None,
                 priority: 2000,
                 priority_rule: None,

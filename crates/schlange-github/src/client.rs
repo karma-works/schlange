@@ -41,7 +41,8 @@
 //! **ETags.** `GET` responses with an ETag are cached; the next read sends `If-None-Match`
 //! and a 304 (which GitHub does not count against the rate limit) returns the cached body.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -62,6 +63,8 @@ pub enum Priority {
     Landing,
     /// Reads, reconciliation, building queue branches.
     Normal,
+    /// Read-only background work: defer before consuming the worker's reserve.
+    Background,
     /// The queue's own check run, comments, labels, reactions.
     Cosmetic,
 }
@@ -235,7 +238,7 @@ impl Budget {
         if let Some(until) = self.blocked_until {
             if until > now {
                 return match prio {
-                    Priority::Cosmetic => Admit::Deny,
+                    Priority::Cosmetic | Priority::Background => Admit::Deny,
                     _ => Admit::Wait(until - now),
                 };
             }
@@ -253,11 +256,13 @@ impl Budget {
             Priority::Normal => Admit::Wait(Duration::from_secs_f64(
                 (1.0 - self.tokens) / self.cfg.refill_per_sec.max(0.001),
             )),
-            Priority::Cosmetic if self.tokens >= self.cfg.cosmetic_reserve + 1.0 => {
+            Priority::Cosmetic | Priority::Background
+                if self.tokens >= self.cfg.cosmetic_reserve + 1.0 =>
+            {
                 self.tokens -= 1.0;
                 Admit::Go
             }
-            Priority::Cosmetic => Admit::Deny,
+            Priority::Cosmetic | Priority::Background => Admit::Deny,
         }
     }
 
@@ -344,11 +349,19 @@ pub struct ClientConfig {
     pub allow_insecure_http: bool,
 }
 
+type CachedToken = (
+    String,
+    u64,
+    Option<std::collections::BTreeMap<String, String>>,
+);
+
 struct Inner {
+    #[cfg(feature = "test-hooks")]
+    budget_waits: std::sync::atomic::AtomicUsize,
     cfg: ClientConfig,
     agent: ureq::Agent,
     budget: Mutex<Budget>,
-    tokens: Mutex<HashMap<u64, (String, u64)>>,
+    tokens: Mutex<HashMap<u64, CachedToken>>,
     /// Body of the token request per installation (repositories, permissions).
     scopes: Mutex<HashMap<u64, serde_json::Value>>,
     etags: Mutex<HashMap<String, (String, Response)>>,
@@ -361,6 +374,87 @@ struct Inner {
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
+    probe_memo: Option<Arc<ProbeMemo>>,
+    execution_gates: Vec<Arc<dyn WriteGate>>,
+    single_write_attempt: bool,
+}
+
+/// One observer snapshot only. It never belongs to the worker's read/landing path.
+pub(crate) struct ProbeMemo {
+    entries: Mutex<BTreeMap<String, Response>>,
+    total: Arc<std::sync::atomic::AtomicUsize>,
+    bytes: std::sync::atomic::AtomicUsize,
+}
+
+const PROBE_MEMO_MAX_BYTES: usize = 2 * 1024 * 1024;
+const PROBE_MEMO_MAX_ENTRIES: usize = 512;
+const PROBE_MEMO_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
+impl ProbeMemo {
+    pub(crate) fn new(total: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self {
+            entries: Mutex::new(BTreeMap::new()),
+            total,
+            bytes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    fn get(&self, key: &str) -> Option<Response> {
+        self.entries.lock().expect("probe memo").get(key).cloned()
+    }
+
+    fn put(&self, key: String, response: &Response) -> Result<(), Error> {
+        let mut entries = self.entries.lock().expect("probe memo");
+        if entries.contains_key(&key) {
+            return Ok(());
+        }
+        let size = |k: &str, r: &Response| {
+            k.len()
+                + r.body.len()
+                + r.headers
+                    .iter()
+                    .map(|(a, b)| a.len() + b.len())
+                    .sum::<usize>()
+        };
+        let amount = size(&key, response);
+        let local = self.bytes.load(Ordering::SeqCst);
+        if entries.len() >= PROBE_MEMO_MAX_ENTRIES
+            || local.saturating_add(amount) > PROBE_MEMO_MAX_BYTES
+        {
+            return Err(Error::Refused("watchdog probe memo limit exceeded".into()));
+        }
+        self.total
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                v.checked_add(amount)
+                    .filter(|n| *n <= PROBE_MEMO_MAX_TOTAL_BYTES)
+            })
+            .map_err(|_| Error::Refused("watchdog total memo limit exceeded".into()))?;
+        self.bytes.fetch_add(amount, Ordering::SeqCst);
+        entries.insert(key, response.clone());
+        Ok(())
+    }
+}
+
+impl Drop for ProbeMemo {
+    fn drop(&mut self) {
+        self.total
+            .fetch_sub(self.bytes.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
+}
+
+/// One pre-paid cosmetic write. Dropping an unused permit returns its token.
+pub(crate) struct CosmeticPermit {
+    inner: Arc<Inner>,
+    available: bool,
+}
+
+impl Drop for CosmeticPermit {
+    fn drop(&mut self) {
+        if self.available {
+            let mut b = self.inner.budget.lock().unwrap_or_else(|e| e.into_inner());
+            b.refill(Instant::now());
+            b.tokens = (b.tokens + 1.0).min(b.cfg.capacity);
+        }
+    }
 }
 
 const ETAG_CACHE_MAX: usize = 4096;
@@ -407,6 +501,48 @@ fn root_certs() -> Vec<ureq::tls::Certificate<'static>> {
 }
 
 impl Client {
+    /// Reserve a write token while leaving at least one token for the lookup that precedes it.
+    pub(crate) fn reserve_cosmetic_write(&self, path: &str) -> Result<CosmeticPermit, Error> {
+        let mut b = self.inner.budget.lock().expect("budget");
+        let now = Instant::now();
+        b.refill(now);
+        if b.blocked_until.is_some_and(|until| until > now)
+            || b.tokens < b.cfg.cosmetic_reserve + 2.0
+        {
+            drop(b);
+            self.bump(|s| s.deferred += 1);
+            return Err(Error::Deferred { path: path.into() });
+        }
+        b.tokens -= 1.0;
+        Ok(CosmeticPermit {
+            inner: self.inner.clone(),
+            available: true,
+        })
+    }
+
+    fn use_cosmetic_permit(&self, permit: &mut CosmeticPermit, path: &str) -> Result<(), Error> {
+        if !permit.available || !Arc::ptr_eq(&self.inner, &permit.inner) {
+            return Err(Error::Refused("invalid cosmetic budget permit".into()));
+        }
+        let b = self.inner.budget.lock().expect("budget");
+        if b.blocked_until.is_some_and(|until| until > Instant::now()) {
+            return Err(Error::Deferred { path: path.into() });
+        }
+        permit.available = false;
+        Ok(())
+    }
+
+    /// Test support: replace the local budget without changing the remote API.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_set_budget(&self, cfg: BudgetConfig) {
+        *self.inner.budget.lock().expect("budget") = Budget::new(cfg);
+    }
+    #[cfg(feature = "test-hooks")]
+    pub fn test_budget_waits(&self) -> usize {
+        self.inner
+            .budget_waits
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
     pub fn new(cfg: ClientConfig) -> Self {
         let mut config = ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -428,6 +564,8 @@ impl Client {
             | 1;
         Client {
             inner: Arc::new(Inner {
+                #[cfg(feature = "test-hooks")]
+                budget_waits: std::sync::atomic::AtomicUsize::new(0),
                 agent: ureq::Agent::new_with_config(config.build()),
                 budget: Mutex::new(Budget::new(cfg.budget.clone())),
                 tokens: Mutex::new(HashMap::new()),
@@ -438,7 +576,66 @@ impl Client {
                 gate: std::sync::RwLock::new(None),
                 cfg,
             }),
+            probe_memo: None,
+            execution_gates: Vec::new(),
+            single_write_attempt: false,
         }
+    }
+
+    pub(crate) fn with_probe_memo(&self, memo: Arc<ProbeMemo>) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            probe_memo: Some(memo),
+            execution_gates: self.execution_gates.clone(),
+            single_write_attempt: self.single_write_attempt,
+        }
+    }
+
+    /// Adds a gate only to this client clone; the shared lease gate still applies.
+    pub fn with_execution_gate(&self, gate: Arc<dyn WriteGate>) -> Self {
+        let mut scoped = self.clone();
+        scoped.execution_gates.push(gate);
+        scoped
+    }
+
+    pub(crate) fn has_execution_gate(&self) -> bool {
+        !self.execution_gates.is_empty()
+    }
+
+    pub(crate) fn api_identity(&self) -> String {
+        self.base().to_owned()
+    }
+
+    fn probe_key(url: &str, authorization: &str) -> String {
+        let digest = ring::digest::digest(&ring::digest::SHA256, authorization.as_bytes());
+        let hash = digest
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        format!("GET\0{url}\0accept:application/vnd.github+json\0version:2022-11-28\0{hash}")
+    }
+
+    fn probe_cached_key(
+        &self,
+        url: &str,
+        auth: Auth,
+        prio: Priority,
+        method: &str,
+    ) -> Option<String> {
+        self.probe_memo.as_ref()?;
+        if method != "GET" || prio != Priority::Background {
+            return None;
+        }
+        let Auth::Installation(id) = auth else {
+            return None;
+        };
+        let tokens = self.inner.tokens.lock().expect("tokens");
+        let (token, expiry, _) = tokens.get(&id)?;
+        if *expiry <= unix_now() + 300 {
+            return None;
+        }
+        Some(Self::probe_key(url, &format!("token {token}")))
     }
 
     /// Sets (or clears) the gate every write must pass (shadow mode, the lease's fence).
@@ -489,7 +686,7 @@ impl Client {
     /// An installation token, from the cache while it has more than five minutes left.
     pub fn installation_token(&self, installation: u64) -> Result<String, Error> {
         let now = unix_now();
-        if let Some((t, exp)) = self.inner.tokens.lock().expect("tokens").get(&installation)
+        if let Some((t, exp, _)) = self.inner.tokens.lock().expect("tokens").get(&installation)
             && *exp > now + 300
         {
             return Ok(t.clone());
@@ -499,6 +696,8 @@ impl Client {
         struct Token {
             token: String,
             expires_at: String,
+            #[serde(default)]
+            permissions: Option<std::collections::BTreeMap<String, String>>,
         }
         let body = self
             .inner
@@ -517,6 +716,7 @@ impl Client {
             Some(body.into_bytes()),
             true,
             false,
+            None,
         )?;
         let tok: Token = resp.json(&path)?;
         let exp = parse_rfc3339(&tok.expires_at).unwrap_or(now + 3000);
@@ -525,8 +725,23 @@ impl Client {
             .tokens
             .lock()
             .expect("tokens")
-            .insert(installation, (tok.token.clone(), exp));
+            .insert(installation, (tok.token.clone(), exp, tok.permissions));
         Ok(tok.token)
+    }
+
+    /// Permissions GitHub returned for the actual repository-scoped installation token.
+    pub fn installation_token_permissions(
+        &self,
+        installation: u64,
+    ) -> Result<std::collections::BTreeMap<String, String>, Error> {
+        self.installation_token(installation)?;
+        self.inner
+            .tokens
+            .lock()
+            .expect("tokens")
+            .get(&installation)
+            .and_then(|(_, _, permissions)| permissions.clone())
+            .ok_or_else(|| Error::Auth("installation token permissions unavailable".into()))
     }
 
     fn forget_token(&self, installation: u64) {
@@ -599,6 +814,10 @@ impl Client {
                     });
                 }
                 Admit::Wait(d) => {
+                    #[cfg(feature = "test-hooks")]
+                    self.inner
+                        .budget_waits
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     if waited + d > self.inner.cfg.retry.max_rate_limit_wait {
                         return Err(Error::RateLimited {
                             path: path.to_string(),
@@ -704,7 +923,57 @@ impl Client {
     ) -> Result<Response, Error> {
         let body = body.map(|b| b.to_string().into_bytes());
         let idempotent = matches!(method, "GET" | "DELETE");
-        self.send_inner(method, path, auth, prio, body, idempotent, true)
+        self.send_inner(method, path, auth, prio, body, idempotent, true, None)
+    }
+
+    /// One fenced write attempt: no auth retry, redirect or transport replay.
+    pub(crate) fn send_single_write(
+        &self,
+        method: &str,
+        path: &str,
+        auth: Auth,
+        prio: Priority,
+        body: &serde_json::Value,
+    ) -> Result<Response, Error> {
+        if !self.has_execution_gate() || !matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
+            return Err(Error::Refused("scoped write required".into()));
+        }
+        let mut scoped = self.clone();
+        scoped.single_write_attempt = true;
+        scoped.send_inner(
+            method,
+            path,
+            auth,
+            prio,
+            Some(body.to_string().into_bytes()),
+            false,
+            true,
+            None,
+        )
+    }
+
+    /// A fenced cosmetic write with one previously reserved budget token.
+    pub(crate) fn send_reserved_cosmetic(
+        &self,
+        method: &str,
+        path: &str,
+        auth: Auth,
+        body: &serde_json::Value,
+        permit: &mut CosmeticPermit,
+    ) -> Result<Response, Error> {
+        if !matches!(method, "POST" | "PATCH") {
+            return Err(Error::Refused("invalid reserved cosmetic method".into()));
+        }
+        self.send_inner(
+            method,
+            path,
+            auth,
+            Priority::Cosmetic,
+            Some(body.to_string().into_bytes()),
+            false,
+            true,
+            Some(permit),
+        )
     }
 
     /// As [`Client::send`], without asking the write gate: only for the lease's own
@@ -717,9 +986,14 @@ impl Client {
         prio: Priority,
         body: Option<&serde_json::Value>,
     ) -> Result<Response, Error> {
+        if !self.execution_gates.is_empty() && !matches!(method, "GET" | "HEAD") {
+            return Err(Error::Refused(
+                "scoped execution cannot send an unfenced write".into(),
+            ));
+        }
         let body = body.map(|b| b.to_string().into_bytes());
         let idempotent = matches!(method, "GET" | "DELETE");
-        self.send_inner(method, path, auth, prio, body, idempotent, false)
+        self.send_inner(method, path, auth, prio, body, idempotent, false, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -732,21 +1006,8 @@ impl Client {
         body: Option<Vec<u8>>,
         retry_errors: bool,
         fenced: bool,
+        mut permit: Option<&mut CosmeticPermit>,
     ) -> Result<Response, Error> {
-        if fenced && method != "GET" && method != "HEAD" {
-            let gate = self
-                .inner
-                .gate
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            if let Some(g) = gate {
-                g.permit(method, path).map_err(|why| {
-                    self.bump(|s| s.writes_refused += 1);
-                    Error::Refused(format!("{method} {path} not sent: {why}"))
-                })?;
-            }
-        }
         let mut url = self.url(path)?;
         let policy = self.inner.cfg.retry.clone();
         let mut cache_key = format!("{auth:?} {url}");
@@ -756,7 +1017,14 @@ impl Client {
         let mut rate_waited = Duration::ZERO;
         let mut redirects = 0u32;
         loop {
-            self.admit(prio, path)?;
+            if let Some(key) = self.probe_cached_key(&url, auth, prio, method)
+                && let Some(response) = self.probe_memo.as_ref().and_then(|m| m.get(&key))
+            {
+                return Ok(response);
+            }
+            if permit.is_none() {
+                self.admit(prio, path)?;
+            }
             let mut headers = vec![
                 (
                     "accept".to_string(),
@@ -775,6 +1043,15 @@ impl Client {
                 )),
                 Auth::None => {}
             }
+            let probe_key =
+                if method == "GET" && prio == Priority::Background && self.probe_memo.is_some() {
+                    headers
+                        .iter()
+                        .find(|(k, _)| k == "authorization")
+                        .map(|(_, value)| Self::probe_key(&url, value))
+                } else {
+                    None
+                };
             if body.is_some() {
                 headers.push(("content-type".into(), "application/json".into()));
             }
@@ -790,6 +1067,32 @@ impl Client {
                 .flatten();
             if let Some((etag, _)) = &cached {
                 headers.push(("if-none-match".into(), etag.clone()));
+            }
+            if fenced && method != "GET" && method != "HEAD" {
+                let actual_path = url
+                    .strip_prefix(self.base())
+                    .ok_or_else(|| Error::Refused("write destination escaped API host".into()))?;
+                for gate in &self.execution_gates {
+                    gate.permit(method, actual_path).map_err(|why| {
+                        self.bump(|s| s.writes_refused += 1);
+                        Error::Refused(format!("{method} {actual_path} not sent: {why}"))
+                    })?;
+                }
+                let gate = self
+                    .inner
+                    .gate
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                if let Some(gate) = gate {
+                    gate.permit(method, actual_path).map_err(|why| {
+                        self.bump(|s| s.writes_refused += 1);
+                        Error::Refused(format!("{method} {actual_path} not sent: {why}"))
+                    })?;
+                }
+            }
+            if let Some(p) = permit.take() {
+                self.use_cosmetic_permit(p, path)?;
             }
             self.bump(|s| s.requests += 1);
             let resp = match self.raw(method, &url, &headers, body.as_deref()) {
@@ -835,6 +1138,12 @@ impl Client {
             if let Some(wait) = Self::rate_limit_wait(&resp) {
                 self.bump(|s| s.rate_limited += 1);
                 self.inner.budget.lock().expect("budget").block_for(wait);
+                if prio == Priority::Background {
+                    return Err(Error::RateLimited {
+                        path: path.into(),
+                        wait_secs: wait.as_secs(),
+                    });
+                }
                 if prio == Priority::Cosmetic {
                     return Err(Error::Deferred { path: path.into() });
                 }
@@ -862,12 +1171,18 @@ impl Client {
             {
                 self.bump(|s| s.not_modified += 1);
                 r.cached = true;
+                if let Some(key) = probe_key
+                    && let Some(memo) = &self.probe_memo
+                {
+                    memo.put(key, &r)?;
+                }
                 return Ok(r);
             }
             if matches!(resp.status, 301 | 302 | 307 | 308) {
                 // A renamed repository. Reads follow any of these; a write only follows 307
                 // and 308, which keep the method and body.
-                let follow = method == "GET" || matches!(resp.status, 307 | 308);
+                let follow = !self.single_write_attempt
+                    && (method == "GET" || matches!(resp.status, 307 | 308));
                 if let Some(loc) = resp.header("location").map(str::to_string)
                     && follow
                     && redirects < 3
@@ -893,7 +1208,7 @@ impl Client {
                     ),
                 });
             }
-            if resp.status == 401 && auth_retry {
+            if resp.status == 401 && auth_retry && !self.single_write_attempt {
                 if let Auth::Installation(id) = auth {
                     self.forget_token(id);
                 }
@@ -965,6 +1280,11 @@ impl Client {
                 }
                 cache.insert(cache_key.clone(), (etag.to_string(), resp.clone()));
             }
+            if let Some(key) = probe_key
+                && let Some(memo) = &self.probe_memo
+            {
+                memo.put(key, &resp)?;
+            }
             return Ok(resp);
         }
     }
@@ -1013,11 +1333,266 @@ impl Client {
         }
         Ok(out)
     }
+    /// Reads a bounded array list with a validated continuation path and query.
+    pub fn get_paginated_array_checked<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        auth: Auth,
+        prio: Priority,
+        max_pages: usize,
+    ) -> Result<Vec<T>, Error> {
+        let initial = self.url(path)?;
+        let initial_key = self
+            .pagination_key(&initial)
+            .ok_or_else(|| Error::Refused("invalid initial pagination URL".into()))?;
+        if initial_key.2 != 1 {
+            return Err(Error::Refused("pagination must start at page 1".into()));
+        }
+        let mut out = Vec::new();
+        let mut next = Some(path.to_string());
+        let mut pages = 0;
+        while let Some(p) = next.take() {
+            if pages >= max_pages {
+                return Err(Error::Decode {
+                    path: p,
+                    detail: "pagination limit exceeded".into(),
+                });
+            }
+            let response = self.send("GET", &p, auth, prio, None)?;
+            let items: Vec<T> = response.json(&p)?;
+            out.extend(items);
+            pages += 1;
+            next = response.next_link();
+            if let Some(n) = &next {
+                if !self.on_api_host(n) {
+                    return Err(Error::Refused("next page is not on the API host".into()));
+                }
+                let key = self
+                    .pagination_key(n)
+                    .ok_or_else(|| Error::Refused("invalid next-page URL".into()))?;
+                if key.0 != initial_key.0 || key.1 != initial_key.1 || key.2 != pages + 1 {
+                    return Err(Error::Refused(
+                        "next-page URL changed path, query or page sequence".into(),
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reads a wrapped GitHub list completely, rejecting malformed or changing counts and
+    /// any remaining page beyond the bound. Required check identities must never be partial.
+    pub fn get_paginated_checked<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        auth: Auth,
+        prio: Priority,
+        max_pages: usize,
+        key: &str,
+    ) -> Result<Vec<T>, Error> {
+        let initial = self.url(path)?;
+        let initial_key = self
+            .pagination_key(&initial)
+            .ok_or_else(|| Error::Refused("invalid initial pagination URL".into()))?;
+        if initial_key.2 != 1 {
+            return Err(Error::Refused("pagination must start at page 1".into()));
+        }
+        let mut out = Vec::new();
+        let mut next = Some(path.to_string());
+        let mut pages = 0;
+        let mut total = None;
+        while let Some(p) = next.take() {
+            if pages >= max_pages {
+                return Err(Error::Decode {
+                    path: p,
+                    detail: "pagination limit exceeded".into(),
+                });
+            }
+            let response = self.send("GET", &p, auth, prio, None)?;
+            let value: serde_json::Value = response.json(&p)?;
+            let count = value
+                .get("total_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| Error::Decode {
+                    path: p.clone(),
+                    detail: "missing total_count".into(),
+                })?;
+            if total.is_some_and(|old| old != count) {
+                return Err(Error::Decode {
+                    path: p,
+                    detail: "total_count changed during pagination".into(),
+                });
+            }
+            total = Some(count);
+            let items = value.get(key).cloned().ok_or_else(|| Error::Decode {
+                path: p.clone(),
+                detail: format!("missing {key} list"),
+            })?;
+            let items: Vec<T> = serde_json::from_value(items).map_err(|e| Error::Decode {
+                path: p.clone(),
+                detail: e.to_string(),
+            })?;
+            out.extend(items);
+            pages += 1;
+            next = response.next_link();
+            if next.as_ref().is_some_and(|n| !self.on_api_host(n)) {
+                return Err(Error::Refused(format!(
+                    "{path}: next page is not on the API host"
+                )));
+            }
+            if let Some(n) = &next {
+                let key = self
+                    .pagination_key(n)
+                    .ok_or_else(|| Error::Refused("invalid next-page URL".into()))?;
+                if key.0 != initial_key.0 || key.1 != initial_key.1 || key.2 != pages + 1 {
+                    return Err(Error::Refused(
+                        "next-page URL changed path, query or page sequence".into(),
+                    ));
+                }
+            }
+        }
+        if total != Some(out.len() as u64) {
+            return Err(Error::Decode {
+                path: path.into(),
+                detail: "pagination count mismatch".into(),
+            });
+        }
+        Ok(out)
+    }
+
+    fn pagination_key(&self, url: &str) -> Option<(String, Vec<String>, usize)> {
+        let relative = url.strip_prefix(self.base())?;
+        if !relative.starts_with('/') || relative.contains('#') {
+            return None;
+        }
+        let (path, query) = relative.split_once('?').unwrap_or((relative, ""));
+        let mut page = None;
+        let mut params = Vec::new();
+        for part in query.split('&').filter(|p| !p.is_empty()) {
+            if let Some(value) = part.strip_prefix("page=") {
+                if page.is_some() {
+                    return None;
+                }
+                page = Some(value.parse::<usize>().ok()?);
+            } else {
+                params.push(part.to_string());
+            }
+        }
+        params.sort();
+        Some((path.to_string(), params, page.unwrap_or(1)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_memo_is_isolated_bounded_and_keeps_pagination_headers() {
+        use std::sync::atomic::AtomicUsize;
+        let total = Arc::new(AtomicUsize::new(0));
+        let a = Arc::new(ProbeMemo::new(total.clone()));
+        let b = ProbeMemo::new(total.clone());
+        let key = Client::probe_key("https://api.example.test/a?page=1", "token first");
+        assert_ne!(
+            key,
+            Client::probe_key("https://api.example.test/a?page=2", "token first")
+        );
+        assert_ne!(
+            key,
+            Client::probe_key("https://api.example.test/a?page=1", "token second")
+        );
+        assert!(!key.contains("token first"));
+        let response = Response {
+            status: 200,
+            body: b"page one".to_vec(),
+            headers: vec![(
+                "link".into(),
+                "<https://api.example.test/a?page=2>; rel=\"next\"".into(),
+            )],
+            cached: false,
+        };
+        a.put(key.clone(), &response).unwrap();
+        assert_eq!(a.get(&key).unwrap().headers, response.headers);
+        assert!(
+            b.get(&key).is_none(),
+            "separate probes do not share cached data"
+        );
+        let shared = a.clone();
+        drop(a);
+        assert!(
+            total.load(Ordering::SeqCst) > 0,
+            "live probe retains its budget"
+        );
+        drop(shared);
+        assert_eq!(total.load(Ordering::SeqCst), 0);
+        let oversized = Response {
+            body: vec![0; PROBE_MEMO_MAX_BYTES],
+            ..response.clone()
+        };
+        assert!(b.put("large".into(), &oversized).is_err());
+        for n in 0..PROBE_MEMO_MAX_ENTRIES {
+            b.put(format!("page-{n}"), &response).unwrap();
+        }
+        assert!(b.put("one-too-many".into(), &response).is_err());
+    }
+
+    #[test]
+    fn probe_memos_share_an_aggregate_memory_limit() {
+        use std::sync::atomic::AtomicUsize;
+        let total = Arc::new(AtomicUsize::new(0));
+        let mut memos = Vec::new();
+        for i in 0..8 {
+            let memo = ProbeMemo::new(total.clone());
+            let response = Response {
+                status: 200,
+                body: vec![0; PROBE_MEMO_MAX_BYTES - 100],
+                headers: vec![],
+                cached: false,
+            };
+            memo.put(format!("key-{i}"), &response).unwrap();
+            memos.push(memo);
+        }
+        let overflow = ProbeMemo::new(total.clone());
+        let response = Response {
+            status: 200,
+            body: vec![0; 1024],
+            headers: vec![],
+            cached: false,
+        };
+        assert!(overflow.put("overflow".into(), &response).is_err());
+        drop(memos);
+        assert_eq!(total.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn concurrent_probe_memos_cannot_exceed_the_shared_limit() {
+        use std::sync::atomic::AtomicUsize;
+        let total = Arc::new(AtomicUsize::new(0));
+        let held = Arc::new(Mutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let total = total.clone();
+                let held = held.clone();
+                scope.spawn(move || {
+                    let memo = ProbeMemo::new(total);
+                    let response = Response {
+                        status: 200,
+                        body: vec![0; PROBE_MEMO_MAX_BYTES - 100],
+                        headers: vec![],
+                        cached: false,
+                    };
+                    if memo.put(format!("key-{i}"), &response).is_ok() {
+                        held.lock().unwrap().push(memo);
+                    }
+                });
+            }
+        });
+        assert_eq!(held.lock().unwrap().len(), 8);
+        assert!(total.load(Ordering::SeqCst) <= PROBE_MEMO_MAX_TOTAL_BYTES);
+        held.lock().unwrap().clear();
+        assert_eq!(total.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn budget_lets_landing_through_and_defers_cosmetics() {
@@ -1038,6 +1613,21 @@ mod tests {
         b.block_for(Duration::from_secs(30));
         assert!(matches!(b.admit(Priority::Cosmetic), Admit::Deny));
         assert!(matches!(b.admit(Priority::Landing), Admit::Wait(_)));
+    }
+
+    #[test]
+    fn watchdog_reads_leave_budget_for_reconciliation() {
+        let mut b = Budget::new(BudgetConfig {
+            capacity: 3.0,
+            refill_per_sec: 0.0001,
+            cosmetic_reserve: 2.0,
+        });
+        assert!(matches!(b.admit(Priority::Background), Admit::Go));
+        assert!(matches!(b.admit(Priority::Background), Admit::Deny));
+        assert!(matches!(b.admit(Priority::Normal), Admit::Go));
+        assert!(matches!(b.admit(Priority::Normal), Admit::Go));
+        b.block_for(Duration::from_secs(30));
+        assert!(matches!(b.admit(Priority::Background), Admit::Deny));
     }
 
     #[test]

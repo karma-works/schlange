@@ -899,6 +899,14 @@ fn serve(a: ServeArgs) -> ExitCode {
             ttl: a.lease_ttl.max(10),
         }),
         pause_before_land: None,
+        heartbeat_test_offset: None,
+        watchdog_test_observations: None,
+        watchdog_test_samples: None,
+        watchdog_test_cycles: None,
+        watchdog_test_partial_prs: None,
+        watchdog_test_completed: None,
+        watchdog_test_pause: None,
+        watchdog_test_reconcile_pause: None,
     };
     let clock = std::sync::Arc::new(schlange_github::time::SystemClock);
     match schlange_github::Service::start(cfg, clock) {

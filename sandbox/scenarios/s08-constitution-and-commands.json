@@ -9,13 +9,16 @@
     {
       "open": "a",
       "files": {
-        "governance/rule.txt": "Constitution change in the scenario\n"
+        "governance/rule.txt": "Constitution change in scenario {run}\n"
       }
     },
     {
       "wait": "quiet",
       "seconds": 300,
       "timeout": 1800
+    },
+    {
+      "assert_unqueued": "a"
     },
     {
       "comment": "a",
@@ -26,6 +29,9 @@
       "wait": "quiet",
       "seconds": 180,
       "timeout": 1200
+    },
+    {
+      "assert_unqueued": "a"
     },
     {
       "comment": "a",

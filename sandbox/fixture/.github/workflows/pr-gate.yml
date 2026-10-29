@@ -1,9 +1,8 @@
 name: PR gate
 
 # Imitation of arzt-agent/.github/workflows/pr-gate.yml: required check
-# `Risk class and data protection`. Queue PRs of the queue bot report green at once.
-# The bot login comes from the repo variable QUEUE_BOT_LOGIN (queue-lab: mergify[bot],
-# schlange-e2e: the bot of the Schlange app). This is exactly the line that changes at the switchover.
+# `Risk class and data protection`. Like Arztagent, only Mergify's queue PRs are exempt;
+# Schlange drafts must pass the normal heading check. The risk classifier is not modeled here.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited, ready_for_review]
@@ -21,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      QUEUE: ${{ startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == (vars.QUEUE_BOT_LOGIN || 'mergify[bot]') }}
+      QUEUE: ${{ startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == 'mergify[bot]' }}
     steps:
       - if: env.QUEUE == 'true'
-        run: echo "Queue PR of the queue bot; the PRs it contains passed this check."
+        run: echo "Queue PR of Mergify; the PRs it contains passed this check."
       - name: Data protection section
         if: env.QUEUE != 'true'
         env:

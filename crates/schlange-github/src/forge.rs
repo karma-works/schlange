@@ -219,6 +219,16 @@ pub fn refusal_text(status: u16, message: &str) -> String {
 }
 
 impl GithubForge {
+    /// An isolated read-only observer shares the client budget but has a private probe memo.
+    pub(crate) fn with_probe_memo(&self, memo: Arc<crate::client::ProbeMemo>) -> Self {
+        let mut api = self.api.clone();
+        api.client = api.client.with_probe_memo(memo);
+        let mut forge = Self::new(api, self.clock.clone(), self.opts.clone());
+        forge.read_reviews = self.read_reviews;
+        forge.check = self.check.clone();
+        forge
+    }
+
     pub fn new(api: RepoApi, clock: Arc<dyn Clock>, opts: ForgeOptions) -> Self {
         GithubForge {
             api,
@@ -389,6 +399,274 @@ impl GithubForge {
     pub fn read_pr(&self, n: u64, prio: Priority) -> Result<PullRequest, Error> {
         let p = self.pull(n, prio)?;
         self.pr_from(&p, prio)
+    }
+
+    /// Read checks with suite identity using requirements supplied by the same protected read.
+    /// Multiple required Actions suites need workflow association, which is not yet supported
+    /// by this path and is refused. The caller must fence and revalidate the whole read.
+    pub fn read_pr_with_checks(
+        &self,
+        n: u64,
+        prio: Priority,
+        checks: &[String],
+        bound: &[schlange_core::model::RequiredCheck],
+    ) -> Result<PullRequest, Error> {
+        let mut pr = self.read_pr(n, prio)?;
+        if pr.closed {
+            return Ok(pr);
+        }
+        let runs = self.api.validated_suite_runs(&pr.head_sha, prio)?;
+        pr.checks.clear();
+        for status in self.api.combined_status_checked(&pr.head_sha, prio)? {
+            pr.checks.push(CheckRun {
+                name: status.context,
+                app: None,
+                head_sha: pr.head_sha.clone(),
+                conclusion: status_conclusion(&status.state),
+                seq: status.id,
+                status: true,
+                ..Default::default()
+            });
+        }
+        pr.required_check_names = checks.iter().cloned().collect();
+        for (suite, run) in runs {
+            let app = suite.app.as_ref().expect("suite app was validated");
+            let slug = app.slug.as_ref().expect("suite slug was validated");
+            let app_id = app.id.expect("suite app ID was validated");
+            if slug == &self.opts.app_slug {
+                continue;
+            }
+            if slug == "github-actions"
+                && bound
+                    .iter()
+                    .any(|r| r.context == run.name && r.app_id == app_id)
+            {
+                pr.required_check_names
+                    .insert(format!("@github-actions/{}", run.name));
+            }
+            pr.checks.push(CheckRun {
+                name: run.name,
+                app: Some(slug.clone()),
+                app_id: Some(app_id),
+                head_sha: run.head_sha,
+                conclusion: conclusion(&run.status, run.conclusion.as_deref()),
+                seq: run.id,
+                suite_id: Some(suite.id),
+                suite_created_at: suite.created_at,
+                ..Default::default()
+            });
+        }
+        if pr.checks_incomplete() {
+            return Err(Error::Refused(
+                "check identity or workflow association unavailable".into(),
+            ));
+        }
+        Ok(pr)
+    }
+
+    /// Build a candidate held-base publication from two matching complete reads. The caller
+    /// must additionally fence ingress and the lease; GitHub reads are not atomic.
+    pub fn read_base_identity_batch(
+        &self,
+        base: &str,
+        generation: u64,
+        state: &State,
+        prio: Priority,
+    ) -> Result<Event, Error> {
+        let list = || -> Result<Vec<Pull>, Error> {
+            let mut pulls: Vec<_> = self
+                .api
+                .open_pulls_checked(prio)?
+                .into_iter()
+                .filter(|p| p.base.ref_name == base)
+                .collect();
+            pulls.sort_by_key(|p| p.number);
+            if pulls.windows(2).any(|p| p[0].number == p[1].number) {
+                return Err(Error::Refused("duplicate open pull request".into()));
+            }
+            Ok(pulls)
+        };
+        let initial = list()?;
+        let mut numbers: BTreeSet<u64> = initial.iter().map(|p| p.number).collect();
+        numbers.extend(
+            state
+                .pull_requests
+                .values()
+                .filter(|p| p.base == base && !p.closed && !p.merged)
+                .map(|p| p.number),
+        );
+        numbers.extend(
+            state
+                .queued
+                .iter()
+                .filter(|(_, e)| e.base == base)
+                .map(|(n, _)| *n),
+        );
+        if let Some(train) = state.trains.get(base) {
+            for car in &train.cars {
+                numbers.extend(car.own.iter().copied());
+                numbers.extend(car.draft);
+            }
+        }
+        let requirements = self.api.required_check_contexts(base, prio)?;
+        let own_app = if requirements
+            .iter()
+            .any(|r| r.context == self.opts.check_name)
+        {
+            let app = self.api.client.app()?;
+            if app.id == 0 || app.slug != self.opts.app_slug {
+                return Err(Error::Refused("own app identity unavailable".into()));
+            }
+            Some(app.id)
+        } else {
+            None
+        };
+        if requirements
+            .iter()
+            .any(|r| r.context == self.opts.check_name && r.app_id.is_none())
+        {
+            return Err(Error::Refused(
+                "unqualified queue check requirement is ambiguous".into(),
+            ));
+        }
+        let checks: Vec<String> = requirements
+            .iter()
+            .filter(|r| r.app_id.is_none())
+            .map(|r| r.context.clone())
+            .collect();
+        let bound: Vec<schlange_core::model::RequiredCheck> = requirements
+            .iter()
+            .filter_map(|r| {
+                (r.context != self.opts.check_name || r.app_id != own_app)
+                    .then(|| {
+                        r.app_id.map(|id| schlange_core::model::RequiredCheck {
+                            context: r.context.clone(),
+                            app_id: id,
+                        })
+                    })
+                    .flatten()
+            })
+            .collect();
+        let tip = self
+            .read_branch_checked(base, prio)?
+            .ok_or_else(|| Error::Refused("base missing".into()))?;
+        let read = || -> Result<Vec<PullRequest>, Error> {
+            let mut prs = Vec::new();
+            for number in &numbers {
+                let observed = self.pull(*number, prio)?;
+                if observed.base.ref_name != base || observed.base.sha != tip {
+                    return Err(Error::Refused(
+                        "pull request base differs from observed tip".into(),
+                    ));
+                }
+                let mut pr = self.read_pr_with_checks(*number, prio, &checks, &bound)?;
+                if pr.base != base
+                    || pr.head_sha != observed.head.sha
+                    || pr.base_tip.as_ref().is_some_and(|seen| seen != &tip)
+                {
+                    return Err(Error::Refused("pull request head or base changed".into()));
+                }
+                pr.base_tip = Some(tip.clone());
+                prs.push(pr);
+            }
+            Ok(prs)
+        };
+        let first = read()?;
+        let second = read()?;
+        let final_pulls = list()?;
+        let list_matches_read = final_pulls.iter().all(|p| {
+            second
+                .iter()
+                .find(|r| r.number == p.number)
+                .is_some_and(|r| {
+                    let labels: BTreeSet<_> = p.labels.iter().map(|l| l.name.clone()).collect();
+                    r.head_sha == p.head.sha
+                        && r.head_ref == p.head.ref_name
+                        && r.base == p.base.ref_name
+                        && r.author == p.user.login
+                        && r.draft == p.draft
+                        && r.title == p.title
+                        && r.labels == labels
+                        && (p.user.login == self.opts.bot_login
+                            || r.body == p.body.clone().unwrap_or_default())
+                })
+        });
+        if first != second
+            || self.read_branch_checked(base, prio)?.as_ref() != Some(&tip)
+            || self.api.required_check_contexts(base, prio)? != requirements
+            || format!("{final_pulls:?}") != format!("{initial:?}")
+            || !list_matches_read
+        {
+            return Err(Error::Refused("identity batch changed during read".into()));
+        }
+        Ok(Event::CheckIdentityBatch {
+            base: base.into(),
+            generation,
+            pull_requests: second,
+            base_tip: tip,
+            checks,
+            bound_checks: bound,
+        })
+    }
+
+    /// Checks only the narrow case where every known open pull remains in a waiting queue.
+    /// The caller must keep that membership/head/base stable through consumption, fence ingress
+    /// and lease, and preserve the cosmetic reset of any bot checkbox edits.
+    pub fn waiting_queue_comments_clear(
+        &self,
+        state: &State,
+        prio: Priority,
+    ) -> Result<bool, Error> {
+        use schlange_core::commands::{self, CONTROLS_MARKER, STATUS_MARKER};
+        use schlange_core::engine::EntryStatus;
+        if state.pull_requests.values().any(|p| {
+            p.closed
+                || p.merged
+                || state.queued.get(&p.number).is_some_and(|e| {
+                    e.status != EntryStatus::Waiting || e.head_sha != p.head_sha || e.base != p.base
+                })
+        }) {
+            return Ok(false);
+        }
+        let snapshot =
+            |n: u64| -> Result<Option<Vec<(u64, String, String, String, String)>>, Error> {
+                let mut result = Vec::new();
+                for c in self.api.issue_comments_checked(n, prio)? {
+                    if c.id == 0
+                        || c.user.login.is_empty()
+                        || crate::time::parse_rfc3339(&c.created_at).is_none()
+                        || crate::time::parse_rfc3339(&c.updated_at).is_none()
+                    {
+                        return Ok(None);
+                    }
+                    result.push((c.id, c.user.login, c.body, c.created_at, c.updated_at));
+                }
+                result.sort();
+                if result.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    return Ok(None);
+                }
+                Ok(Some(result))
+            };
+        for pr in state.pull_requests.values() {
+            let Some(first) = snapshot(pr.number)? else {
+                return Ok(false);
+            };
+            for (_, author, body, _, _) in &first {
+                if author.eq_ignore_ascii_case(&self.opts.bot_login) {
+                    if !state.queued.contains_key(&pr.number)
+                        || (!body.contains(CONTROLS_MARKER) && !body.contains(STATUS_MARKER))
+                    {
+                        return Ok(false);
+                    }
+                } else if commands::parse(body) != commands::Parsed::NotACommand {
+                    return Ok(false);
+                }
+            }
+            if snapshot(pr.number)?.as_ref() != Some(&first) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn pr_from(&self, p: &Pull, prio: Priority) -> Result<PullRequest, Error> {
@@ -896,6 +1174,22 @@ impl GithubForge {
         }
     }
 
+    /// An identity-fenced worker must stop and leave its intent unresolved when execution
+    /// creates a deferred operation or delayed reply. It must not retry this forge afterward.
+    pub fn execute_guarded_once(&mut self, d: &Decision) -> Result<Vec<Event>, String> {
+        if !self.api.client.has_execution_gate() {
+            return Err("execution gate is required".into());
+        }
+        if self.pending_count() != 0 {
+            return Err("previous operation is unresolved".into());
+        }
+        let events = self.execute(d);
+        if self.pending_count() != 0 {
+            return Err("operation outcome is unresolved".into());
+        }
+        Ok(events)
+    }
+
     /// Carries out one decision. Failures of builds, closes and reads are deferred (retried);
     /// a failed landing goes back to the engine, which re-validates before landing again.
     pub fn execute(&mut self, d: &Decision) -> Vec<Event> {
@@ -1051,6 +1345,9 @@ impl GithubForge {
         // A branch left by an earlier attempt is rebuilt from scratch.
         match self.api.branch_sha(branch, prio) {
             Ok(_) => {
+                if self.api.client.has_execution_gate() {
+                    return Err(Error::Refused("guarded build branch already exists".into()));
+                }
                 self.api.delete_ref(branch, prio).or_else(|e| match e {
                     Error::NotFound { .. } => Ok(()),
                     e => Err(e),
@@ -1062,6 +1359,9 @@ impl GithubForge {
         match self.api.create_ref(branch, start, prio) {
             Ok(()) => {}
             Err(e @ (Error::Ambiguous { .. } | Error::Status { status: 422, .. })) => {
+                if self.api.client.has_execution_gate() {
+                    return Err(e);
+                }
                 // Did it happen? Use it when it points at the start.
                 if self.api.branch_sha(branch, prio).ok().as_deref() != Some(start) {
                     return Err(e);
@@ -1174,7 +1474,7 @@ impl GithubForge {
                 .join(", ")
         );
         let body = format!(
-            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\nDo not edit this pull request; the queue closes it.",
+            "Schlange tests these pull requests together with `{base_branch}` at {}:\n\n{}\n\n## Datenschutz\n\nSee the constituent pull requests for their data protection details.\n\nDo not edit this pull request; the queue closes it.",
             short(base_sha),
             prs.iter()
                 .map(|p| format!("- #{} at {}", p.number, short(&p.head_sha)))
@@ -1850,28 +2150,45 @@ impl GithubForge {
     /// Creates or edits the queue's own comment with `marker` on pull request `n`.
     fn upsert(&mut self, n: u64, marker: &'static str, body: &str) -> Result<(), Error> {
         let prio = Priority::Cosmetic;
+        let mut permit = None;
         let id = match self.own_comments.get(&(n, marker)).copied() {
             Some(id) => Some(id),
-            None => self
-                .api
-                .issue_comments(n, prio)?
-                .into_iter()
-                .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
-                .map(|c| c.id),
+            None => {
+                permit = Some(self.api.client.reserve_cosmetic_write("status comment")?);
+                self.api
+                    .issue_comments(n, prio)?
+                    .into_iter()
+                    .find(|c| c.user.login == self.opts.bot_login && c.body.contains(marker))
+                    .map(|c| c.id)
+            }
         };
         if let Some(id) = id {
-            match self.api.update_comment(id, body, prio) {
+            // Keep the identity learned from the read even if the subsequent write is
+            // deferred. Otherwise each retry spends the next token rediscovering the same
+            // comment and may never leave enough budget to update it.
+            self.own_comments.insert((n, marker), id);
+            let result = if let Some(p) = permit.as_mut() {
+                self.api.update_comment_reserved(id, body, p)
+            } else {
+                self.api.update_comment(id, body, prio)
+            };
+            match result {
                 Ok(()) => {
                     self.own_comments.insert((n, marker), id);
                     return Ok(());
                 }
                 Err(Error::NotFound { .. }) => {
                     self.own_comments.remove(&(n, marker));
+                    permit = None;
                 }
                 Err(e) => return Err(e),
             }
         }
-        let id = self.api.comment(n, body, prio)?;
+        let id = if let Some(p) = permit.as_mut() {
+            self.api.comment_reserved(n, body, p)?
+        } else {
+            self.api.comment(n, body, prio)?
+        };
         self.own_comments.insert((n, marker), id);
         Ok(())
     }

@@ -1,5 +1,5 @@
 //! The permissions the GitHub App needs, and no more (W-22). Mergify asks for about fifteen,
-//! among them `administration: read`, `actions: write` and `members: read`. Schlange needs:
+//! among them `actions: write` and `members: read`. Schlange needs:
 //!
 //! | Permission | Level | Why |
 //! |---|---|---|
@@ -9,6 +9,8 @@
 //! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
+//! | `actions` | read | associate required Actions checks with workflows and events |
+//! | `administration` | read | read classic branch-protection requirements |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
 //! Webhook events: `pull_request`, `check_run`, `check_suite`, `status`, `issue_comment`,
@@ -29,6 +31,8 @@ pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("issues", "read", true),
     ("checks", "write", true),
     ("statuses", "read", true),
+    ("actions", "read", true),
+    ("administration", "read", true),
     ("workflows", "write", false),
 ];
 
@@ -40,6 +44,8 @@ pub const SHADOW_PERMISSIONS: &[(&str, &str, bool)] = &[
     ("issues", "read", true),
     ("checks", "read", true),
     ("statuses", "read", true),
+    ("actions", "read", true),
+    ("administration", "read", true),
 ];
 
 /// The permission list of a mode: shadow or acting.
@@ -117,6 +123,27 @@ pub fn compare_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_identity_needs_actions_and_administration_read() {
+        for shadow in [false, true] {
+            let permissions = for_mode(shadow);
+            assert!(
+                permissions
+                    .iter()
+                    .any(|&(name, level, required)| name == "actions"
+                        && level == "read"
+                        && required)
+            );
+            assert!(
+                permissions
+                    .iter()
+                    .any(|&(name, level, required)| name == "administration"
+                        && level == "read"
+                        && required)
+            );
+        }
+    }
 
     #[test]
     fn missing_and_extra_permissions_are_named() {

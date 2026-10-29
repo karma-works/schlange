@@ -1,0 +1,13 @@
+{
+  "id": "S13",
+  "title": "Base moves while the conflicting pull request is still a draft",
+  "refs": ["MQ-06", "MQ-27", "MQ-47"],
+  "steps": [
+    {"open": "b", "draft": true, "conflict": true},
+    {"wait": "quiet", "seconds": 120, "timeout": 1200},
+    {"assert_unqueued": "b"},
+    {"main_commit": {"shared/conflict.txt": "Shared file for text conflicts between scenario PRs.\nline: main ({run})\n"}},
+    {"ready": "b"},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

@@ -628,6 +628,9 @@ pub fn condition_text(c: &Condition) -> String {
         Condition::And(cs) => group("all of", cs),
         Condition::Or(cs) => group("any of", cs),
         Condition::Not(c) => format!("not({})", condition_text(c)),
+        Condition::RequiredCheck { context, app_id } => {
+            format!("required check {context} (app {app_id})")
+        }
         Condition::Always => "true".into(),
     }
 }

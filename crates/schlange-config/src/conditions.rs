@@ -84,6 +84,11 @@ pub struct Atom {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Condition {
     Atom(Atom),
+    /// A branch-protection context tied to its numeric app identity.
+    RequiredCheck {
+        context: String,
+        app_id: u64,
+    },
     And(Vec<Condition>),
     Or(Vec<Condition>),
     Not(Box<Condition>),
@@ -104,7 +109,7 @@ impl Condition {
             Condition::Atom(a) => out.push(a),
             Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| c.collect(out)),
             Condition::Not(c) => c.collect(out),
-            Condition::Always => {}
+            Condition::Always | Condition::RequiredCheck { .. } => {}
         }
     }
 }

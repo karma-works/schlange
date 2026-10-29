@@ -267,3 +267,29 @@ fn an_accepted_edit_landed_untested_is_rejected() {
         "{v:?}"
     );
 }
+
+#[test]
+fn checker_rejects_landing_without_required_app_bound_check() {
+    use schlange_core::model::RequiredCheck;
+    let mut f = forge();
+    let tip = build_car(&mut f);
+    f.bound_required_checks.insert(
+        "main".into(),
+        vec![RequiredCheck {
+            context: "full".into(),
+            app_id: 42,
+        }],
+    );
+    land(&mut f, MergeMethod::Squash, &tip);
+    let v = violations(&f, &rules("squash", false, false));
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I1:") && line.contains("merge conditions")),
+        "{v:?}"
+    );
+    assert!(
+        v.iter()
+            .any(|line| line.starts_with("I0:") && line.contains("without green")),
+        "{v:?}"
+    );
+}

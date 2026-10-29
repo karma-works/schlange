@@ -1052,6 +1052,7 @@ version = "0.0.1"
 dependencies = [
  "proptest",
  "ring",
+ "rusqlite",
  "schlange-config",
  "schlange-core",
  "schlange-forge",

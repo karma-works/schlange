@@ -20,18 +20,33 @@ pub enum Conclusion {
     Stale,
 }
 
+/// A branch-protection context bound to a numeric forge app identity.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RequiredCheck {
+    pub context: String,
+    pub app_id: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     pub name: String,
     /// Slug of the app that published the run (`github-actions`); `None` if unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// Numeric identity of the app that published this check, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<u64>,
     pub head_sha: String,
     /// `None` while queued or in progress.
     pub conclusion: Option<Conclusion>,
     /// Creation order on the forge among runs of the same kind (check runs and commit
     /// statuses are numbered apart, so their orders are never compared).
     pub seq: u64,
+    /// The suite's creation time and immutable identity, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_id: Option<u64>,
     /// A commit status (one per context), not a check run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub status: bool,
@@ -65,6 +80,9 @@ pub struct PullRequest {
     pub dependabot_update_types: Vec<String>,
     #[serde(default)]
     pub checks: Vec<CheckRun>,
+    /// Check contexts that branch protection requires for this snapshot.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub required_check_names: BTreeSet<String>,
     /// Merged (by the queue or by hand). A merged pull request is also closed.
     #[serde(default)]
     pub merged: bool,
@@ -211,6 +229,7 @@ impl PullRequest {
             files: vec![],
             dependabot_update_types: vec![],
             checks: vec![],
+            required_check_names: BTreeSet::new(),
             merged: false,
             behind_base: false,
             base_tip: None,
@@ -237,24 +256,34 @@ impl PullRequest {
     /// Run a Condition Reads"), one per kind (check run or commit status), name and app:
     ///
     /// - commit statuses: the latest one posted per context;
-    /// - check runs: the newest run of each workflow file and triggering event; when one check
-    ///   spans several of those, a run that has not passed is kept even if another one passed
-    ///   later. The docs read it that way for checks the base branch requires; the engine does
-    ///   not know which checks are required, so it reads every check that way (fail closed).
+    /// - required GitHub Actions checks: the newest run for each workflow and event;
+    /// - other check runs: the newest run in the newest suite for that name and app.
     pub fn current_checks(&self) -> Vec<&CheckRun> {
-        type Key<'a> = (bool, &'a str, Option<&'a str>);
+        type Key<'a> = (bool, &'a str, Option<&'a str>, Option<u64>);
         let mut groups: Vec<(Key, Vec<&CheckRun>)> = Vec::new();
         for run in self.checks.iter().filter(|c| c.head_sha == self.head_sha) {
-            let key = (run.status, run.name.as_str(), run.app.as_deref());
+            let key = (
+                run.status,
+                run.name.as_str(),
+                run.app.as_deref(),
+                run.app_id,
+            );
             let suite = (run.workflow.as_deref(), run.event.as_deref());
             let Some((_, runs)) = groups.iter_mut().find(|(k, _)| *k == key) else {
                 groups.push((key, vec![run]));
                 continue;
             };
-            let same =
-                |r: &&CheckRun| run.status || (r.workflow.as_deref(), r.event.as_deref()) == suite;
+            let per_workflow = !run.status
+                && run.app.as_deref() == Some("github-actions")
+                && (self.required_check_names.contains(&run.name)
+                    || self
+                        .required_check_names
+                        .contains(&format!("@github-actions/{}", run.name)));
+            let same = |r: &&CheckRun| {
+                !per_workflow || (r.workflow.as_deref(), r.event.as_deref()) == suite
+            };
             match runs.iter_mut().find(|r| same(r)) {
-                Some(slot) if slot.seq < run.seq => *slot = run,
+                Some(slot) if check_order(slot) < check_order(run) => *slot = run,
                 Some(_) => {}
                 None => runs.push(run),
             }
@@ -270,4 +299,74 @@ impl PullRequest {
             })
             .collect()
     }
+
+    /// Reject ambiguous suite or app identities rather than guessing which run is newest.
+    pub fn checks_incomplete(&self) -> bool {
+        let checks: Vec<_> = self
+            .checks
+            .iter()
+            .filter(|c| !c.status && c.head_sha == self.head_sha)
+            .collect();
+        checks.iter().any(|run| {
+            let time = run
+                .suite_created_at
+                .as_deref()
+                .and_then(|s| crate::time::parse_timestamp(s).ok());
+            let partial = run.suite_id.is_some() != run.suite_created_at.is_some()
+                || (run.suite_created_at.is_some() && time.is_none());
+            let required = run.app.as_deref() == Some("github-actions")
+                && (self.required_check_names.contains(&run.name)
+                    || self
+                        .required_check_names
+                        .contains(&format!("@github-actions/{}", run.name)));
+            let peers: Vec<_> = checks
+                .iter()
+                .filter(|p| p.name == run.name && p.app == run.app)
+                .collect();
+            let distinct_suites: BTreeSet<_> = peers.iter().filter_map(|p| p.suite_id).collect();
+            let missing_workflow = required
+                && distinct_suites.len() > 1
+                && peers
+                    .iter()
+                    .any(|p| p.workflow.is_none() || p.event.is_none());
+            partial
+                || missing_workflow
+                || checks.iter().any(|peer| {
+                    let same_slug = peer.name == run.name && peer.app == run.app;
+                    let same_id = run.app_id.is_some() && peer.app_id == run.app_id;
+                    if same_id && peer.app != run.app {
+                        return true;
+                    }
+                    if !same_slug {
+                        return false;
+                    }
+                    let peer_time = peer
+                        .suite_created_at
+                        .as_deref()
+                        .and_then(|s| crate::time::parse_timestamp(s).ok());
+                    let mixed_identity = peer.app_id.is_some() != run.app_id.is_some();
+                    let mixed_suite = peer.suite_id.is_some() != run.suite_id.is_some();
+                    let conflicting_suite_time = peer.suite_id == run.suite_id
+                        && peer.suite_id.is_some()
+                        && peer_time != time;
+                    let tied_suites = peer.suite_id.is_some()
+                        && run.suite_id.is_some()
+                        && peer.suite_id != run.suite_id
+                        && peer_time == time
+                        && (!required
+                            || (peer.workflow == run.workflow && peer.event == run.event));
+                    mixed_identity || mixed_suite || conflicting_suite_time || tied_suites
+                })
+        })
+    }
+}
+
+fn check_order(run: &CheckRun) -> (Option<i64>, Option<u64>, u64) {
+    (
+        run.suite_created_at
+            .as_deref()
+            .and_then(|s| crate::time::parse_timestamp(s).ok()),
+        run.suite_id,
+        run.seq,
+    )
 }

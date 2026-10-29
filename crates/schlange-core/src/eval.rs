@@ -77,6 +77,7 @@ pub fn with_author(list: &[Condition], author: &str) -> Vec<Condition> {
             Condition::And(cs) => Condition::And(cs.iter().map(|c| render(c, author)).collect()),
             Condition::Or(cs) => Condition::Or(cs.iter().map(|c| render(c, author)).collect()),
             Condition::Not(c) => Condition::Not(Box::new(render(c, author))),
+            Condition::RequiredCheck { .. } => c.clone(),
             Condition::Always => Condition::Always,
         }
     }
@@ -102,6 +103,8 @@ pub enum EvalError {
     /// The forge listed only part of the changed files: a condition on them cannot be judged.
     #[error("`{0}` cannot be judged: the forge listed only part of the changed files")]
     IncompleteFiles(String),
+    #[error("`{0}` cannot be judged: check identity or suite order is incomplete")]
+    IncompleteChecks(String),
 }
 
 /// The conclusions a `check-*` attribute selects; `None` for other attributes.
@@ -200,6 +203,9 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
             AttrValue::Str(ctx.dequeue_reason.clone().unwrap_or_else(|| "NONE".into()))
         }
         other => match check_predicate(other) {
+            Some(_) if pr.checks_incomplete() => {
+                return Err(EvalError::IncompleteChecks(other.to_string()));
+            }
             Some(pred) => checks_where(pr, None, pred),
             None => return Err(EvalError::UnsupportedAttribute(other.to_string())),
         },
@@ -286,6 +292,9 @@ fn is_author_template(v: &str) -> bool {
 
 /// Evaluates one atom.
 pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, EvalError> {
+    if check_predicate(&atom.attribute).is_some() && pr.checks_incomplete() {
+        return Err(EvalError::IncompleteChecks(atom.attribute.clone()));
+    }
     // `{{ author }}` as a value stands for the pull request's author (docs: conditions,
     // "Matching the Pull Request Author"); numbers, times and permissions reject it below as
     // an invalid value.
@@ -435,6 +444,32 @@ fn eval3(
     errors: &mut Vec<EvalError>,
 ) -> Option<bool> {
     match cond {
+        Condition::RequiredCheck { context, app_id } => {
+            if pr.checks_incomplete()
+                || pr.checks.iter().any(|c| {
+                    c.head_sha == pr.head_sha
+                        && c.name == *context
+                        && (c.status || c.app_id.is_none())
+                })
+            {
+                errors.push(EvalError::IncompleteChecks(context.clone()));
+                None
+            } else {
+                let runs: Vec<_> = pr
+                    .current_checks()
+                    .into_iter()
+                    .filter(|c| !c.status && c.name == *context && c.app_id == Some(*app_id))
+                    .collect();
+                let slugs: std::collections::BTreeSet<_> = runs.iter().map(|c| &c.app).collect();
+                Some(
+                    !runs.is_empty()
+                        && slugs.len() == 1
+                        && runs
+                            .iter()
+                            .all(|c| c.conclusion == Some(Conclusion::Success)),
+                )
+            }
+        }
         Condition::Atom(a) => match eval_atom(a, pr, ctx) {
             Ok(r) => Some(r),
             Err(e) => {
@@ -481,6 +516,11 @@ pub fn referenced_checks(list: &[Condition]) -> Vec<String> {
             }
             Condition::And(cs) | Condition::Or(cs) => cs.iter().for_each(|c| walk(c, out)),
             Condition::Not(c) => walk(c, out),
+            Condition::RequiredCheck { context, .. } => {
+                if !out.contains(context) {
+                    out.push(context.clone());
+                }
+            }
             Condition::Always => {}
         }
     }
@@ -529,6 +569,94 @@ mod tests {
         eval_atom(&parse_atom(cond).unwrap(), pr, &Context::default()).unwrap()
     }
 
+    #[test]
+    fn required_check_app_binding_does_not_accept_another_apps_success() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        let head = p.head_sha.clone();
+        let check = |app_id, conclusion| crate::model::CheckRun {
+            name: "ci".into(),
+            app: Some(format!("app-{app_id}")),
+            app_id: Some(app_id),
+            head_sha: head.clone(),
+            conclusion: Some(conclusion),
+            ..Default::default()
+        };
+        p.checks = vec![
+            check(42, Conclusion::Failure),
+            check(43, Conclusion::Success),
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks = vec![
+            check(42, Conclusion::Success),
+            check(43, Conclusion::Failure),
+        ];
+        assert!(eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks = vec![check(43, Conclusion::Success)];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+    }
+
+    #[test]
+    fn app_bound_green_check_cannot_hide_a_red_same_name_status() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        p.checks = vec![
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("app".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Success),
+                ..Default::default()
+            },
+            crate::model::CheckRun {
+                name: "ci".into(),
+                status: true,
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Failure),
+                ..Default::default()
+            },
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+        p.checks[1].app_id = Some(42);
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+    }
+
+    #[test]
+    fn bound_identity_cannot_be_split_by_inconsistent_slug() {
+        let mut p = pr();
+        let cond = Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42,
+        };
+        p.checks = vec![
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("a".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Failure),
+                ..Default::default()
+            },
+            crate::model::CheckRun {
+                name: "ci".into(),
+                app: Some("b".into()),
+                app_id: Some(42),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(Conclusion::Success),
+                ..Default::default()
+            },
+        ];
+        assert!(!eval(&cond, &p, &Context::default(), &mut vec![]));
+    }
+
+    /// Table test: every conclusion against every check attribute (MQ-16).
     #[test]
     fn scalars_and_lists() {
         let p = pr();
@@ -818,11 +946,14 @@ mod tests {
         // One check over two workflow files: a newer pass in one does not hide a failure in
         // the other.
         let mut w1 = run("test", "h2", Some(Failure), 3);
+        w1.app = Some("github-actions".into());
         w1.workflow = Some("ci.yml".into());
         w1.event = Some("pull_request".into());
         let mut w2 = run("test", "h2", Some(Success), 4);
+        w2.app = Some("github-actions".into());
         w2.workflow = Some("nightly.yml".into());
         w2.event = Some("pull_request".into());
+        p.required_check_names.insert("test".into());
         p.checks = vec![w1.clone(), w2.clone()];
         assert!(!holds("check-success = test", &p));
         // A re-run of the same workflow and event replaces the earlier run.
@@ -840,6 +971,82 @@ mod tests {
         assert!(holds("check-failure = lint", &p));
         assert!(holds("check-success = lint", &p));
         assert_eq!(p.current_checks().len(), 2);
+    }
+
+    #[test]
+    fn arztagent_custom_review_uses_newest_suite_before_run_id() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut old = run("KI-Review", "h2", Some(Failure), 900);
+        old.app = Some("github-actions".into());
+        old.app_id = Some(15368);
+        old.suite_id = Some(10);
+        old.suite_created_at = Some("2026-01-01T00:00:00Z".into());
+        let mut newer = old.clone();
+        newer.seq = 100;
+        newer.conclusion = Some(Success);
+        newer.suite_id = Some(11);
+        newer.suite_created_at = Some("2026-01-02T00:00:00Z".into());
+        p.checks = vec![old, newer];
+        assert!(holds("check-success = KI-Review", &p));
+        assert!(holds("#check-failure = 0", &p));
+    }
+
+    #[test]
+    fn nonrequired_review_uses_latest_suite_even_across_events() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut old = run("KI-Review", "h2", Some(Failure), 900);
+        old.app = Some("github-actions".into());
+        old.app_id = Some(15368);
+        old.suite_id = Some(10);
+        old.suite_created_at = Some("2026-01-01T00:00:00Z".into());
+        old.workflow = Some("ai-review.yml".into());
+        old.event = Some("pull_request_target".into());
+        let mut newer = old.clone();
+        newer.seq = 100;
+        newer.conclusion = Some(Success);
+        newer.suite_id = Some(11);
+        newer.suite_created_at = Some("2026-01-02T00:00:00Z".into());
+        newer.event = Some("workflow_dispatch".into());
+        p.checks = vec![old, newer];
+        assert!(holds("check-success = KI-Review", &p));
+        assert!(holds("#check-failure = 0", &p));
+    }
+
+    #[test]
+    fn incomplete_or_tied_suite_order_never_turns_a_failure_green() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut green = run("KI-Review", "h2", Some(Success), 100);
+        green.app = Some("github-actions".into());
+        green.app_id = Some(15368);
+        green.suite_id = Some(10);
+        green.suite_created_at = Some("2026-01-01T00:00:00Z".into());
+        let mut red = green.clone();
+        red.seq = 99;
+        red.conclusion = Some(Failure);
+        red.suite_id = None;
+        red.suite_created_at = None;
+        p.checks = vec![green.clone(), red.clone()];
+        let unknown = |condition: &str, pr: &PullRequest| {
+            let mut errors = Vec::new();
+            let result = eval(
+                &Condition::Atom(parse_atom(condition).unwrap()),
+                pr,
+                &Context::default(),
+                &mut errors,
+            );
+            assert!(!result && !errors.is_empty(), "{condition}");
+        };
+        unknown("check-success = KI-Review", &p);
+        unknown("#check-failure = 0", &p);
+        unknown("check-success = @github-actions/KI-Review", &p);
+        red.suite_id = Some(11);
+        red.suite_created_at = green.suite_created_at.clone();
+        p.checks = vec![green, red];
+        unknown("check-success = KI-Review", &p);
+        unknown("#check-failure = 0", &p);
     }
 
     /// Critic 1abc, conditions-syntax.

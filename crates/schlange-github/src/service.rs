@@ -7,7 +7,9 @@
 //!   handled, parses the payload and hands the hints to the repository's worker; it answers
 //!   202 at once. A delivery id is recorded only once the delivery was accepted: a delivery
 //!   answered 400 or 503 is redelivered by GitHub and handled then. `GET /healthz` answers
-//!   `ok` (503 when a worker stopped). `GET /status` needs `Authorization: Bearer <admin
+//!   `ok` (503 when a worker stopped or its loop heartbeat is stale). A long reconciliation
+//!   can also trigger the heartbeat alarm; it is an operational signal, not a restart.
+//!   `GET /status` needs `Authorization: Bearer <admin
 //!   token>` and is off without one: it shows pull request data.
 //! - **Workers.** Each is the single writer for its repository (KONZEPT.md, section 6): it owns
 //!   the engine state and the [`GithubForge`], turns hints into reads, feeds them to the
@@ -35,11 +37,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use schlange_config::rules::Rules;
 use schlange_core::engine::{Control, Freeze};
@@ -157,16 +159,36 @@ pub struct ServeConfig {
     pub lease: Option<LeaseConfig>,
     /// Tests only: pause before the first landing.
     pub pause_before_land: Option<Arc<PauseHook>>,
+    /// Tests only: adds virtual seconds to the monotonic heartbeat clock.
+    pub heartbeat_test_offset: Option<Arc<AtomicU64>>,
+    /// Tests only: counts actionable watchdog observations.
+    pub watchdog_test_observations: Option<Arc<AtomicU64>>,
+    /// Tests only: counts watchdog samples, including failed reads.
+    pub watchdog_test_samples: Option<Arc<AtomicU64>>,
+    /// Tests only: counts watchdog polling cycles, including absent views.
+    pub watchdog_test_cycles: Option<Arc<AtomicU64>>,
+    /// Tests only: highest count of completed PR reads in a deferred sample.
+    pub watchdog_test_partial_prs: Option<Arc<AtomicU64>>,
+    /// Tests only: completed, current observations including non-actionable ones.
+    pub watchdog_test_completed: Option<Arc<AtomicU64>>,
+    /// Tests only: pause an actionable observation before the generation check.
+    pub watchdog_test_pause: Option<Arc<PauseHook>>,
+    /// Tests only: pause before dispatching a watchdog reconciliation.
+    pub watchdog_test_reconcile_pause: Option<Arc<PauseHook>>,
 }
 
 pub enum Msg {
-    Webhook(Box<Parsed>),
+    Webhook(Box<Parsed>, u64),
+    /// Signed input could not be interpreted, so the repository needs a fresh read.
+    IngressInvalidated(u64),
+    #[cfg(feature = "test-hooks")]
+    TestReleaseEmptyHold(Sender<Result<(), String>>),
     /// A full reconciliation now.
     Reconcile,
     Shutdown,
     /// An operator's queue control from the admin API (pause, freeze); the worker answers
     /// once the engine applied it (and the state was journaled).
-    Control(Control, Sender<Result<serde_json::Value, String>>),
+    Control(Control, Sender<Result<serde_json::Value, String>>, u64),
     /// A read of the engine state (explain, simulate), answered by the worker.
     Query(QueryFn, Sender<Result<serde_json::Value, String>>),
 }
@@ -212,10 +234,25 @@ pub struct WorkerStatus {
 }
 
 struct Shared {
+    #[cfg(feature = "test-hooks")]
+    test_guard_next_landing: Mutex<BTreeMap<String, u64>>,
+    #[cfg(feature = "test-hooks")]
+    test_guard_next_build: Mutex<BTreeMap<String, (u64, Arc<PauseHook>)>>,
+    #[cfg(feature = "test-hooks")]
+    test_pause_before_merge: Mutex<BTreeMap<String, Arc<PauseHook>>>,
+    /// Process-local sequence of accepted inputs for each repository.
+    ingress_epochs: Mutex<BTreeMap<String, u64>>,
     statuses: Mutex<BTreeMap<String, WorkerStatus>>,
     decisions: Mutex<BTreeMap<String, VecDeque<String>>>,
     /// Workers that stopped, with the reason (health check).
     dead: Mutex<BTreeMap<String, String>>,
+    heartbeat: Mutex<BTreeMap<String, Instant>>,
+    heartbeat_limit: Duration,
+    heartbeat_test_offset: Option<Arc<AtomicU64>>,
+    watchdog_views: Mutex<BTreeMap<String, WatchdogView>>,
+    watchdog_generation: AtomicU64,
+    watchdog_memo_total: Arc<AtomicUsize>,
+    watchdog_errors: Mutex<BTreeMap<String, String>>,
     /// Messages handed to workers and not yet handled (tests wait for 0).
     inflight: AtomicUsize,
     stop: AtomicBool,
@@ -223,6 +260,137 @@ struct Shared {
     /// Shadow mode: the facts of each repository, as the worker last published them.
     shadow: Mutex<BTreeMap<String, Vec<ShadowFact>>>,
     store: Option<Store>,
+}
+
+/// Per-execution fence; the client also checks the shared remote lease gate afterward.
+#[allow(dead_code)]
+struct IngressWriteGate {
+    shared: Arc<Shared>,
+    repo: String,
+    epoch: u64,
+}
+
+impl crate::client::WriteGate for IngressWriteGate {
+    fn permit(&self, _method: &str, path: &str) -> Result<(), String> {
+        #[cfg(feature = "test-hooks")]
+        if path.ends_with("/merges") {
+            let hook = self
+                .shared
+                .test_pause_before_merge
+                .lock()
+                .ok()
+                .and_then(|mut hooks| hooks.remove(&self.repo));
+            if let Some(hook) = hook {
+                hook.pause_once();
+            }
+        }
+        if !path.starts_with(&format!("/repos/{}/", self.repo)) {
+            return Err("write is outside the served repository".into());
+        }
+        if self.shared.stop.load(Ordering::SeqCst) {
+            return Err("service stopped".into());
+        }
+        let epochs = self
+            .shared
+            .ingress_epochs
+            .lock()
+            .map_err(|_| "ingress fence unavailable")?;
+        if epochs.get(&self.repo).copied().unwrap_or(0) != self.epoch {
+            return Err("new input invalidated the decision".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct WatchdogView {
+    generation: u64,
+    fingerprint: String,
+    state: State,
+    rules: Rules,
+}
+
+fn watchdog_enabled(leading: bool, dead: bool, shadow: bool) -> bool {
+    leading && !dead && !shadow
+}
+
+fn watchdog_fingerprint(state: &State, rules: &Rules) -> Option<String> {
+    let mut stable_state = serde_json::to_value(state).ok()?;
+    let map = stable_state.as_object_mut()?;
+    // Cosmetics are never inputs to queue decisions (rule 9), and time is supplied afresh
+    // when evaluating the snapshot. Their changes cannot invalidate an observation.
+    map.remove("now");
+    map.remove("cosmetics");
+    Some(format!("{rules:?}:{stable_state}"))
+}
+
+fn update_watchdog_view(
+    views: &mut BTreeMap<String, WatchdogView>,
+    generation: &AtomicU64,
+    repo: &str,
+    state: &State,
+    rules: &Rules,
+    fingerprint: Option<String>,
+) {
+    let Some(fingerprint) = fingerprint else {
+        views.remove(repo);
+        return;
+    };
+    if views
+        .get(repo)
+        .is_none_or(|old| old.fingerprint != fingerprint)
+    {
+        let generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        views.insert(
+            repo.to_string(),
+            WatchdogView {
+                generation,
+                fingerprint,
+                state: state.clone(),
+                rules: rules.clone(),
+            },
+        );
+    }
+}
+
+fn supervise_watchdog(shared: &Shared, repo: &str, run: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+        shared
+            .watchdog_errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(repo.to_string(), "observer panicked".into());
+    }
+}
+
+fn stale_workers(beats: &BTreeMap<String, Instant>, now: Instant, limit: Duration) -> Vec<String> {
+    beats
+        .iter()
+        .filter(|(_, at)| now.saturating_duration_since(**at) > limit)
+        .map(|(repo, _)| repo.clone())
+        .collect()
+}
+
+impl Shared {
+    fn watchdog_views(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, WatchdogView>> {
+        self.watchdog_views
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    fn heartbeat_now(&self) -> Instant {
+        Instant::now()
+            + Duration::from_secs(
+                self.heartbeat_test_offset
+                    .as_ref()
+                    .map_or(0, |o| o.load(Ordering::SeqCst)),
+            )
+    }
+    fn beat(&self, repo: &str) {
+        self.heartbeat
+            .lock()
+            .expect("heartbeat")
+            .insert(repo.to_string(), self.heartbeat_now());
+    }
 }
 
 /// Verifies, deduplicates and routes deliveries.
@@ -235,6 +403,35 @@ pub struct Router {
 }
 
 impl Router {
+    fn invalidate_input(&self, body: &[u8]) {
+        let repo = serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.get("repository")
+                    .and_then(|r| r.get("full_name"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            });
+        let Ok(mut epochs) = self.shared.ingress_epochs.lock() else {
+            self.shared.stop.store(true, Ordering::SeqCst);
+            return;
+        };
+        for (name, sink) in &self.sinks {
+            if repo.as_ref().is_some_and(|r| r != name) {
+                continue;
+            }
+            let epoch = epochs.entry(name.clone()).or_default();
+            let Some(next) = epoch.checked_add(1) else {
+                self.shared.stop.store(true, Ordering::SeqCst);
+                return;
+            };
+            *epoch = next;
+            self.shared.inflight.fetch_add(1, Ordering::SeqCst);
+            if sink.send(Msg::IngressInvalidated(next)).is_err() {
+                self.shared.inflight.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
     fn seen(&self, id: &str) -> bool {
         self.dedup.lock().expect("dedup").seen(id)
             || self
@@ -257,31 +454,49 @@ impl Router {
             return (401, "bad signature".into());
         }
         let Some(event) = header("x-github-event") else {
+            self.invalidate_input(body);
             return (400, "no X-GitHub-Event".into());
         };
         let Some(id) = header("x-github-delivery") else {
+            self.invalidate_input(body);
             return (400, "no X-GitHub-Delivery".into());
         };
         if self.seen(&id) {
             return (200, "duplicate delivery".into());
         }
-        let parsed = match parse(&event, body) {
+        let mut parsed = match parse(&event, body) {
             Ok(p) => p,
-            Err(e) => return (400, e),
+            Err(e) => {
+                self.invalidate_input(body);
+                return (400, e);
+            }
         };
-        if parsed.hints.is_empty() {
-            self.record(&id);
-            return (200, "ignored".into());
-        }
         let Some(sink) = parsed.repo.as_ref().and_then(|r| self.sinks.get(r)) else {
             self.record(&id);
             return (200, "repository not served".into());
         };
+        if parsed.hints.is_empty() {
+            parsed.hints.push(Hint::Full);
+        }
+        let Some(repo) = parsed.repo.clone() else {
+            return (400, "repository missing".into());
+        };
+        let Ok(mut epochs) = self.shared.ingress_epochs.lock() else {
+            self.shared.stop.store(true, Ordering::SeqCst);
+            return (503, "ingress fence unavailable".into());
+        };
+        let epoch = epochs.entry(repo).or_default();
+        let Some(next) = epoch.checked_add(1) else {
+            self.shared.stop.store(true, Ordering::SeqCst);
+            return (503, "ingress fence exhausted".into());
+        };
+        *epoch = next;
         self.shared.inflight.fetch_add(1, Ordering::SeqCst);
-        if sink.send(Msg::Webhook(Box::new(parsed))).is_err() {
+        if sink.send(Msg::Webhook(Box::new(parsed), next)).is_err() {
             self.shared.inflight.fetch_sub(1, Ordering::SeqCst);
             return (503, "worker stopped".into());
         }
+        drop(epochs);
         self.record(&id);
         (202, "accepted".into())
     }
@@ -351,9 +566,23 @@ impl Service {
             None => None,
         };
         let shared = Arc::new(Shared {
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_landing: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_build: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_pause_before_merge: Mutex::new(BTreeMap::new()),
+            ingress_epochs: Mutex::new(BTreeMap::new()),
             statuses: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(BTreeMap::new()),
             dead: Mutex::new(BTreeMap::new()),
+            heartbeat: Mutex::new(BTreeMap::new()),
+            heartbeat_limit: Duration::from_secs(1800).max(cfg.poll.saturating_mul(3)),
+            heartbeat_test_offset: cfg.heartbeat_test_offset.clone(),
+            watchdog_views: Mutex::new(BTreeMap::new()),
+            watchdog_generation: AtomicU64::new(0),
+            watchdog_memo_total: Arc::new(AtomicUsize::new(0)),
+            watchdog_errors: Mutex::new(BTreeMap::new()),
             inflight: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             events: Arc::new(EventLog::new(store.clone())),
@@ -431,6 +660,7 @@ impl Service {
                 check: cfg.check.clone(),
             };
             let forge = maker.make();
+            let observer_forge = maker.make();
             let lease = leases
                 .iter()
                 .find(|l| l.repo_full() == repo.full())
@@ -457,9 +687,22 @@ impl Service {
                 ..State::default()
             };
             let (tx, rx) = channel();
+            let observer_tx = tx.clone();
+            let observer_shared = shared.clone();
+            let observer_clock = clock.clone();
+            let observer_repo = repo.full();
+            let observer_test_observations = cfg.watchdog_test_observations.clone();
+            let observer_test_samples = cfg.watchdog_test_samples.clone();
+            let observer_test_cycles = cfg.watchdog_test_cycles.clone();
+            let observer_test_partial_prs = cfg.watchdog_test_partial_prs.clone();
+            let observer_test_completed = cfg.watchdog_test_completed.clone();
+            let observer_test_pause = cfg.watchdog_test_pause.clone();
+            let observer_test_reconcile_pause = cfg.watchdog_test_reconcile_pause.clone();
             sinks.insert(repo.full(), tx.clone());
             senders.push(tx);
             let mut worker = Worker {
+                processed_ingress_epoch: 0,
+                validated_ingress_epoch: None,
                 forge,
                 maker,
                 shadow,
@@ -493,13 +736,159 @@ impl Service {
                 dead: false,
             };
             if worker.lease.is_none() && worker.shadow.is_none() {
-                worker.recover()?;
+                worker.recover().inspect_err(|_| {
+                    shared.stop.store(true, Ordering::SeqCst);
+                })?;
             }
+            shared.beat(&repo.full());
+            let worker_alive = Arc::new(AtomicBool::new(true));
+            let alive_on_exit = worker_alive.clone();
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("worker {}", repo.full()))
-                    .spawn(move || worker.run())
-                    .map_err(|e| e.to_string())?,
+                    .spawn(move || {
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run()));
+                        alive_on_exit.store(false, Ordering::SeqCst);
+                        if let Err(e) = result {
+                            std::panic::resume_unwind(e);
+                        }
+                    })
+                    .map_err(|e| {
+                        shared.stop.store(true, Ordering::SeqCst);
+                        e.to_string()
+                    })?,
+            );
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("watchdog {observer_repo}"))
+                    .spawn(move || {
+                        supervise_watchdog(&observer_shared, &observer_repo, || {
+                            let mut tracker = crate::watchdog::Watchdog::default();
+                            let mut rotation = crate::watchdog::Rotation::default();
+                            let mut probes = crate::watchdog::Probes::with_total(
+                                observer_shared.watchdog_memo_total.clone(),
+                            );
+                            let started = observer_shared.heartbeat_now();
+                            let mut next_sample = started;
+                            while !observer_shared.stop.load(Ordering::SeqCst)
+                                && worker_alive.load(Ordering::SeqCst)
+                            {
+                                let now = observer_shared.heartbeat_now();
+                                if now < next_sample {
+                                    std::thread::sleep(Duration::from_secs(1));
+                                    continue;
+                                }
+                                next_sample = now + Duration::from_secs(60);
+                                let view = observer_shared
+                                    .watchdog_views()
+                                    .get(&observer_repo)
+                                    .cloned();
+                                let Some(view) = view else {
+                                    tracker.observe(0, None, 0, 60);
+                                    probes = crate::watchdog::Probes::with_total(
+                                        observer_shared.watchdog_memo_total.clone(),
+                                    );
+                                    if let Some(count) = &observer_test_cycles {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    continue;
+                                };
+                                let sample = crate::watchdog::candidate(
+                                    &observer_forge,
+                                    &mut probes,
+                                    crate::watchdog::CandidateInput {
+                                        state: &view.state,
+                                        rules: &view.rules,
+                                        now: &|| observer_clock.now(),
+                                        generation: view.generation,
+                                        cursor: rotation.cursor,
+                                        clock: &|| observer_shared.heartbeat_now(),
+                                        valid: &|| {
+                                            !observer_shared.stop.load(Ordering::SeqCst)
+                                                && worker_alive.load(Ordering::SeqCst)
+                                                && observer_shared
+                                                    .watchdog_views()
+                                                    .get(&observer_repo)
+                                                    .is_some_and(|v| {
+                                                        v.generation == view.generation
+                                                    })
+                                        },
+                                    },
+                                );
+                                let crate::watchdog::Sample::Done(candidate, deadline) = sample
+                                else {
+                                    if let crate::watchdog::Sample::Pending(completed) = sample
+                                        && let Some(count) = &observer_test_partial_prs
+                                    {
+                                        count.fetch_max(completed as u64, Ordering::SeqCst);
+                                    }
+                                    rotation.advance(false, false);
+                                    if let Some(count) = &observer_test_samples {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    if let Some(count) = &observer_test_cycles {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    continue;
+                                };
+                                if candidate.is_some()
+                                    && let Some(hook) = &observer_test_pause
+                                {
+                                    hook.pause_once();
+                                }
+                                let current = !observer_shared.stop.load(Ordering::SeqCst)
+                                    && worker_alive.load(Ordering::SeqCst)
+                                    && deadline
+                                        .is_none_or(|end| observer_shared.heartbeat_now() <= end)
+                                    && observer_shared
+                                        .watchdog_views()
+                                        .get(&observer_repo)
+                                        .is_some_and(|v| v.generation == view.generation);
+                                let candidate = if current { candidate.as_deref() } else { None };
+                                if current
+                                    && deadline.is_some()
+                                    && let Some(count) = &observer_test_completed
+                                {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                if candidate.is_some()
+                                    && let Some(count) = &observer_test_observations
+                                {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                let reconcile = tracker.observe(
+                                    view.generation,
+                                    candidate,
+                                    observer_shared
+                                        .heartbeat_now()
+                                        .saturating_duration_since(started)
+                                        .as_secs(),
+                                    60,
+                                );
+                                rotation.advance(candidate.is_some(), reconcile);
+                                if reconcile {
+                                    if let Some(hook) = &observer_test_reconcile_pause {
+                                        hook.pause_once();
+                                    }
+                                    observer_shared.inflight.fetch_add(1, Ordering::SeqCst);
+                                    if observer_tx.send(Msg::Reconcile).is_err() {
+                                        observer_shared.inflight.fetch_sub(1, Ordering::SeqCst);
+                                    }
+                                }
+                                if let Some(count) = &observer_test_samples {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                                if let Some(count) = &observer_test_cycles {
+                                    count.fetch_add(1, Ordering::SeqCst);
+                                }
+                            }
+                        });
+                    })
+                    .map_err(|e| {
+                        shared.stop.store(true, Ordering::SeqCst);
+                        e.to_string()
+                    })?,
             );
         }
         let router = Arc::new(Router {
@@ -513,8 +902,10 @@ impl Service {
         let admin = cfg.admin_token.clone();
         let handler: Handler =
             Arc::new(move |req: &Request| route(req, &router, &sh, admin.as_deref()));
-        let server = Server::start(cfg.listen, cfg.http.clone(), handler)
-            .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
+        let server = Server::start(cfg.listen, cfg.http.clone(), handler).map_err(|e| {
+            shared.stop.store(true, Ordering::SeqCst);
+            format!("cannot listen on {}: {e}", cfg.listen)
+        })?;
         Ok(Service {
             addr: server.addr,
             shared,
@@ -543,6 +934,71 @@ impl Service {
 
     pub fn webhook_url(&self) -> String {
         format!("http://{}/webhook", self.addr)
+    }
+
+    /// Tests only: seed a synthetic validation at the paused landing boundary.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_guard_next_landing(&self, repo: &str) -> Result<u64, String> {
+        let epochs = self
+            .shared
+            .ingress_epochs
+            .lock()
+            .map_err(|_| "ingress poisoned")?;
+        let epoch = epochs.get(repo).copied().unwrap_or(0);
+        self.shared
+            .test_guard_next_landing
+            .lock()
+            .map_err(|_| "test hook poisoned")?
+            .insert(repo.to_string(), epoch);
+        Ok(epoch)
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub fn test_ingress_epoch(&self, repo: &str) -> u64 {
+        self.shared
+            .ingress_epochs
+            .lock()
+            .unwrap()
+            .get(repo)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Tests only: seed a synthetic fence and pause its next build before the merge request.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_guard_next_build(&self, repo: &str, pause: Arc<PauseHook>) -> Result<u64, String> {
+        let epochs = self
+            .shared
+            .ingress_epochs
+            .lock()
+            .map_err(|_| "ingress poisoned")?;
+        let epoch = epochs.get(repo).copied().unwrap_or(0);
+        self.shared
+            .test_guard_next_build
+            .lock()
+            .map_err(|_| "test hook poisoned")?
+            .insert(repo.to_string(), (epoch, pause));
+        Ok(epoch)
+    }
+
+    /// Tests only: bypass bootstrap for a fresh, empty synthetic fence harness.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_release_empty_identity_hold(&self) -> Result<(), String> {
+        let sink = self.sinks.first().ok_or("no worker")?;
+        let (tx, rx) = channel();
+        self.shared.inflight.fetch_add(1, Ordering::SeqCst);
+        if sink.send(Msg::TestReleaseEmptyHold(tx)).is_err() {
+            self.shared.inflight.fetch_sub(1, Ordering::SeqCst);
+            return Err("worker stopped".into());
+        }
+        rx.recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "test hook timed out".to_string())?
+    }
+
+    /// Tests: observe shutdown without holding the service or signalling it.
+    pub fn shutdown_probe(&self) -> impl Fn() -> bool + Send + 'static {
+        let shared = self.shared.clone();
+        move || shared.stop.load(Ordering::SeqCst)
     }
 
     /// Messages not yet handled by a worker.
@@ -655,11 +1111,22 @@ fn repo_api(req: &Request, router: &Router, shared: &Shared, path: &str) -> Resp
     };
     let control = |c: Control| -> Response {
         let (tx, rx) = channel();
+        let Ok(mut epochs) = shared.ingress_epochs.lock() else {
+            shared.stop.store(true, Ordering::SeqCst);
+            return Response::text(503, "ingress fence unavailable");
+        };
+        let epoch = epochs.entry(repo.clone()).or_default();
+        let Some(next) = epoch.checked_add(1) else {
+            shared.stop.store(true, Ordering::SeqCst);
+            return Response::text(503, "ingress fence exhausted");
+        };
+        *epoch = next;
         shared.inflight.fetch_add(1, Ordering::SeqCst);
-        if sink.send(Msg::Control(c, tx)).is_err() {
+        if sink.send(Msg::Control(c, tx, next)).is_err() {
             shared.inflight.fetch_sub(1, Ordering::SeqCst);
             return Response::text(503, "worker stopped");
         }
+        drop(epochs);
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(Ok(v)) => Response::json(200, v.to_string()),
             Ok(Err(e)) => Response::text(422, e),
@@ -969,16 +1436,30 @@ fn route(req: &Request, router: &Router, shared: &Shared, admin: Option<&str>) -
         }
         ("GET", "/healthz") => {
             let dead = shared.dead.lock().expect("dead").clone();
-            if dead.is_empty() {
+            let stale = stale_workers(
+                &shared.heartbeat.lock().expect("heartbeat"),
+                shared.heartbeat_now(),
+                shared.heartbeat_limit,
+            );
+            let watchdog_errors = shared
+                .watchdog_errors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if dead.is_empty() && stale.is_empty() && watchdog_errors.is_empty() {
                 Response::text(200, "ok")
             } else {
-                Response::text(
-                    503,
-                    dead.iter()
-                        .map(|(r, why)| format!("worker {r} stopped: {why}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
+                let mut problems: Vec<String> = dead
+                    .iter()
+                    .map(|(r, why)| format!("worker {r} stopped: {why}"))
+                    .collect();
+                problems.extend(stale.iter().map(|r| format!("worker {r} heartbeat stale")));
+                problems.extend(
+                    watchdog_errors
+                        .iter()
+                        .map(|(r, why)| format!("watchdog {r}: {why}")),
+                );
+                Response::text(503, problems.join("\n"))
             }
         }
         ("GET", "/status") => {
@@ -1022,6 +1503,9 @@ impl ForgeMaker {
 }
 
 struct Worker {
+    processed_ingress_epoch: u64,
+    /// Epoch bound to a completed identity publication; absent on startup and takeover.
+    validated_ingress_epoch: Option<u64>,
     forge: GithubForge,
     maker: ForgeMaker,
     shadow: Option<Shadow>,
@@ -1063,6 +1547,76 @@ struct Worker {
 }
 
 impl Worker {
+    /// Establish a durable hold before recovery or any engine-driven effect.
+    fn begin_identity_hold(&mut self) -> Result<(), String> {
+        if let Some(journal) = &self.journal
+            && journal
+                .recover()
+                .map_err(|e| format!("identity journal unreadable: {e}"))?
+                .is_some_and(|r| !r.in_doubt.is_empty())
+        {
+            return Err("identity recovery has unresolved journal intents".into());
+        }
+        let default = self
+            .forge
+            .default_branch(Priority::Normal)
+            .map_err(|e| format!("cannot determine identity-hold base: {e}"))?;
+        let mut bases: BTreeSet<String> = self.state.trains.keys().cloned().collect();
+        bases.extend(self.state.pull_requests.values().map(|p| p.base.clone()));
+        bases.extend(self.state.queued.values().map(|e| e.base.clone()));
+        bases.insert(default);
+        self.validated_ingress_epoch = None;
+        for base in bases {
+            self.state.check_identity_unavailable.insert(base.clone());
+            let epoch = self.state.check_identity_epochs.entry(base).or_default();
+            *epoch = epoch.saturating_add(1);
+        }
+        for pr in self
+            .state
+            .pull_requests
+            .values()
+            .filter(|p| !p.closed && !p.merged)
+        {
+            let holds = self.state.holds.entry(pr.number).or_default();
+            if !holds.iter().any(|h| h.kind == "check-identity-unavailable") {
+                holds.push(schlange_core::protections::Hold::wait(
+                    "check-identity-unavailable",
+                    "A fresh check identity read is unavailable",
+                ));
+            }
+        }
+        if let Some(journal) = &mut self.journal {
+            journal
+                .checkpoint(&self.state)
+                .map_err(|e| format!("identity hold checkpoint failed: {e}"))?;
+        }
+        Ok(())
+    }
+
+    fn identity_dispatch_current(&self, epoch: u64) -> bool {
+        self.leading
+            && !self.dead
+            && !self.shared.stop.load(Ordering::SeqCst)
+            && self.state.check_identity_unavailable.is_empty()
+            && self.processed_ingress_epoch == epoch
+            && self
+                .shared
+                .ingress_epochs
+                .lock()
+                .ok()
+                .is_some_and(|epochs| {
+                    epochs
+                        .get(&self.forge.api.repo.full())
+                        .copied()
+                        .unwrap_or(0)
+                        == epoch
+                })
+            && self
+                .lease
+                .as_ref()
+                .is_none_or(|lease| lease.check().is_ok())
+    }
+
     /// Restores the state from the journal, if there is one.
     fn recover(&mut self) -> Result<(), String> {
         let Some(j) = &self.journal else {
@@ -1107,6 +1661,7 @@ impl Worker {
     /// The lease was taken: start from the journal when it is this process's own (or the
     /// predecessor's on the same data directory), else from GitHub's state alone.
     fn take_over(&mut self) {
+        self.validated_ingress_epoch = None;
         self.leading = true;
         self.forge = self.maker.make();
         self.state = self.fresh_state();
@@ -1117,15 +1672,20 @@ impl Worker {
         // last leader (no other process acted since its last write).
         if self.lease.as_ref().is_some_and(|l| l.journal_is_current()) {
             if let Err(e) = self.recover() {
-                self.forge
-                    .note(format!("journal not used after taking the lease: {e}"));
+                self.die(format!(
+                    "cannot recover journal after taking the lease: {e}"
+                ));
+                return;
             }
         } else if self.journal.is_some() {
-            self.forge.note(
-                "another process acted since this data directory's journal was written; starting from GitHub's state",
-            );
+            self.die("identity recovery requires a current fenced journal".into());
+            return;
         }
         self.restart_pending = true;
+        if let Err(e) = self.begin_identity_hold() {
+            self.die(e);
+            return;
+        }
         self.forge.note(format!(
             "took the lease ({}); acting for {}",
             self.lease.as_ref().map(|l| l.holder()).unwrap_or(""),
@@ -1135,6 +1695,7 @@ impl Worker {
 
     /// Another process holds the lease: forget everything in flight, act no more.
     fn step_down(&mut self, why: &str) {
+        self.validated_ingress_epoch = None;
         if self.leading {
             self.forge.note(format!("stepped down: {why}"));
         }
@@ -1159,16 +1720,49 @@ impl Worker {
     }
 
     fn run(mut self) {
+        if self.leading
+            && self.shadow.is_none()
+            && let Err(e) = self.begin_identity_hold()
+        {
+            self.die(e);
+            self.publish();
+            return;
+        }
         loop {
+            self.shared.beat(&self.forge.api.repo.full());
             let mut hints = BTreeSet::new();
             let mut handled = 0;
             let mut reconcile = false;
             let mut stop = false;
+            let mut received_epoch = None::<u64>;
             let mut take = |m: Msg, hints: &mut BTreeSet<Hint>, this: &mut Self| match m {
-                Msg::Webhook(p) => {
+                Msg::Webhook(p, epoch) => {
+                    received_epoch = Some(received_epoch.unwrap_or(0).max(epoch));
                     this.webhooks += 1;
                     this.forge.note(format!("webhook {}", p.summary));
                     hints.extend(p.hints);
+                    handled += 1;
+                }
+                Msg::IngressInvalidated(epoch) => {
+                    received_epoch = Some(received_epoch.unwrap_or(0).max(epoch));
+                    reconcile = true;
+                    handled += 1;
+                }
+                #[cfg(feature = "test-hooks")]
+                Msg::TestReleaseEmptyHold(reply) => {
+                    let result = if this.state.pull_requests.is_empty()
+                        && this.state.queued.is_empty()
+                        && this.state.trains.is_empty()
+                        && this.state.identity_deferred_comments.is_empty()
+                    {
+                        this.state.check_identity_unavailable.clear();
+                        this.state.identity_restart_pending = false;
+                        this.validated_ingress_epoch = None;
+                        Ok(())
+                    } else {
+                        Err("test bypass requires an empty worker".into())
+                    };
+                    let _ = reply.send(result);
                     handled += 1;
                 }
                 Msg::Reconcile => {
@@ -1176,8 +1770,10 @@ impl Worker {
                     handled += 1;
                 }
                 Msg::Shutdown => stop = true,
-                Msg::Control(c, reply) => {
-                    let r = if this.leading {
+                Msg::Control(c, reply, epoch) => {
+                    let r = if !this.state.check_identity_unavailable.is_empty() {
+                        Err("check identity is being revalidated; retry the control later".into())
+                    } else if this.leading {
                         this.control(c)
                     } else {
                         Err(
@@ -1186,6 +1782,7 @@ impl Worker {
                         )
                     };
                     let _ = reply.send(r);
+                    received_epoch = Some(received_epoch.unwrap_or(0).max(epoch));
                     handled += 1;
                 }
                 Msg::Query(f, reply) => {
@@ -1208,8 +1805,16 @@ impl Worker {
             }
             if let Some(l) = self.lease.clone() {
                 let held = l.ensure();
+                if held && self.leading && self.journal.is_some() && !l.journal_is_current() {
+                    self.die("journal lineage is no longer current".into());
+                    self.publish();
+                    return;
+                }
                 if held && !self.leading {
                     self.take_over();
+                    if self.dead {
+                        return;
+                    }
                 } else if !held && self.leading {
                     self.step_down("another process holds the lease");
                 }
@@ -1266,7 +1871,10 @@ impl Worker {
                 }
                 self.feed(Event::Tick);
             }
-            if self.shadow.is_none() {
+            if self.shadow.is_none()
+                && self.validated_ingress_epoch.is_none()
+                && self.state.check_identity_unavailable.is_empty()
+            {
                 for ev in self.forge.retry_pending() {
                     self.feed(ev);
                 }
@@ -1275,8 +1883,15 @@ impl Worker {
                 self.publish();
                 return;
             }
-            if self.shadow.is_none() && self.leading {
+            if self.shadow.is_none()
+                && self.leading
+                && self.validated_ingress_epoch.is_none()
+                && self.state.check_identity_unavailable.is_empty()
+            {
                 self.forge.flush_cosmetics();
+            }
+            if let Some(epoch) = received_epoch {
+                self.processed_ingress_epoch = self.processed_ingress_epoch.max(epoch);
             }
             self.publish();
             self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
@@ -1381,6 +1996,13 @@ impl Worker {
     }
 
     fn reconcile(&mut self) {
+        if self.shadow.is_none()
+            && self.state.check_identity_unavailable.is_empty()
+            && let Err(error) = self.begin_identity_hold()
+        {
+            self.die(error);
+            return;
+        }
         // The heads before this round's reads: a command recovered below vouches at most for
         // these.
         let heads_before: BTreeMap<u64, String> = self
@@ -1398,6 +2020,12 @@ impl Worker {
         if self.restart_pending {
             self.restart_pending = false;
             self.feed(Event::Restarted);
+        }
+        if !self.state.check_identity_unavailable.is_empty() {
+            self.try_publish_identity(&rules, now);
+            self.last_reconcile = Some(now);
+            self.reconciliations += 1;
+            return;
         }
         let view = match &self.shadow {
             Some(sh) => sh.real_view(&self.state),
@@ -1419,7 +2047,9 @@ impl Worker {
                 }
                 if let Some(sh) = &mut self.shadow {
                     sh.observe(&mut self.forge, &self.state, now);
-                } else {
+                } else if self.validated_ingress_epoch.is_none()
+                    && self.state.check_identity_unavailable.is_empty()
+                {
                     self.forge.sweep(&sweep, &self.state);
                     self.forge.hurry_pending();
                 }
@@ -1439,6 +2069,143 @@ impl Worker {
                 .forge
                 .note(format!("reconciliation skipped (provisional): {e}")),
         }
+    }
+
+    /// Publish a single-base candidate without running decisions under the ingress lock.
+    /// Unknown commands, in-doubt effects and unsupported multi-base state remain held.
+    fn try_publish_identity(&mut self, rules: &Rules, now: Time) {
+        if self.state.check_identity_unavailable.len() != 1
+            || rules
+                .pull_request_rules
+                .iter()
+                .any(|rule| !rule.actions.is_empty())
+            || !self.comments_waiting.is_empty()
+            || !self.state.identity_deferred_comments.is_empty()
+            || self.journal.is_none()
+        {
+            return;
+        }
+        let base = self
+            .state
+            .check_identity_unavailable
+            .iter()
+            .next()
+            .unwrap()
+            .clone();
+        let repo = self.forge.api.repo.full();
+        let shared = self.shared.clone();
+        let captured = match shared.ingress_epochs.lock() {
+            Ok(epochs) => epochs.get(&repo).copied().unwrap_or(0),
+            Err(_) => {
+                self.die("identity ingress fence unavailable".into());
+                return;
+            }
+        };
+        if captured != self.processed_ingress_epoch {
+            self.next_reconcile = now;
+            return;
+        }
+        let started = Instant::now();
+        let generation = self.state.check_identity_epochs[&base];
+        let first = match self.forge.read_base_identity_batch(
+            &base,
+            generation,
+            &self.state,
+            Priority::Normal,
+        ) {
+            Ok(batch) => batch,
+            Err(error) => {
+                self.forge
+                    .note(format!("identity read for {base} failed: {error}"));
+                return;
+            }
+        };
+        let mut preview = self.state.clone();
+        if let Event::CheckIdentityBatch { pull_requests, .. } = &first {
+            for pr in pull_requests {
+                preview.pull_requests.insert(pr.number, pr.clone());
+            }
+        } else {
+            return;
+        }
+        match self
+            .forge
+            .waiting_queue_comments_clear(&preview, Priority::Normal)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.forge
+                    .note("identity recovery waits for ambiguous comments");
+                return;
+            }
+            Err(error) => {
+                self.forge
+                    .note(format!("identity comment scan failed: {error}"));
+                return;
+            }
+        }
+        let second = match self.forge.read_base_identity_batch(
+            &base,
+            generation,
+            &self.state,
+            Priority::Normal,
+        ) {
+            Ok(batch) => batch,
+            Err(error) => {
+                self.forge
+                    .note(format!("identity revalidation for {base} failed: {error}"));
+                return;
+            }
+        };
+        let same = match (serde_json::to_value(&first), serde_json::to_value(&second)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same
+            || started.elapsed() > Duration::from_secs(120)
+            || self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.check().is_err())
+        {
+            return;
+        }
+        let clean = self
+            .journal
+            .as_ref()
+            .and_then(|j| j.recover().ok())
+            .is_some_and(|recovery| recovery.is_none_or(|r| r.in_doubt.is_empty()));
+        if !clean {
+            return;
+        }
+        let Ok(epochs) = shared.ingress_epochs.lock() else {
+            self.die("identity ingress fence unavailable".into());
+            return;
+        };
+        if epochs.get(&repo).copied().unwrap_or(0) != captured
+            || self.processed_ingress_epoch != captured
+            || !self.leading
+            || self.dead
+            || shared.stop.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let (next, decisions) = step(&self.state, rules, &second, now);
+        if !decisions.is_empty() || next.check_identity_unavailable.contains(&base) {
+            return;
+        }
+        if let Some(journal) = &mut self.journal
+            && let Err(error) = journal.checkpoint(&next)
+        {
+            drop(epochs);
+            self.die(format!("identity publication checkpoint failed: {error}"));
+            return;
+        }
+        self.state = next;
+        self.validated_ingress_epoch = Some(captured);
+        self.timers.extend(self.state.wakeups.iter().copied());
+        drop(epochs);
+        self.feed(Event::Tick);
     }
 
     fn read_hints(&mut self, hints: &BTreeSet<Hint>) {
@@ -1635,9 +2402,84 @@ impl Worker {
                 {
                     h.pause_once();
                 }
+                #[cfg(feature = "test-hooks")]
+                if matches!(d, Decision::Land { .. }) {
+                    let repo = self.forge.api.repo.full();
+                    let seeded = self
+                        .shared
+                        .test_guard_next_landing
+                        .lock()
+                        .ok()
+                        .and_then(|mut hooks| hooks.remove(&repo));
+                    if let Some(epoch) = seeded {
+                        self.processed_ingress_epoch = epoch;
+                        self.validated_ingress_epoch = Some(epoch);
+                    }
+                }
+                #[cfg(feature = "test-hooks")]
+                if matches!(d, Decision::BuildCar { .. }) {
+                    let repo = self.forge.api.repo.full();
+                    let seeded = self
+                        .shared
+                        .test_guard_next_build
+                        .lock()
+                        .ok()
+                        .and_then(|mut hooks| hooks.remove(&repo));
+                    if let Some((epoch, pause)) = seeded {
+                        self.processed_ingress_epoch = epoch;
+                        self.validated_ingress_epoch = Some(epoch);
+                        self.shared
+                            .test_pause_before_merge
+                            .lock()
+                            .expect("test hook")
+                            .insert(repo, pause);
+                    }
+                }
+                if let Some(epoch) = self.validated_ingress_epoch
+                    && !self.identity_dispatch_current(epoch)
+                {
+                    self.die("identity fence changed before decision execution".into());
+                    return;
+                }
+                let scoped_client = self.validated_ingress_epoch.map(|epoch| {
+                    let gate = IngressWriteGate {
+                        shared: self.shared.clone(),
+                        repo: self.forge.api.repo.full(),
+                        epoch,
+                    };
+                    (
+                        self.forge.api.client.clone(),
+                        self.forge.api.client.with_execution_gate(Arc::new(gate)),
+                    )
+                });
+                if let Some((_, scoped)) = &scoped_client {
+                    self.forge.api.client = scoped.clone();
+                }
                 let replies = match &mut self.shadow {
-                    Some(sh) => sh.execute(d, &mut self.forge, now),
-                    None => self.forge.execute(d),
+                    Some(sh) => Ok(sh.execute(d, &mut self.forge, now)),
+                    None if scoped_client.is_some() => self.forge.execute_guarded_once(d),
+                    None => Ok(self.forge.execute(d)),
+                };
+                if let Some((original, _)) = scoped_client {
+                    self.forge.api.client = original;
+                    let epoch = self
+                        .validated_ingress_epoch
+                        .expect("scoped only for validated epoch");
+                    if !self.identity_dispatch_current(epoch) {
+                        // The effect may have been partly sent. Keep its journal intent in doubt
+                        // and stop; recovery must resolve it from fresh forge truth.
+                        self.die("identity fence changed during decision execution".into());
+                        return;
+                    }
+                }
+                let replies = match replies {
+                    Ok(replies) => replies,
+                    Err(reason) => {
+                        self.die(format!(
+                            "identity-fenced operation requires recovery: {reason}"
+                        ));
+                        return;
+                    }
                 };
                 if self.crash == Some(CrashPoint::AfterLand) && matches!(d, Decision::Land { .. }) {
                     self.die("injected crash after a landing (test)".into());
@@ -1748,6 +2590,26 @@ impl Worker {
     }
 
     fn publish(&self) {
+        {
+            let repo = self.forge.api.repo.full();
+            let mut views = self.shared.watchdog_views();
+            if watchdog_enabled(self.leading, self.dead, self.shadow.is_some()) {
+                if let Some(rules) = &self.rules {
+                    update_watchdog_view(
+                        &mut views,
+                        &self.shared.watchdog_generation,
+                        &repo,
+                        &self.state,
+                        rules,
+                        watchdog_fingerprint(&self.state, rules),
+                    );
+                } else {
+                    views.remove(&repo);
+                }
+            } else {
+                views.remove(&repo);
+            }
+        }
         let mut state = serde_json::to_value(&self.state).unwrap_or_default();
         if let Some(o) = state.get_mut("outcomes").and_then(|o| o.as_object_mut()) {
             let extra = o.len().saturating_sub(STATUS_OUTCOMES);
@@ -1853,6 +2715,241 @@ fn is_queue_command(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watchdog_view_ignores_cosmetic_churn_but_not_a_pause() {
+        let rules = Rules::default();
+        let state = State::default();
+        let original = watchdog_fingerprint(&state, &rules);
+        let mut cosmetic = state.clone();
+        cosmetic.now = 500;
+        cosmetic
+            .cosmetics
+            .status
+            .insert(17, "status changed".into());
+        assert_eq!(watchdog_fingerprint(&cosmetic, &rules), original);
+        cosmetic.pause = Some(schlange_core::engine::Pause {
+            reason: "maintenance".into(),
+            at: 500,
+            by: None,
+        });
+        assert_ne!(watchdog_fingerprint(&cosmetic, &rules), original);
+    }
+
+    #[test]
+    fn invalid_watchdog_fingerprint_removes_view_and_prevents_aba() {
+        let rules = Rules::default();
+        let state = State::default();
+        let mut views = BTreeMap::new();
+        let generation = AtomicU64::new(0);
+        update_watchdog_view(
+            &mut views,
+            &generation,
+            "o/r",
+            &state,
+            &rules,
+            watchdog_fingerprint(&state, &rules),
+        );
+        let first = views["o/r"].generation;
+        update_watchdog_view(&mut views, &generation, "o/r", &state, &rules, None);
+        assert!(!views.contains_key("o/r"));
+        update_watchdog_view(
+            &mut views,
+            &generation,
+            "o/r",
+            &state,
+            &rules,
+            watchdog_fingerprint(&state, &rules),
+        );
+        assert_ne!(views["o/r"].generation, first);
+    }
+
+    #[test]
+    fn watchdog_observes_only_a_live_non_shadow_leader() {
+        assert!(watchdog_enabled(true, false, false));
+        assert!(!watchdog_enabled(false, false, false));
+        assert!(!watchdog_enabled(true, true, false));
+        assert!(!watchdog_enabled(true, false, true));
+    }
+
+    #[test]
+    fn heartbeat_alarm_clears_when_worker_resumes() {
+        let now = std::time::Instant::now();
+        let mut beats = BTreeMap::new();
+        beats.insert("o/r".to_string(), now);
+        let limit = Duration::from_secs(60);
+        assert!(stale_workers(&beats, now + limit, limit).is_empty());
+        assert_eq!(
+            stale_workers(&beats, now + limit + Duration::from_secs(1), limit),
+            vec!["o/r"]
+        );
+        beats.insert("o/r".to_string(), now + limit + Duration::from_secs(1));
+        assert!(stale_workers(&beats, now + limit + Duration::from_secs(1), limit).is_empty());
+    }
+
+    #[test]
+    fn health_endpoint_reports_and_clears_stale_worker() {
+        let shared = Arc::new(Shared {
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_landing: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_build: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_pause_before_merge: Mutex::new(BTreeMap::new()),
+            ingress_epochs: Mutex::new(BTreeMap::new()),
+            statuses: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(BTreeMap::new()),
+            dead: Mutex::new(BTreeMap::new()),
+            heartbeat: Mutex::new(BTreeMap::new()),
+            heartbeat_limit: Duration::from_secs(60),
+            heartbeat_test_offset: None,
+            watchdog_views: Mutex::new(BTreeMap::new()),
+            watchdog_generation: AtomicU64::new(0),
+            watchdog_memo_total: Arc::new(AtomicUsize::new(0)),
+            watchdog_errors: Mutex::new(BTreeMap::new()),
+            inflight: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            events: Arc::new(EventLog::new(None)),
+            shadow: Mutex::new(BTreeMap::new()),
+            store: None,
+        });
+        let router = Router {
+            secret: vec![],
+            dedup: Mutex::new(Dedup::new(10)),
+            store: None,
+            sinks: HashMap::new(),
+            shared: shared.clone(),
+        };
+        let request = Request {
+            method: "GET".into(),
+            url: "/healthz".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        shared.beat("o/r");
+        assert_eq!(route(&request, &router, &shared, None).status, 200);
+        shared
+            .heartbeat
+            .lock()
+            .unwrap()
+            .insert("o/r".into(), Instant::now() - Duration::from_secs(61));
+        let alarm = route(&request, &router, &shared, None);
+        assert_eq!(alarm.status, 503);
+        assert!(
+            String::from_utf8(alarm.body)
+                .unwrap()
+                .contains("worker o/r heartbeat stale")
+        );
+        shared.beat("o/r");
+        assert_eq!(route(&request, &router, &shared, None).status, 200);
+        supervise_watchdog(&shared, "o/r", || {
+            let _guard = shared.watchdog_views.lock().unwrap();
+            panic!("injected observer panic");
+        });
+        assert!(
+            shared.watchdog_views().is_empty(),
+            "worker can still publish after observer panic"
+        );
+        let alarm = route(&request, &router, &shared, None);
+        assert_eq!(alarm.status, 503);
+        assert!(
+            String::from_utf8(alarm.body)
+                .unwrap()
+                .contains("watchdog o/r: observer panicked")
+        );
+    }
+
+    #[test]
+    fn authenticated_input_advances_ingress_before_worker_receives_it() {
+        let shared = Arc::new(Shared {
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_landing: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_guard_next_build: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "test-hooks")]
+            test_pause_before_merge: Mutex::new(BTreeMap::new()),
+            statuses: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(BTreeMap::new()),
+            dead: Mutex::new(BTreeMap::new()),
+            heartbeat: Mutex::new(BTreeMap::new()),
+            heartbeat_limit: Duration::from_secs(60),
+            heartbeat_test_offset: None,
+            watchdog_views: Mutex::new(BTreeMap::new()),
+            watchdog_generation: AtomicU64::new(0),
+            watchdog_memo_total: Arc::new(AtomicUsize::new(0)),
+            watchdog_errors: Mutex::new(BTreeMap::new()),
+            inflight: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            events: Arc::new(EventLog::new(None)),
+            shadow: Mutex::new(BTreeMap::new()),
+            store: None,
+            ingress_epochs: Mutex::new(BTreeMap::new()),
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let secret = b"0123456789abcdef".to_vec();
+        let router = Router {
+            secret: secret.clone(),
+            dedup: Mutex::new(Dedup::new(10)),
+            store: None,
+            sinks: [("o/r".to_string(), tx)].into_iter().collect(),
+            shared: shared.clone(),
+        };
+        let body = br#"{"repository":{"full_name":"o/r"},"ref":"refs/heads/main","after":"abcd","deleted":false}"#;
+        let signature = crate::webhook::sign(&secret, body);
+        let header = |name: &str| match name {
+            "x-hub-signature-256" => Some(signature.clone()),
+            "x-github-event" => Some("push".into()),
+            "x-github-delivery" => Some("one".into()),
+            _ => None,
+        };
+        assert_eq!(router.handle(&header, body).0, 202);
+        assert_eq!(shared.ingress_epochs.lock().unwrap().get("o/r"), Some(&1));
+        assert!(matches!(rx.try_recv(), Ok(Msg::Webhook(_, 1))));
+        let malformed = br#"{"repository":{"full_name":"o/r"}}"#;
+        let signature = crate::webhook::sign(&secret, malformed);
+        let header = |name: &str| match name {
+            "x-hub-signature-256" => Some(signature.clone()),
+            "x-github-event" => Some("push".into()),
+            "x-github-delivery" => Some("two".into()),
+            _ => None,
+        };
+        assert_eq!(router.handle(&header, malformed).0, 400);
+        assert_eq!(shared.ingress_epochs.lock().unwrap().get("o/r"), Some(&2));
+        assert!(matches!(rx.try_recv(), Ok(Msg::IngressInvalidated(2))));
+        let worker = std::thread::spawn(move || match rx.recv().unwrap() {
+            Msg::Control(_, reply, epoch) => {
+                reply.send(Ok(serde_json::Value::Null)).unwrap();
+                epoch
+            }
+            _ => panic!("expected control"),
+        });
+        let request = Request {
+            method: "PUT".into(),
+            url: "/repos/o/r/merge-queue/pause".into(),
+            headers: vec![],
+            body: br#"{"reason":"maintenance"}"#.to_vec(),
+        };
+        assert_eq!(
+            repo_api(&request, &router, &shared, &request.url).status,
+            200
+        );
+        assert_eq!(worker.join().unwrap(), 3);
+        assert_eq!(shared.ingress_epochs.lock().unwrap().get("o/r"), Some(&3));
+        let gate = IngressWriteGate {
+            shared: shared.clone(),
+            repo: "o/r".into(),
+            epoch: 3,
+        };
+        use crate::client::WriteGate;
+        assert!(gate.permit("POST", "/repos/o/r/merges").is_ok());
+        assert!(gate.permit("POST", "/repos/o/other/merges").is_err());
+        shared
+            .ingress_epochs
+            .lock()
+            .unwrap()
+            .insert("o/r".into(), 4);
+        assert!(gate.permit("POST", "/repos/o/r/merges").is_err());
+    }
 
     #[test]
     fn token_scope_asks_only_for_granted_needed_permissions() {

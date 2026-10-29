@@ -71,6 +71,19 @@ pub enum LandError {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// Fresh check identity or required-check inputs could not be read for these bases.
+    CheckIdentityUnavailable {
+        bases: Vec<String>,
+    },
+    /// Complete caller-verified read of a held base and its known queue members.
+    CheckIdentityBatch {
+        base: String,
+        generation: u64,
+        pull_requests: Vec<PullRequest>,
+        base_tip: String,
+        checks: Vec<String>,
+        bound_checks: Vec<crate::model::RequiredCheck>,
+    },
     PullRequestOpened {
         pull_request: Box<PullRequest>,
     },
@@ -175,6 +188,12 @@ pub enum Event {
     RequiredChecks {
         base: String,
         checks: Vec<String>,
+    },
+    /// Atomically replaces unqualified and app-bound requirements.
+    RequiredChecksTyped {
+        base: String,
+        checks: Vec<String>,
+        bound_checks: Vec<crate::model::RequiredCheck>,
     },
 }
 
@@ -394,6 +413,9 @@ pub struct QueueEntry {
     /// Start of the batch wait (`batch_max_wait_time`).
     pub waiting_since: Time,
     pub status: EntryStatus,
+    /// The base moved outside the queue; clear after the next successful car build.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external_reset: bool,
     /// Who queued it with a command or checkbox; `None` when a rule queued it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
@@ -461,8 +483,49 @@ pub struct Sample {
     pub secs: Time,
 }
 
+/// A landing reply retained until its base can be revalidated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredLanded {
+    pub car: u64,
+    pub commits: Vec<LandedCommit>,
+    pub error: Option<LandError>,
+}
+
+/// A build reply retained until its base can be revalidated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredBuilt {
+    pub car: u64,
+    pub branch: String,
+    pub head_sha: String,
+    pub tree: String,
+    pub draft: u64,
+}
+
+/// A failed operation whose outcome needs revalidation after a held read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredFailed {
+    pub decision: Decision,
+    pub error: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
+    /// Bases whose check identity and required-check inputs require a fresh verified read.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub check_identity_unavailable: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_identity_epochs: BTreeMap<String, u64>,
+    /// Restart recovery is deferred until the held inputs have been revalidated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub identity_restart_pending: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_deferred_landed: Vec<DeferredLanded>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_deferred_built: Vec<DeferredBuilt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_deferred_failed: Vec<DeferredFailed>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_deferred_comments: Vec<Comment>,
     pub pull_requests: BTreeMap<u64, PullRequest>,
     pub queued: BTreeMap<u64, QueueEntry>,
     /// Branch heads as last read from the forge.
@@ -526,6 +589,8 @@ pub struct State {
     /// Checks the protection of each base branch requires (as last read).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub required_checks: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bound_required_checks: BTreeMap<String, Vec<crate::model::RequiredCheck>>,
     /// Why a queued pull request may not land right now (a freeze, a merge protection, the
     /// pause), for status output; recomputed on every step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -542,10 +607,28 @@ impl State {
 /// Applies one event and re-evaluates every pull request and queue.
 pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, Vec<Decision>) {
     let mut next = state.clone();
+    if !matches!(
+        event,
+        Event::CheckIdentityBatch { .. } | Event::CheckIdentityUnavailable { .. }
+    ) {
+        for base in &next.check_identity_unavailable {
+            let generation = next.check_identity_epochs.entry(base.clone()).or_default();
+            *generation = generation.saturating_add(1);
+        }
+    }
     next.now = now;
     let mut out = Vec::new();
-    next.wakeups.retain(|t| *t > now);
+    if next.check_identity_unavailable.is_empty()
+        && !matches!(event, Event::CheckIdentityUnavailable { .. })
+    {
+        next.wakeups.retain(|t| *t > now);
+    }
     let token = apply(&mut next, rules, event, &mut out);
+    // Publication is a checkpoint-only transition. The host redecides after releasing its
+    // ingress lock and checking the lease, so no network work occurs while that lock is held.
+    if matches!(event, Event::CheckIdentityBatch { .. }) {
+        return (next, out);
+    }
     process(&mut next, rules, now, token, &mut out);
     for d in &out {
         if let Decision::Dequeue { number, reason, .. }
@@ -555,7 +638,9 @@ pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, V
             next.checks_ended.insert(*number, c.to_string());
         }
     }
-    crate::cosmetics::update(&mut next, rules, &mut out);
+    if next.check_identity_unavailable.is_empty() {
+        crate::cosmetics::update(&mut next, rules, &mut out);
+    }
     (next, out)
 }
 
@@ -598,6 +683,134 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         state.pull_requests.get_mut(&n)
     }
     match event {
+        Event::CheckIdentityUnavailable { bases } => {
+            for base in bases {
+                state.check_identity_unavailable.insert(base.clone());
+                let generation = state.check_identity_epochs.entry(base.clone()).or_default();
+                *generation = generation.saturating_add(1);
+            }
+        }
+        Event::CheckIdentityBatch {
+            base,
+            generation,
+            pull_requests,
+            base_tip,
+            checks,
+            bound_checks,
+        } => {
+            let mut expected: BTreeSet<u64> = state
+                .pull_requests
+                .values()
+                .filter(|p| p.base == *base && !p.closed && !p.merged)
+                .map(|p| p.number)
+                .collect();
+            if let Some(train) = state.trains.get(base) {
+                for car in &train.cars {
+                    expected.extend(car.own.iter().copied());
+                    expected.extend(car.draft);
+                }
+            }
+            expected.extend(
+                state
+                    .queued
+                    .iter()
+                    .filter(|(_, entry)| entry.base == *base)
+                    .map(|(n, _)| *n),
+            );
+            let actual: BTreeSet<u64> = pull_requests.iter().map(|p| p.number).collect();
+            // The host must separately verify the journal has no unresolved intents and that
+            // no command or checkbox inputs are outstanding before publishing this batch.
+            let clean_restart = state.identity_restart_pending
+                && state.check_identity_unavailable.len() == 1
+                && rules
+                    .pull_request_rules
+                    .iter()
+                    .all(|r| r.actions.is_empty())
+                && state.trains.values().all(|t| {
+                    t.cars.is_empty() && t.base_request.is_none() && t.bisection.is_none()
+                })
+                && state
+                    .queued
+                    .values()
+                    .all(|e| e.status == EntryStatus::Waiting)
+                && state.pull_requests.values().all(|p| !p.closed && !p.merged)
+                && state.closing.is_empty()
+                && state.unconfirmed_land.is_empty()
+                && state.pending_commands.is_empty()
+                && state.actions.pending.is_empty()
+                && state.actions.asked.is_empty()
+                && state.actions.merge_reads.is_empty()
+                && state.actions.waiting_backports.is_empty()
+                && state.actions.armed.is_empty()
+                && state.actions.fired.is_empty()
+                && state.actions.generation.is_empty()
+                && state.actions.failures.is_empty()
+                && state.actions.open_seen.is_empty()
+                && state.actions.heads.is_empty()
+                && state.actions.own_heads.is_empty()
+                && state.actions.last_error.is_empty()
+                && state.actions.dismiss_due.is_empty();
+            let valid = state.check_identity_unavailable.contains(base)
+                && (!state.identity_restart_pending || clean_restart)
+                && state.identity_deferred_landed.is_empty()
+                && state.identity_deferred_built.is_empty()
+                && state.identity_deferred_failed.is_empty()
+                && state.identity_deferred_comments.is_empty()
+                && *generation != u64::MAX
+                && state.check_identity_epochs.get(base) == Some(generation)
+                && !base_tip.is_empty()
+                && actual.len() == pull_requests.len()
+                && expected.is_subset(&actual)
+                && pull_requests.iter().all(|p| {
+                    p.base == *base
+                        && !p.head_sha.is_empty()
+                        && !state.pull_requests.get(&p.number).is_some_and(|old| {
+                            old.merged
+                                && (!p.merged
+                                    || old.merge_commit_sha.as_ref().is_some_and(|sha| {
+                                        p.merge_commit_sha.as_ref() != Some(sha)
+                                    }))
+                        })
+                });
+            if valid {
+                if clean_restart {
+                    state.identity_restart_pending = false;
+                }
+                for p in pull_requests {
+                    let mut p = p.clone();
+                    p.required_check_names = checks.iter().cloned().collect();
+                    for requirement in bound_checks {
+                        if p.checks.iter().any(|c| {
+                            c.name == requirement.context
+                                && c.app_id == Some(requirement.app_id)
+                                && c.app.as_deref() == Some("github-actions")
+                        }) {
+                            p.required_check_names
+                                .insert(format!("@github-actions/{}", requirement.context));
+                        }
+                    }
+                    state.pull_requests.insert(p.number, p);
+                }
+                state.branches.insert(base.clone(), base_tip.clone());
+                let mut checks = checks.clone();
+                checks.sort();
+                checks.dedup();
+                let mut bound = bound_checks.clone();
+                bound.sort();
+                bound.dedup();
+                if checks.is_empty() {
+                    state.required_checks.remove(base);
+                } else {
+                    state.required_checks.insert(base.clone(), checks);
+                }
+                if bound.is_empty() {
+                    state.bound_required_checks.remove(base);
+                } else {
+                    state.bound_required_checks.insert(base.clone(), bound);
+                }
+                state.check_identity_unavailable.remove(base);
+            }
+        }
         Event::PullRequestOpened { pull_request } => {
             state
                 .pull_requests
@@ -656,6 +869,14 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             token,
         } => {
             for p in pull_requests {
+                if state.check_identity_unavailable.contains(&p.base)
+                    || state
+                        .pull_requests
+                        .get(&p.number)
+                        .is_some_and(|old| state.check_identity_unavailable.contains(&old.base))
+                {
+                    continue;
+                }
                 // Merged is final: a read that says otherwise lags behind (MQ-33).
                 if !p.merged && state.pull_requests.get(&p.number).is_some_and(|o| o.merged) {
                     continue;
@@ -663,6 +884,9 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                 state.pull_requests.insert(p.number, p.clone());
             }
             for (b, sha) in branches {
+                if state.check_identity_unavailable.contains(b) {
+                    continue;
+                }
                 match sha {
                     Some(s) => state.branches.insert(b.clone(), s.clone()),
                     None => state.branches.remove(b),
@@ -676,7 +900,29 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             head_sha,
             tree,
             draft,
-        } => queue::car_built(state, *car, branch, head_sha, tree, *draft, out),
+        } => {
+            let owner = state
+                .trains
+                .iter()
+                .find(|(_, train)| train.cars.iter().any(|c| c.id == *car));
+            let held = owner.map_or(!state.check_identity_unavailable.is_empty(), |(base, _)| {
+                state.check_identity_unavailable.contains(base)
+            });
+            if held {
+                let reply = DeferredBuilt {
+                    car: *car,
+                    branch: branch.clone(),
+                    head_sha: head_sha.clone(),
+                    tree: tree.clone(),
+                    draft: *draft,
+                };
+                if !state.identity_deferred_built.contains(&reply) {
+                    state.identity_deferred_built.push(reply);
+                }
+            } else {
+                queue::car_built(state, *car, branch, head_sha, tree, *draft, out);
+            }
+        }
         Event::CarConflict {
             car,
             number,
@@ -692,20 +938,64 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             car,
             commits,
             error,
-        } => queue::landed(state, rules, *car, commits, error.as_ref(), out),
+        } => {
+            let owner = state
+                .trains
+                .iter()
+                .find(|(_, train)| train.cars.iter().any(|c| c.id == *car));
+            let held = owner.map_or(!state.check_identity_unavailable.is_empty(), |(base, _)| {
+                state.check_identity_unavailable.contains(base)
+            });
+            if held {
+                let reply = DeferredLanded {
+                    car: *car,
+                    commits: commits.clone(),
+                    error: error.clone(),
+                };
+                if !state.identity_deferred_landed.contains(&reply) {
+                    state.identity_deferred_landed.push(reply);
+                }
+            } else {
+                queue::landed(state, rules, *car, commits, error.as_ref(), out);
+            }
+        }
         Event::Tick => {}
-        Event::Failed {
-            decision: Decision::Act { id, .. },
-            error,
-        } => crate::actions::failed(state, *id, error, out),
-        Event::Failed { decision, .. } => queue::side_effect_failed(state, decision, out),
+        Event::Failed { decision, error } => {
+            if !state.check_identity_unavailable.is_empty() {
+                let reply = DeferredFailed {
+                    decision: decision.clone(),
+                    error: error.clone(),
+                };
+                if !state.identity_deferred_failed.contains(&reply) {
+                    state.identity_deferred_failed.push(reply);
+                }
+            } else if let Decision::Act { id, .. } = decision {
+                crate::actions::failed(state, *id, error, out);
+            } else {
+                queue::side_effect_failed(state, decision, out);
+            }
+        }
         Event::CarClosed { car } => queue::car_closed(state, *car),
         Event::Restarted => {
-            queue::expire_all(state, out);
-            crate::actions::restarted(state, out);
+            if state.check_identity_unavailable.is_empty() {
+                queue::expire_all(state, out);
+                crate::actions::restarted(state, out);
+            } else {
+                state.identity_restart_pending = true;
+            }
         }
         Event::ActionDone { id, result } => crate::actions::done(state, *id, result, out),
-        Event::Comments { comments } => crate::control::comments(state, rules, comments, out),
+        Event::Comments { comments } => {
+            if state.check_identity_unavailable.is_empty() {
+                crate::control::comments(state, rules, comments, out);
+            } else {
+                for comment in comments {
+                    if !state.identity_deferred_comments.contains(comment) {
+                        state.identity_deferred_comments.push(comment.clone());
+                    }
+                }
+            }
+        }
         Event::Control { control } => crate::gates::apply(state, control, out),
         Event::RequiredChecks { base, checks } => {
             let mut c = checks.clone();
@@ -715,6 +1005,28 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                 state.required_checks.remove(base);
             } else {
                 state.required_checks.insert(base.clone(), c);
+            }
+        }
+        Event::RequiredChecksTyped {
+            base,
+            checks,
+            bound_checks,
+        } => {
+            let mut checks = checks.clone();
+            checks.sort();
+            checks.dedup();
+            let mut bound = bound_checks.clone();
+            bound.sort();
+            bound.dedup();
+            if checks.is_empty() {
+                state.required_checks.remove(base);
+            } else {
+                state.required_checks.insert(base.clone(), checks);
+            }
+            if bound.is_empty() {
+                state.bound_required_checks.remove(base);
+            } else {
+                state.bound_required_checks.insert(base.clone(), bound);
             }
         }
         Event::ConfigurationChanged => {
@@ -749,11 +1061,23 @@ fn process(
         if is_queue_pull_request(rules, &pr) || queue::is_car_draft(state, number) {
             continue;
         }
+        if state.check_identity_unavailable.contains(&pr.base) {
+            let holds = state.holds.entry(number).or_default();
+            if !holds.iter().any(|h| h.kind == "check-identity-unavailable") {
+                holds.push(Hold::wait(
+                    "check-identity-unavailable",
+                    "A fresh check identity read is unavailable",
+                ));
+            }
+            continue;
+        }
         evaluate_pull_request(state, rules, &pr, now, out);
     }
     crate::gates::refresh_priorities(state, rules);
     queue::process_trains(state, rules, now, token, out);
-    crate::actions::run(state, rules, token, out);
+    if state.check_identity_unavailable.is_empty() {
+        crate::actions::run(state, rules, token, out);
+    }
 }
 
 /// Removes a pull request from the queue with a reason and discards what depended on it.
@@ -811,6 +1135,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
+            external_reset: false,
             by,
             priority: default_priority(),
             priority_rule: None,

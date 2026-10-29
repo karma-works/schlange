@@ -1,0 +1,22 @@
+# S10's Arztagent config waits five minutes before building a partial batch. Exercise an
+# external push while both pull requests are already queued but that wait has not elapsed.
+name: p1-external-base-conflict-waiting
+description: A queued pull request conflicts with an external base push during the batch wait.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+ci:
+  - { check: Risk class and data protection, duration: 1m, runs_on: pull_request }
+  - { check: ci-ok, duration: 1m, runs_on: pull_request }
+  - { check: KI-Review, duration: 1m, runs_on: pull_request }
+  - { check: ci-ok, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: arztagent-bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: arztagent-bot, files: { shared.txt: "pull request\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 2m, push_base: { files: { shared.txt: "external push\n" } } }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: dequeued, reason: PR_DEQUEUED, held: dequeued-waits-for-new-head }
+expect_log:
+  - "PR_DEQUEUED: the pull request does not merge onto the base branch"

@@ -205,6 +205,13 @@ pub struct PullFile {
 pub struct AppRef {
     #[serde(default)]
     pub slug: Option<String>,
+    #[serde(default)]
+    pub id: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CheckSuiteRef {
+    pub id: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -217,6 +224,8 @@ pub struct CheckRunJson {
     pub conclusion: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
+    #[serde(default)]
+    pub check_suite: Option<CheckSuiteRef>,
     #[serde(default)]
     pub output: Option<CheckOutput>,
 }
@@ -233,6 +242,8 @@ pub struct CheckOutput {
 pub struct CheckSuiteJson {
     pub id: u64,
     pub head_sha: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -266,6 +277,35 @@ pub struct GitRef {
     #[serde(rename = "ref")]
     pub ref_name: String,
     pub object: ShaOnly,
+}
+
+/// Evidence of one matching authenticated create-ref response. The fields are private so a
+/// caller cannot construct a receipt from a later read or an arbitrary response.
+#[derive(Debug)]
+pub struct RefCreatedReceipt {
+    repo: String,
+    installation: u64,
+    api: String,
+    branch: String,
+    sha: String,
+}
+
+impl RefCreatedReceipt {
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+    pub fn installation(&self) -> u64 {
+        self.installation
+    }
+    pub fn api(&self) -> &str {
+        &self.api
+    }
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+    pub fn sha(&self) -> &str {
+        &self.sha
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -364,6 +404,26 @@ pub struct BranchRule {
     /// The rule's parameters (`required_status_checks` lists the required contexts).
     #[serde(default)]
     pub parameters: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequiredContext {
+    pub context: String,
+    pub app_id: Option<u64>,
+}
+
+fn context_from_value(value: &Value, id_key: &str) -> Option<RequiredContext> {
+    let context = value.get("context")?.as_str()?.to_string();
+    if context.is_empty() {
+        return None;
+    }
+    let app = value.get(id_key);
+    let app_id = match app {
+        None | Some(Value::Null) => None,
+        Some(v) if v.as_i64() == Some(-1) => None,
+        Some(v) => Some(v.as_u64().filter(|id| *id != 0)?),
+    };
+    Some(RequiredContext { context, app_id })
 }
 
 impl BranchRule {
@@ -487,6 +547,22 @@ impl RepoApi {
         )
     }
 
+    fn checked_list<T: serde::de::DeserializeOwned>(
+        &self,
+        rest: &str,
+        prio: Priority,
+        key: &str,
+    ) -> Result<Vec<T>, Error> {
+        let sep = if rest.contains('?') { '&' } else { '?' };
+        self.client.get_paginated_checked(
+            &self.p(&format!("{rest}{sep}per_page=100")),
+            auth_inst(self.installation),
+            prio,
+            30,
+            key,
+        )
+    }
+
     // ---- reads -------------------------------------------------------------------------
 
     pub fn repository(&self, prio: Priority) -> Result<Repository, Error> {
@@ -499,6 +575,12 @@ impl RepoApi {
 
     pub fn open_pulls(&self, prio: Priority) -> Result<Vec<Pull>, Error> {
         self.list("/pulls?state=open", prio, None)
+    }
+
+    pub fn open_pulls_checked(&self, prio: Priority) -> Result<Vec<Pull>, Error> {
+        let path = self.p("/pulls?state=open&per_page=100");
+        self.client
+            .get_paginated_array_checked(&path, auth_inst(self.installation), prio, 30)
     }
 
     /// Open pull requests with this head branch (in this repository).
@@ -550,6 +632,16 @@ impl RepoApi {
         self.list(&format!("/issues/{n}/comments"), prio, None)
     }
 
+    pub fn issue_comments_checked(
+        &self,
+        n: u64,
+        prio: Priority,
+    ) -> Result<Vec<IssueComment>, Error> {
+        let path = self.p(&format!("/issues/{n}/comments?per_page=100"));
+        self.client
+            .get_paginated_array_checked(&path, auth_inst(self.installation), prio, 30)
+    }
+
     /// The 100 newest moves of a branch of this repository, newest first.
     pub fn branch_activity(&self, branch: &str, prio: Priority) -> Result<Vec<Activity>, Error> {
         let r = format!("refs/heads/{branch}");
@@ -594,11 +686,68 @@ impl RepoApi {
     }
 
     pub fn check_suites(&self, sha: &str, prio: Priority) -> Result<Vec<CheckSuiteJson>, Error> {
-        self.list(
+        self.checked_list(
             &format!("/commits/{}/check-suites", enc_path(sha)),
             prio,
-            Some("check_suites"),
+            "check_suites",
         )
+    }
+
+    pub fn check_suite_runs(&self, suite: u64, prio: Priority) -> Result<Vec<CheckRunJson>, Error> {
+        self.checked_list(
+            &format!("/check-suites/{suite}/check-runs?filter=all"),
+            prio,
+            "check_runs",
+        )
+    }
+
+    /// Reads each listed suite and verifies the head and app identity of each run. A
+    /// paginated remote read cannot by itself make a concurrent GitHub snapshot atomic.
+    pub fn validated_suite_runs(
+        &self,
+        sha: &str,
+        prio: Priority,
+    ) -> Result<Vec<(CheckSuiteJson, CheckRunJson)>, Error> {
+        let invalid = |detail: &str| Error::Decode {
+            path: "check identity".into(),
+            detail: detail.into(),
+        };
+        let mut suites_seen = std::collections::BTreeSet::new();
+        let mut runs_seen = std::collections::BTreeSet::new();
+        let mut result = Vec::new();
+        for suite in self.check_suites(sha, prio)? {
+            let app = suite
+                .app
+                .as_ref()
+                .ok_or_else(|| invalid("suite app missing"))?;
+            if suite.id == 0
+                || !suites_seen.insert(suite.id)
+                || suite.head_sha != sha
+                || app.id.is_none_or(|id| id == 0)
+                || app.slug.as_deref().is_none_or(str::is_empty)
+                || suite
+                    .created_at
+                    .as_deref()
+                    .and_then(crate::time::parse_rfc3339)
+                    .is_none()
+            {
+                return Err(invalid("invalid suite identity"));
+            }
+            for run in self.check_suite_runs(suite.id, prio)? {
+                let run_app = run.app.as_ref().ok_or_else(|| invalid("run app missing"))?;
+                if run.id == 0
+                    || !runs_seen.insert(run.id)
+                    || run.head_sha != sha
+                    || run.check_suite.as_ref().map(|s| s.id) != Some(suite.id)
+                    || run_app.id != app.id
+                    || run_app.slug != app.slug
+                {
+                    return Err(invalid("run does not match suite"));
+                }
+                result.push((suite.clone(), run));
+            }
+        }
+        Ok(result)
     }
 
     /// The combined status with every page of its statuses (GitHub pages them: 30 by
@@ -615,6 +764,35 @@ impl RepoApi {
             cs.statuses.extend(more);
         }
         Ok(cs)
+    }
+
+    /// Read a complete bounded list of the combined status contexts.
+    pub fn combined_status_checked(
+        &self,
+        sha: &str,
+        prio: Priority,
+    ) -> Result<Vec<StatusJson>, Error> {
+        let statuses: Vec<StatusJson> = self.checked_list(
+            &format!("/commits/{}/status", enc_path(sha)),
+            prio,
+            "statuses",
+        )?;
+        let mut ids = std::collections::BTreeSet::new();
+        if statuses.iter().any(|s| {
+            s.id == 0
+                || !ids.insert(s.id)
+                || s.context.is_empty()
+                || !matches!(
+                    s.state.as_str(),
+                    "pending" | "success" | "failure" | "error"
+                )
+        }) {
+            return Err(Error::Decode {
+                path: "combined status".into(),
+                detail: "invalid status identity or state".into(),
+            });
+        }
+        Ok(statuses)
     }
 
     /// The SHA a branch points to.
@@ -682,6 +860,128 @@ impl RepoApi {
     /// for; expect a 403 or 404 and use [`RepoApi::branch_rules`] instead).
     pub fn branch_protection(&self, branch: &str, prio: Priority) -> Result<Value, Error> {
         self.get(&format!("/branches/{}/protection", enc_path(branch)), prio)
+    }
+
+    /// Both active rulesets and classic protection, with app bindings preserved. A 404
+    /// on a protected branch is ambiguous and never interpreted as absence.
+    pub fn required_check_contexts(
+        &self,
+        branch: &str,
+        prio: Priority,
+    ) -> Result<Vec<RequiredContext>, Error> {
+        let installation = self
+            .client
+            .installation_with_priority(self.installation, prio)?;
+        let token_permissions = self
+            .client
+            .installation_token_permissions(self.installation)?;
+        for permission in ["actions", "administration"] {
+            if !matches!(
+                installation.permissions.get(permission).map(String::as_str),
+                Some("read" | "write" | "admin")
+            ) {
+                return Err(Error::Refused(format!(
+                    "installation lacks {permission}: read"
+                )));
+            }
+            if !matches!(
+                token_permissions.get(permission).map(String::as_str),
+                Some("read" | "write" | "admin")
+            ) {
+                return Err(Error::Refused(format!(
+                    "installation token lacks {permission}: read"
+                )));
+            }
+        }
+        let path = format!("/branches/{}", enc_path(branch));
+        let branch_info: Value = self.get(&path, prio)?;
+        let protected = branch_info
+            .get("protected")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| Error::Decode {
+                path: path.clone(),
+                detail: "missing protected status".into(),
+            })?;
+        let mut contexts = Vec::new();
+        let path = self.p(&format!(
+            "/rules/branches/{}?per_page=100",
+            enc_path(branch)
+        ));
+        let rules: Vec<BranchRule> = self.client.get_paginated_array_checked(
+            &path,
+            auth_inst(self.installation),
+            prio,
+            30,
+        )?;
+        for rule in rules {
+            if rule.kind == "required_status_checks" {
+                let items = rule
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| p.get("required_status_checks"))
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| Error::Decode {
+                        path: path.clone(),
+                        detail: "missing ruleset required checks".into(),
+                    })?;
+                for item in items {
+                    contexts.push(context_from_value(item, "integration_id").ok_or_else(|| {
+                        Error::Decode {
+                            path: path.clone(),
+                            detail: "invalid ruleset required check".into(),
+                        }
+                    })?);
+                }
+            }
+        }
+        if protected {
+            let protection = self.branch_protection(branch, prio)?;
+            let status = protection
+                .get("required_status_checks")
+                .ok_or_else(|| Error::Decode {
+                    path: path.clone(),
+                    detail: "missing classic required_status_checks".into(),
+                })?;
+            if !status.is_null() {
+                if let Some(checks) = status.get("checks") {
+                    let checks = checks.as_array().ok_or_else(|| Error::Decode {
+                        path: path.clone(),
+                        detail: "invalid classic checks".into(),
+                    })?;
+                    for item in checks {
+                        contexts.push(context_from_value(item, "app_id").ok_or_else(|| {
+                            Error::Decode {
+                                path: path.clone(),
+                                detail: "invalid classic check".into(),
+                            }
+                        })?);
+                    }
+                } else {
+                    let items = status
+                        .get("contexts")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| Error::Decode {
+                            path: path.clone(),
+                            detail: "missing classic contexts".into(),
+                        })?;
+                    for item in items {
+                        contexts.push(RequiredContext {
+                            context: item
+                                .as_str()
+                                .ok_or_else(|| Error::Decode {
+                                    path: path.clone(),
+                                    detail: "invalid classic context".into(),
+                                })?
+                                .into(),
+                            app_id: None,
+                        });
+                    }
+                }
+            }
+        }
+        contexts.sort();
+        contexts.dedup();
+        Ok(contexts)
     }
 
     /// The rules that apply to a branch, from rulesets (readable with `metadata: read`).
@@ -774,6 +1074,49 @@ impl RepoApi {
             Some(&json!({ "ref": format!("refs/heads/{branch}"), "sha": sha })),
         )
         .map(|_| ())
+    }
+
+    /// Create a ref once and retain only a matching 201 response as evidence. A malformed
+    /// successful response remains ambiguous because the remote write may have happened.
+    pub fn create_ref_receipt(
+        &self,
+        branch: &str,
+        sha: &str,
+        prio: Priority,
+    ) -> Result<RefCreatedReceipt, Error> {
+        if !self.client.has_execution_gate() {
+            return Err(Error::Refused("execution gate is required".into()));
+        }
+        let path = self.p("/git/refs");
+        let ambiguous = || Error::Ambiguous {
+            method: "POST".into(),
+            path: path.clone(),
+            detail: "create-ref response did not prove the requested ref".into(),
+        };
+        let response = self
+            .client
+            .send_single_write(
+                "POST",
+                &path,
+                auth_inst(self.installation),
+                prio,
+                &json!({ "ref": format!("refs/heads/{branch}"), "sha": sha }),
+            )
+            .map_err(|_| ambiguous())?;
+        if response.status != 201 {
+            return Err(ambiguous());
+        }
+        let created: GitRef = response.json(&path).map_err(|_| ambiguous())?;
+        if created.ref_name != format!("refs/heads/{branch}") || created.object.sha != sha {
+            return Err(ambiguous());
+        }
+        Ok(RefCreatedReceipt {
+            repo: self.repo.full(),
+            installation: self.installation,
+            api: self.client.api_identity(),
+            branch: branch.into(),
+            sha: sha.into(),
+        })
     }
 
     pub fn delete_ref(&self, branch: &str, prio: Priority) -> Result<(), Error> {
@@ -957,6 +1300,48 @@ impl RepoApi {
             )?
             .json("comments")?;
         Ok(id.id)
+    }
+
+    pub(crate) fn comment_reserved(
+        &self,
+        n: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<u64, Error> {
+        #[derive(Deserialize)]
+        struct Id {
+            id: u64,
+        }
+        let path = self.p(&format!("/issues/{n}/comments"));
+        let id: Id = self
+            .client
+            .send_reserved_cosmetic(
+                "POST",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )?
+            .json("comments")?;
+        Ok(id.id)
+    }
+
+    pub(crate) fn update_comment_reserved(
+        &self,
+        id: u64,
+        body: &str,
+        permit: &mut crate::client::CosmeticPermit,
+    ) -> Result<(), Error> {
+        let path = self.p(&format!("/issues/comments/{id}"));
+        self.client
+            .send_reserved_cosmetic(
+                "PATCH",
+                &path,
+                auth_inst(self.installation),
+                &json!({"body":body}),
+                permit,
+            )
+            .map(|_| ())
     }
 
     pub fn update_comment(&self, id: u64, body: &str, prio: Priority) -> Result<(), Error> {
@@ -1202,11 +1587,15 @@ impl Client {
     }
 
     pub fn installation(&self, id: u64) -> Result<Installation, Error> {
-        self.get_json(
-            &format!("/app/installations/{id}"),
-            Auth::App,
-            Priority::Normal,
-        )
+        self.installation_with_priority(id, Priority::Normal)
+    }
+
+    pub fn installation_with_priority(
+        &self,
+        id: u64,
+        prio: Priority,
+    ) -> Result<Installation, Error> {
+        self.get_json(&format!("/app/installations/{id}"), Auth::App, prio)
     }
 
     pub fn repo_installation(&self, repo: &RepoName) -> Result<Installation, Error> {

@@ -117,6 +117,26 @@ pub fn queue_conditions<'a>(
         Some(checks) if rule.injection_mode == InjectionMode::Queue => {
             let mut v = rule.queue_conditions.clone();
             v.extend(check_conditions(checks));
+            if let Some(bound) = state.bound_required_checks.get(base) {
+                v.extend(bound.iter().map(|r| Condition::RequiredCheck {
+                    context: r.context.clone(),
+                    app_id: r.app_id,
+                }));
+            }
+            Cow::Owned(v)
+        }
+        _ if rule.injection_mode == InjectionMode::Queue
+            && state.bound_required_checks.contains_key(base) =>
+        {
+            let mut v = rule.queue_conditions.clone();
+            v.extend(
+                state.bound_required_checks[base]
+                    .iter()
+                    .map(|r| Condition::RequiredCheck {
+                        context: r.context.clone(),
+                        app_id: r.app_id,
+                    }),
+            );
             Cow::Owned(v)
         }
         _ => Cow::Borrowed(&rule.queue_conditions),
@@ -139,6 +159,26 @@ pub fn merge_conditions<'a>(
         Some(checks) if rule.injection_mode != InjectionMode::None => {
             let mut v = own.to_vec();
             v.extend(check_conditions(checks));
+            if let Some(bound) = state.bound_required_checks.get(base) {
+                v.extend(bound.iter().map(|r| Condition::RequiredCheck {
+                    context: r.context.clone(),
+                    app_id: r.app_id,
+                }));
+            }
+            Cow::Owned(v)
+        }
+        _ if rule.injection_mode != InjectionMode::None
+            && state.bound_required_checks.contains_key(base) =>
+        {
+            let mut v = own.to_vec();
+            v.extend(
+                state.bound_required_checks[base]
+                    .iter()
+                    .map(|r| Condition::RequiredCheck {
+                        context: r.context.clone(),
+                        app_id: r.app_id,
+                    }),
+            );
             Cow::Owned(v)
         }
         _ => Cow::Borrowed(own),
@@ -194,6 +234,31 @@ pub fn landing_hold(
 mod tests {
     use super::*;
     use crate::engine::Freeze;
+
+    #[test]
+    fn bound_requirements_are_injected_and_survive_state_roundtrip() {
+        use crate::model::RequiredCheck;
+        let mut state = State::default();
+        state.bound_required_checks.insert(
+            "main".into(),
+            vec![RequiredCheck {
+                context: "ci".into(),
+                app_id: 42,
+            }],
+        );
+        let restored: State =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        let rule = QueueRule::new("q");
+        let conditions = queue_conditions(&restored, &rule, "main");
+        assert!(conditions.contains(&Condition::RequiredCheck {
+            context: "ci".into(),
+            app_id: 42
+        }));
+        let mut old = serde_json::to_value(&state).unwrap();
+        old.as_object_mut().unwrap().remove("bound_required_checks");
+        let legacy: State = serde_json::from_value(old).unwrap();
+        assert!(legacy.bound_required_checks.is_empty());
+    }
 
     #[test]
     fn freeze_matching_and_exceptions() {
