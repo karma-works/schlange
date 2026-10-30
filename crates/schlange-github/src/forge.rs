@@ -1524,6 +1524,11 @@ impl GithubForge {
                 .map(|(_, t)| t.clone())
                 .or_else(|| (idx + 1 == prs.len()).then(|| expected_tree.to_string()));
             let mut note = String::new();
+            // We called the merge endpoint and its reply did not say whether it landed. A
+            // merge found after such a call is ours even when it sits on another base; the
+            // tree check below must still run so a foreign base cannot hide an untested land
+            // (MQ-02). A hand merge nobody called stays `HeadChanged`.
+            let mut uncertain_merge = false;
             let landed_sha = loop {
                 let pull = self.pull(p.number, prio)?;
                 if pull.merged {
@@ -1537,6 +1542,15 @@ impl GithubForge {
                         c.parents.first().map(|x| x.sha.as_str()) == Some(expected.as_str())
                     };
                     if !on_expected {
+                        if uncertain_merge {
+                            note = format!(
+                                "the merge call's outcome was uncertain and it landed on {} instead of {}",
+                                short(&sha),
+                                short(&expected)
+                            );
+                            self.note(format!("#{}: {note}", p.number));
+                            break sha;
+                        }
                         error = Some(LandError::HeadChanged { number: p.number });
                         break 'prs;
                     }
@@ -1614,6 +1628,7 @@ impl GithubForge {
                         }
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
+                            uncertain_merge = true;
                             continue;
                         }
                         let text = refusal_text(405, &msg);
@@ -1635,6 +1650,7 @@ impl GithubForge {
                         // same head cannot help (G4).
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
+                            uncertain_merge = true;
                             continue;
                         }
                         let text = refusal_text(status, &message);
@@ -1650,6 +1666,7 @@ impl GithubForge {
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
                             note = format!("the merge call failed ({e}) but the merge happened");
+                            uncertain_merge = true;
                             continue;
                         }
                         return Err(e);
