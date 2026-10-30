@@ -269,7 +269,10 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
                     let ok = actors.iter().any(|a| {
                         a.actor_type == "Integration"
                             && a.actor_id == Some(app_id)
-                            && a.bypass_mode.as_deref().unwrap_or("always") == "always"
+                            && matches!(
+                                a.bypass_mode.as_deref().unwrap_or("always"),
+                                "always" | "exempt"
+                            )
                     });
                     if !ok {
                         problems.push(format!("{} ruleset `{}`", repo.full(), full.name));
