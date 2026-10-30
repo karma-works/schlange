@@ -1,0 +1,142 @@
+{
+  "feature": "github-integration",
+  "verdict": "deviating",
+  "findings": [
+    {
+      "subfeature": "app-auth",
+      "verdict": "conformant",
+      "evidence": "client.rs:664 caches installation tokens until five minutes before expiry. RS256 JWT, token caching and 401 renewal tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "rest-client",
+      "verdict": "conformant",
+      "evidence": "GitHub client suite: 20 tests passed, covering ETags, pagination, redirects, host confinement, ambiguous writes and rate-limited writes returned without repetition.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "listener",
+      "verdict": "conformant",
+      "evidence": "crates/schlange-github/src/http.rs:136 implements request limits and deadlines; :269 rejects a full queue with 503. Slow-client and health tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "webhooks",
+      "verdict": "deviating",
+      "evidence": "crates/schlange-github/src/service.rs:397 queues the payload in memory, then :401 records its delivery ID. A crash before processing loses acknowledged checkbox edits while persisted IDs suppress redelivery. The separate seen/enqueue/record operations also allow concurrent duplicates; persistence errors are ignored at :365.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "reconcile",
+      "verdict": "conformant",
+      "evidence": "e2e lost_webhooks_are_recovered_by_reconciliation and a_restart_recovers_from_github_and_sweeps_orphans passed. service.rs:1911 recovers unhandled commands after reconciliation.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "check-identity",
+      "verdict": "deviating",
+      "evidence": "forge.rs:639 validates suites, but :438 constructs checks without workflow/event identity; api.rs:211 also discards check_suite. A temporary loopback fixture produced Failure and Success checks with workflow=None/event=None, then selected Success. Pinned configuration_conditions.md, 'Which Check Run a Condition Reads', requires each workflow/event's newest run to pass for required GitHub Actions checks. The three identity-read/restart tests passed but do not cover this distinction.",
+      "severity": "blocker"
+    },
+    {
+      "subfeature": "watchdog",
+      "verdict": "deviating",
+      "evidence": "crates/schlange-github/src/watchdog.rs:652 selects only Running cars without live dependencies; :764 detects transition to Verifying. Watchdog tests passed, but stalls in other phases remain outside its coverage, so full W-01 recovery is incomplete.",
+      "severity": "minor"
+    },
+    {
+      "subfeature": "file-lists",
+      "verdict": "conformant",
+      "evidence": "forge.rs:468 marks missing or truncated file counts incomplete. The security test a_constitution_path_beyond_the_file_list_cap_is_not_queued passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "pushers",
+      "verdict": "conformant",
+      "evidence": "forge.rs:489 leaves head_pusher unknown; :2079 binds commands through branch activity rather than commit authors. Forged-author and command-race security tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "queue-cars",
+      "verdict": "conformant",
+      "evidence": "The 11 e2e tests passed, including draft creation, three-PR batches, bisection and ambiguous creation outcomes. forge.rs:1215 handles merge conflicts and :1267 creates the draft.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "landing",
+      "verdict": "deviating",
+      "evidence": "landing a_lying_502_after_a_base_push_halts_on_the_untested_tree passed. Its assertions at crates/schlange-github-fake/tests/landing.rs:111 confirm the PR already merged before the queue halted. Detection after landing cannot guarantee I0 or an atomic expected-base comparison.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "landing-retries",
+      "verdict": "conformant",
+      "evidence": "forge.rs:997 schedules Failed instead of resending Land. Landing tests for a halt label during failures and a base push during a rate-limit wait passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "refusals",
+      "verdict": "conformant",
+      "evidence": "All nine landing tests passed, including transient 405/409, permanent 422, missing workflow permission and unknown mergeability; security tests for halt during 405/409 also passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "unknown-outcomes",
+      "verdict": "conformant",
+      "evidence": "e2e a_5xx_after_the_merge_happened_does_not_land_twice and a_lying_5xx_on_draft_creation_and_queue_branch_merges_is_absorbed passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "read-your-writes",
+      "verdict": "conformant",
+      "evidence": "forge.rs:383 preserves known merged/closed outcomes. landing reads_that_lag_behind_writes_change_nothing passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "provisional-reads",
+      "verdict": "conformant",
+      "evidence": "e2e storms_of_404_and_5xx_never_dequeue and client reads_retry_5xx_and_404_but_writes_report_an_unknown_outcome passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "check-runs",
+      "verdict": "conformant",
+      "evidence": "forge.rs:435 excludes the app's own checks; :1837 creates and completes cosmetic queue checks. Queue-operation and end-to-end tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "rate-limits",
+      "verdict": "conformant",
+      "evidence": "client.rs:239 prioritizes landing and reserves budget from cosmetics/background reads. Budget, secondary-limit, rate-limited-write and e2e recovery tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "permissions",
+      "verdict": "conformant",
+      "evidence": "crates/schlange-github/src/permissions.rs defines required and optional permissions. serve installation_tokens_are_downscoped and doctor permission tests passed against the fake.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "ruleset-exception",
+      "verdict": "deviating",
+      "evidence": "doctor.rs:269 accepts always or exempt, even treating an absent bypass_mode as always. Pinned merge-queue_github-rulesets.md, 'Bypass Actors', requires exempt and warns that always leaves parts blocked. Automated setup also remains missing.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "journal",
+      "verdict": "conformant",
+      "evidence": "store.rs:111 enables WAL and FULL synchronization; service.rs:2078 checkpoints before effects and :2106 records intents. Crash-mid-landing, command deduplication and partial-build recovery tests passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "config",
+      "verdict": "conformant",
+      "evidence": "config validate crates/schlange-config/tests/golden/arztagent.yml exited 0: valid. serve_validates_the_configuration_and_keeps_the_last_valid_one passed; config.rs:122 searches the default branch.",
+      "severity": "info"
+    }
+  ],
+  "missing_tests": [],
+  "clean_room_ok": true,
+  "summary": "Deviating, principally because required-check workflow identity is discarded. All 176 focused GitHub tests and three CLI scenarios passed. cargo test --workspace failed at the batch_pull_request schema/golden expectation; a supplementary retry was stopped during the long forge fault sweep. Every named MQ ID has test/scenario coverage, but MQ-18 real workflow triggering remains unverified. No copied Mergify prose or code detected; repository files were unchanged.",
+  "commit": "5de7b4be3a64b95f89ee40340e7dd113f6101a6a"
+}
