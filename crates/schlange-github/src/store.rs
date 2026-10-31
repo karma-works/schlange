@@ -9,6 +9,7 @@
 //! | `history` | `checks_timeout: auto` runtimes per `queue@base`, also kept when a snapshot cannot be read back |
 //! | `cars` | per car: the tree after each pull request (the landing compares against it) |
 //! | `deliveries` | webhook delivery ids handled successfully (GitHub redelivers failed ones) |
+//! | `inbox` | webhook deliveries acknowledged to GitHub but not yet finished by the worker; replayed after a restart |
 //! | `audit` | one row per landed pull request: tested head and tree, base before, landed commit and tree (S-AUDIT) |
 //! | `events` | the event log: queue and action events per repository, with the pull requests they belong to (`schlange events`) |
 //! | `shadow` | shadow mode: what Schlange would have done and what Mergify did, per pull request (`schlange shadow report`) |
@@ -30,6 +31,9 @@ use schlange_core::model::Time;
 
 pub const DB_FILE: &str = "schlange.db";
 const SCHEMA_VERSION: i64 = 1;
+
+/// One webhook delivery still queued in the inbox: id, repository, event and raw body.
+pub type InboxDelivery = (String, String, String, Vec<u8>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -128,6 +132,10 @@ impl Store {
                  repo TEXT NOT NULL, car INTEGER NOT NULL, prefix TEXT NOT NULL,
                  PRIMARY KEY (repo, car));
              CREATE TABLE IF NOT EXISTS deliveries (guid TEXT PRIMARY KEY, at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS inbox (
+                 guid TEXT PRIMARY KEY, repo TEXT NOT NULL, event TEXT NOT NULL,
+                 body BLOB NOT NULL, at INTEGER NOT NULL, processed INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX IF NOT EXISTS inbox_pending ON inbox (processed, at);
              CREATE TABLE IF NOT EXISTS audit (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, at INTEGER NOT NULL,
                  car INTEGER NOT NULL, number INTEGER NOT NULL, tested_head TEXT NOT NULL,
@@ -231,6 +239,63 @@ impl Store {
                 params![keep as i64],
             )?;
             Ok(())
+        })
+    }
+
+    /// Persists a delivery before the worker sees it. Returns `false` when this id is already
+    /// in the inbox (queued or handled), so a redelivery is not enqueued twice.
+    pub fn inbox_put(
+        &self,
+        guid: &str,
+        repo: &str,
+        event: &str,
+        body: &[u8],
+        at: u64,
+    ) -> rusqlite::Result<bool> {
+        self.with(|c| {
+            Ok(c.execute(
+                "INSERT OR IGNORE INTO inbox (guid, repo, event, body, at, processed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![guid, repo, event, body, at as i64],
+            )? > 0)
+        })
+    }
+
+    /// Deliveries the worker has not finished yet, oldest first.
+    pub fn inbox_pending(&self) -> rusqlite::Result<Vec<InboxDelivery>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT guid, repo, event, body FROM inbox
+                 WHERE processed = 0 ORDER BY at, rowid",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            rows.collect()
+        })
+    }
+
+    /// Marks an inbox entry handled and records the delivery id, keeping the newest `keep`.
+    pub fn inbox_done(&self, guid: &str, at: u64, keep: u64) -> rusqlite::Result<()> {
+        self.with(|c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute(
+                "UPDATE inbox SET processed = 1 WHERE guid = ?1",
+                params![guid],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO deliveries (guid, at) VALUES (?1, ?2)",
+                params![guid, at as i64],
+            )?;
+            tx.execute(
+                "DELETE FROM deliveries WHERE rowid NOT IN
+                   (SELECT rowid FROM deliveries ORDER BY at DESC, rowid DESC LIMIT ?1)",
+                params![keep as i64],
+            )?;
+            tx.execute(
+                "DELETE FROM inbox WHERE processed = 1 AND guid NOT IN
+                   (SELECT guid FROM deliveries)",
+                [],
+            )?;
+            tx.commit()
         })
     }
 
@@ -1025,6 +1090,29 @@ mod tests {
         j.intent(1, &original).unwrap();
         assert!(j.intent(1, &Decision::WakeAt { at: 100 }).is_err());
         assert_eq!(j.recover().unwrap().unwrap().in_doubt, vec![(1, original)]);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn inbox_survives_reopen_and_records_the_delivery_when_done() {
+        let d = dir("inbox");
+        {
+            let s = Store::open(&d).unwrap();
+            assert!(s.inbox_put("g1", "o/r", "issue_comment", b"{}", 5).unwrap());
+            assert!(
+                !s.inbox_put("g1", "o/r", "issue_comment", b"{}", 5).unwrap(),
+                "a redelivery is not queued twice"
+            );
+            let pending = s.inbox_pending().unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].0, "g1");
+            assert_eq!(pending[0].3, b"{}".to_vec());
+        }
+        let s = Store::open(&d).unwrap();
+        assert_eq!(s.inbox_pending().unwrap().len(), 1);
+        s.inbox_done("g1", 6, 10).unwrap();
+        assert!(s.inbox_pending().unwrap().is_empty());
+        assert!(s.delivery_seen("g1").unwrap());
         let _ = std::fs::remove_dir_all(d);
     }
 

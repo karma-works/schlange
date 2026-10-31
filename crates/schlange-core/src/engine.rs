@@ -109,6 +109,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         token: Option<u64>,
     },
+    /// A fresh check-identity read failed for these bases: do not act on their queues until a
+    /// complete read succeeds again. The engine keeps the state it had, adds a hold to every
+    /// open pull request of the base and carries out no decision until cleared.
+    CheckIdentityUnavailable {
+        bases: Vec<String>,
+    },
+    /// The check-identity read for these bases succeeded again: release the holds and resume.
+    CheckIdentityAvailable {
+        bases: Vec<String>,
+    },
     /// Reply to `BuildCar`: the queue branch and its draft pull request exist.
     CarBuilt {
         car: u64,
@@ -526,6 +536,11 @@ pub struct State {
     /// Scheduled freezes by id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub freezes: BTreeMap<u64, Freeze>,
+    /// Bases whose check identity could not be read completely. While non-empty the engine
+    /// applies events but carries out no queue work (fail closed), so a stale check cannot
+    /// queue or land a pull request.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub check_identity_unavailable: BTreeSet<String>,
     /// Checks the protection of each base branch requires (as last read).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub required_checks: BTreeMap<String, Vec<String>>,
@@ -547,8 +562,23 @@ pub fn step(state: &State, rules: &Rules, event: &Event, now: Time) -> (State, V
     let mut next = state.clone();
     next.now = now;
     let mut out = Vec::new();
-    next.wakeups.retain(|t| *t > now);
+    if !matches!(event, Event::CheckIdentityUnavailable { .. })
+        && next.check_identity_unavailable.is_empty()
+    {
+        next.wakeups.retain(|t| *t > now);
+    }
     let token = apply(&mut next, rules, event, &mut out);
+    // A missing check-identity read is a fail-closed hold: no queue work, no cosmetics and no
+    // decision leaves the engine while it lasts.
+    if !next.check_identity_unavailable.is_empty() {
+        return (next, Vec::new());
+    }
+    // Clearing the hold is a checkpoint-only transition: the host re-evaluates the queue with
+    // the fresh snapshot or a `Restarted` event after releasing its ingress/lease gate, so no
+    // decision is made against the state from before that recovery step.
+    if matches!(event, Event::CheckIdentityAvailable { .. }) {
+        return (next, Vec::new());
+    }
     process(&mut next, rules, now, token, &mut out);
     for d in &out {
         if let Decision::Dequeue { number, reason, .. }
@@ -601,6 +631,18 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         state.pull_requests.get_mut(&n)
     }
     match event {
+        Event::CheckIdentityUnavailable { bases } => {
+            for base in bases {
+                state.check_identity_unavailable.insert(base.clone());
+                add_identity_holds(state, base);
+            }
+        }
+        Event::CheckIdentityAvailable { bases } => {
+            for base in bases {
+                state.check_identity_unavailable.remove(base);
+                remove_identity_holds(state, base);
+            }
+        }
         Event::PullRequestOpened { pull_request } => {
             state
                 .pull_requests
@@ -729,6 +771,42 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
         }
     }
     None
+}
+
+fn add_identity_holds(state: &mut State, base: &str) {
+    for pr in state
+        .pull_requests
+        .values()
+        .filter(|p| p.base == base && !p.closed && !p.merged)
+    {
+        let holds = state.holds.entry(pr.number).or_default();
+        if !holds.iter().any(|h| h.kind == "check-identity-unavailable") {
+            holds.push(Hold::wait(
+                "check-identity-unavailable",
+                "a fresh check identity read is unavailable",
+            ));
+        }
+    }
+}
+
+fn remove_identity_holds(state: &mut State, base: &str) {
+    let numbers: Vec<u64> = state
+        .pull_requests
+        .values()
+        .filter(|p| p.base == base)
+        .map(|p| p.number)
+        .collect();
+    for number in numbers {
+        let empty = if let Some(holds) = state.holds.get_mut(&number) {
+            holds.retain(|h| h.kind != "check-identity-unavailable");
+            holds.is_empty()
+        } else {
+            false
+        };
+        if empty {
+            state.holds.remove(&number);
+        }
+    }
 }
 
 /// Whether a pull request is one of the queue's own draft pull requests.

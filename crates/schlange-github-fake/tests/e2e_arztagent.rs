@@ -109,6 +109,38 @@ fn ki_review_is_required_from_everyone_but_dependabot() {
     t.shutdown();
 }
 
+/// MQ-14/MQ-15: `ci-ok` is a required GitHub Actions check, and GitHub tells workflow runs
+/// apart by workflow file and event. A success from another workflow must not hide a failed
+/// run of the required one; only a re-run of the same workflow/event supersedes it.
+#[test]
+fn a_second_workflow_success_does_not_hide_a_failed_required_check() {
+    let t = start();
+    let n = t.open_pr(BOT).file("backend/a.py", "a\n").create();
+    t.gh.report_check_in(
+        n,
+        "ci-ok",
+        Some("failure"),
+        ".github/workflows/full.yml",
+        "pull_request",
+    );
+    // A newer success from the default workflow suite: before the identity fix this replaced
+    // the failure because both runs looked like one suite.
+    green(&t, n, true);
+    t.settle();
+    assert!(!queued(&t, n), "a failed ci-ok must keep it out");
+    // A re-run of the same workflow/event is the run GitHub enforces.
+    t.gh.report_check_in(
+        n,
+        "ci-ok",
+        Some("success"),
+        ".github/workflows/full.yml",
+        "pull_request",
+    );
+    t.pr(n).wait_queued();
+    t.assert_invariants();
+    t.shutdown();
+}
+
 #[test]
 fn a_partial_batch_waits_exactly_five_minutes() {
     let t = start();

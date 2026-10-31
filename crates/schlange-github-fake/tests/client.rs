@@ -856,6 +856,34 @@ fn doctor_checks_against_the_fake() {
 }
 
 #[test]
+fn an_exempt_ruleset_bypass_is_enough() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let c = client(&gh, roomy());
+    let repo = RepoName::parse(&gh.config().full_name()).unwrap();
+    let cc = schlange_github_fake::tester::config_check();
+    gh.add_ruleset(json!({"id": 9, "name": "main", "target": "branch", "enforcement": "active",
+        "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "exempt"}]}));
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
+    let r = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(r.status, "OK", "{}", r.detail);
+    // `always` still bypasses, but the guidance recommends `exempt`: say so instead of OK.
+    gh.add_ruleset(json!({"id": 10, "name": "other", "target": "branch", "enforcement": "active",
+        "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "always"}]}));
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
+    let r = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(r.status, "WARN", "{}", r.detail);
+    gh.shutdown();
+}
+
+#[test]
 fn the_invariant_checker_catches_untested_landings_and_leftover_branches() {
     // Not Schlange: a squash done by hand through the API, never tested by the queue.
     let gh = FakeGithub::start(FakeConfig::default());

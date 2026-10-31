@@ -147,8 +147,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (306) | – | built 256, partial 13 | 37 |
-| Sub-features Arztagent uses (166) | – | built 149, partial 8 | 9 |
+| Sub-features (307) | – | built 256, partial 14 | 37 |
+| Sub-features Arztagent uses (167) | – | built 149, partial 9 | 9 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -172,7 +172,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Find and load the configuration file](.agents/skills/verify-schlange/features/config-file.md) | partial | 4 / 0 / 1 | yes |
 | [Validate a configuration](.agents/skills/verify-schlange/features/config-validation.md) | partial | 1 / 0 / 0 | yes |
 | [Dependencies between pull requests (`Depends-On`)](.agents/skills/verify-schlange/features/depends-on.md) | partial | 7 / 0 / 0 | yes |
-| [GitHub integration (app, webhooks, reconciliation)](.agents/skills/verify-schlange/features/github-integration.md) | partial | 18 / 2 / 0 | yes |
+| [GitHub integration (app, webhooks, reconciliation)](.agents/skills/verify-schlange/features/github-integration.md) | partial | 18 / 3 / 0 | yes |
 | [Built-in protection: configuration changed](.agents/skills/verify-schlange/features/merge-protections-builtin.md) | partial | 6 / 0 / 0 | yes |
 | [Workflow rules (`pull_request_rules`)](.agents/skills/verify-schlange/features/pull-request-rules.md) | partial | 9 / 0 / 0 | yes |
 | [Batches (`batch_size`, `batch_max_wait_time`)](.agents/skills/verify-schlange/features/queue-batch.md) | partial | 3 / 1 / 1 | yes |

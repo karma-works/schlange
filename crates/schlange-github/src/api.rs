@@ -217,8 +217,17 @@ pub struct CheckRunJson {
     pub conclusion: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
+    /// The suite the run belongs to. GitHub Actions creates one suite per workflow run, so
+    /// this id is how the workflow run below is matched to its checks.
+    #[serde(default)]
+    pub check_suite: Option<CheckSuiteRef>,
     #[serde(default)]
     pub output: Option<CheckOutput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CheckSuiteRef {
+    pub id: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -239,6 +248,19 @@ pub struct CheckSuiteJson {
     pub conclusion: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
+}
+
+/// One GitHub Actions workflow run, enough to tell check suites of the same commit apart by
+/// workflow file and event ([`CheckSuiteRef`]).
+#[derive(Clone, Debug, Deserialize)]
+pub struct WorkflowRunJson {
+    #[serde(default)]
+    pub check_suite_id: Option<u64>,
+    pub head_sha: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub event: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -598,6 +620,16 @@ impl RepoApi {
             &format!("/commits/{}/check-suites", enc_path(sha)),
             prio,
             Some("check_suites"),
+        )
+    }
+
+    /// The workflow runs of one commit. A GitHub Actions check suite is one workflow run; its
+    /// `path` and `event` tell a re-run of the same workflow from another workflow or event.
+    pub fn workflow_runs(&self, sha: &str, prio: Priority) -> Result<Vec<WorkflowRunJson>, Error> {
+        self.list(
+            &format!("/actions/runs?head_sha={}&per_page=100", enc_path(sha)),
+            prio,
+            Some("workflow_runs"),
         )
     }
 

@@ -22,9 +22,9 @@
     "cmd": 8,
     "config": 297,
     "default": 157,
-    "enum": 162
+    "enum": 164
   },
-  "total": 839,
+  "total": 841,
   "entries": [
     {
       "id": "action:assign",
@@ -4221,6 +4221,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:language:xml",
+      "kind": "enum"
+    },
+    {
       "id": "enum:language:yaml",
       "kind": "enum"
     },
@@ -4674,6 +4678,10 @@
     },
     {
       "id": "enum:strategy:uv",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:xml",
       "kind": "enum"
     },
     {
