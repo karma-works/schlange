@@ -1054,30 +1054,33 @@ fn repo_route(
             paginate(base_url, path, query, runs, Some("check_runs"))
         }
         ("GET", ["commits", sha, "check-suites"]) => {
-            let mut apps: Vec<(String, bool, bool)> = Vec::new();
-            for r in st.runs.iter().filter(|r| r.head_sha == *sha) {
-                match apps.iter_mut().find(|a| a.0 == r.app_slug) {
-                    Some(a) => {
-                        a.1 &= r.status == "completed";
-                        a.2 &= r.conclusion.as_deref() == Some("success");
-                    }
-                    None => apps.push((
-                        r.app_slug.clone(),
-                        r.status == "completed",
-                        r.conclusion.as_deref() == Some("success"),
-                    )),
-                }
-            }
-            let items = apps
-                .into_iter()
-                .enumerate()
-                .map(|(i, (app, done, ok))| {
-                    json!({ "id": i + 1, "head_sha": sha, "app": { "slug": app },
-                            "status": if done { "completed" } else { "in_progress" },
-                            "conclusion": if done { Some(if ok { "success" } else { "failure" }) } else { None } })
+            let items: Vec<Value> = st
+                .runs
+                .iter()
+                .filter(|r| r.head_sha == *sha)
+                .map(|r| {
+                    json!({ "id": r.suite_id, "head_sha": sha, "app": { "slug": r.app_slug },
+                            "status": r.status, "conclusion": r.conclusion })
                 })
                 .collect();
             paginate(base_url, path, query, items, Some("check_suites"))
+        }
+        ("GET", ["actions", "runs"]) => {
+            let head = query_param(query, "head_sha").map(decode);
+            let items: Vec<Value> = st
+                .runs
+                .iter()
+                .filter(|r| {
+                    r.app_slug == "github-actions"
+                        && head.as_deref().is_none_or(|h| r.head_sha == h)
+                })
+                .map(|r| {
+                    json!({ "id": r.id, "check_suite_id": r.suite_id,
+                            "head_sha": r.head_sha, "path": r.workflow, "event": r.event,
+                            "status": r.status, "conclusion": r.conclusion })
+                })
+                .collect();
+            paginate(base_url, path, query, items, Some("workflow_runs"))
         }
         ("GET", ["commits", sha, "status"]) => {
             let mut latest: Vec<&crate::FakeStatus> = Vec::new();
@@ -1111,15 +1114,19 @@ fn repo_route(
                 return err(422, "No commit found for SHA");
             }
             let id = st.id();
+            let suite_id = st.id();
             let app = st.cfg.app_slug.clone();
             st.runs.push(crate::FakeRun {
                 id,
+                suite_id,
                 name: body["name"].as_str().unwrap_or("").into(),
                 head_sha: sha,
                 status: body["status"].as_str().unwrap_or("queued").into(),
                 conclusion: body["conclusion"].as_str().map(str::to_string),
                 app_slug: app,
                 output_title: body["output"]["title"].as_str().unwrap_or("").into(),
+                workflow: String::new(),
+                event: String::new(),
             });
             st.emit_run("created", id);
             let r = st.runs.last().cloned().expect("run");

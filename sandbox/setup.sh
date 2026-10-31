@@ -212,7 +212,7 @@ verify_isolated_ruleset() { # verify_isolated_ruleset <owner/repo> <app-id>
     .target == "branch" and .enforcement == "active" and
     (.conditions.ref_name.include | index("~DEFAULT_BRANCH") != null) and
     (.conditions.ref_name.exclude | length == 0) and
-    any(.bypass_actors[]?; .actor_type == "Integration" and .actor_id == $app and .bypass_mode == "always") and
+    any(.bypass_actors[]?; .actor_type == "Integration" and .actor_id == $app and .bypass_mode == "exempt") and
     any(.rules[]?; .type == "required_status_checks" and
       ([.parameters.required_status_checks[]?.context] | index("ci-ok") != null and index("Risk class and data protection") != null))' >/dev/null
 }
@@ -223,7 +223,7 @@ ruleset_apply() { # ruleset_apply <owner/repo> <app-id> <with-app-bypass>
     name: $name, target: "branch", enforcement: "active",
     conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
     bypass_actors: ([{actor_type: "RepositoryRole", actor_id: $admin, bypass_mode: "always"}]
-      + (if $with_app then [{actor_type: "Integration", actor_id: $app, bypass_mode: "always"}] else [] end)),
+      + (if $with_app then [{actor_type: "Integration", actor_id: $app, bypass_mode: "exempt"}] else [] end)),
     rules: [
       {type: "deletion"}, {type: "non_fast_forward"},
       {type: "pull_request", parameters: {required_approving_review_count: 0,

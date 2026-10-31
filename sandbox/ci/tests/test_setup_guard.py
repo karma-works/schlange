@@ -150,7 +150,7 @@ reset_isolated_fixture
     def test_isolated_ruleset_requires_default_branch_and_queue_bypass(self):
         ruleset = {'target': 'branch', 'enforcement': 'active',
                    'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
-                   'bypass_actors': [{'actor_type': 'Integration', 'actor_id': 123, 'bypass_mode': 'always'}],
+                   'bypass_actors': [{'actor_type': 'Integration', 'actor_id': 123, 'bypass_mode': 'exempt'}],
                    'rules': [{'type': 'required_status_checks', 'parameters': {'required_status_checks': [
                        {'context': 'ci-ok'}, {'context': 'Risk class and data protection'}]}}]}
         program = '''source "$SETUP_SCRIPT"

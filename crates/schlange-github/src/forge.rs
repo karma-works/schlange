@@ -430,17 +430,38 @@ impl GithubForge {
         }
         let ours = p.user.login == self.opts.bot_login;
         let head = p.head.sha.clone();
-        for c in self.api.check_runs(&head, prio)? {
+        let runs = self.api.check_runs(&head, prio)?;
+        let actions = runs
+            .iter()
+            .any(|c| c.app.as_ref().and_then(|a| a.slug.as_deref()) == Some("github-actions"));
+        let suites = if actions {
+            Some(self.workflow_identity(&head, prio)?)
+        } else {
+            None
+        };
+        for c in runs {
             let app = c.app.as_ref().and_then(|a| a.slug.clone());
             if app.as_deref() == Some(self.opts.app_slug.as_str()) {
                 continue;
             }
+            let (workflow, event) = match (suites.as_ref(), c.check_suite.as_ref()) {
+                (Some(map), Some(suite)) => match map.get(&suite.id) {
+                    Some((path, event)) => (Some(path.clone()), Some(event.clone())),
+                    // A suite GitHub did not list as a workflow run (deleted, or an
+                    // incomplete read): keep it apart from every other suite instead of
+                    // letting a newer success hide it.
+                    None => (Some(format!("suite:{}", suite.id)), None),
+                },
+                _ => (None, None),
+            };
             pr.checks.push(CheckRun {
                 name: c.name.clone(),
                 app,
                 head_sha: c.head_sha.clone(),
                 conclusion: conclusion(&c.status, c.conclusion.as_deref()),
                 seq: c.id,
+                workflow,
+                event,
                 ..Default::default()
             });
         }
@@ -631,11 +652,132 @@ impl GithubForge {
         }
     }
 
+    /// Maps the check suites of one head to their GitHub Actions workflow file and event.
+    fn workflow_identity(
+        &self,
+        head: &str,
+        prio: Priority,
+    ) -> Result<BTreeMap<u64, (String, String)>, Error> {
+        let mut map = BTreeMap::new();
+        for run in self.api.workflow_runs(head, prio)? {
+            let Some(id) = run.check_suite_id else {
+                continue;
+            };
+            if run.head_sha == head && !run.path.is_empty() && !run.event.is_empty() {
+                map.insert(id, (run.path, run.event));
+            }
+        }
+        Ok(map)
+    }
+
+    /// Reads the check suite identity of every open pull request head. A complete read of
+    /// every suite (id, head and app) is required before the queue may act: a failure or an
+    /// inconsistent suite fails closed with [`Error::IdentityUnavailable`]. GitHub reads are
+    /// not atomic; this is a conservative gate, not a proof that no new check appeared
+    /// between the two requests.
+    fn verify_check_identity(&self, open: &[Pull]) -> Result<BTreeSet<String>, Error> {
+        let bases: BTreeSet<String> = open.iter().map(|p| p.base.ref_name.clone()).collect();
+        let mut heads = BTreeSet::new();
+        for p in open {
+            if !heads.insert(p.head.sha.clone()) {
+                continue;
+            }
+            let mut last = String::new();
+            let mut valid = false;
+            // The client already retries a failed read. Provisional failures (5xx, rate
+            // limits, transport) are retried a few more times so a short storm drains inside
+            // one reconciliation without acting on stale checks. A definitive refusal (for
+            // example 403) holds at once.
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                let suites = match self.api.check_suites(&p.head.sha, Priority::Normal) {
+                    Ok(suites) => suites,
+                    Err(e) => {
+                        last = e.to_string();
+                        if !e.is_provisional() || attempts >= 32 {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let mut ids = BTreeSet::new();
+                let mut ok = true;
+                for suite in &suites {
+                    let app = suite.app.as_ref().and_then(|a| a.slug.as_deref());
+                    if suite.id == 0
+                        || !ids.insert(suite.id)
+                        || suite.head_sha != p.head.sha
+                        || app.is_none_or(str::is_empty)
+                    {
+                        ok = false;
+                        last = format!(
+                            "invalid check suite identity on {} (pull request #{})",
+                            short(&p.head.sha),
+                            p.number
+                        );
+                        break;
+                    }
+                }
+                if ok {
+                    let actions: Vec<u64> = suites
+                        .iter()
+                        .filter(|s| {
+                            s.app.as_ref().and_then(|a| a.slug.as_deref()) == Some("github-actions")
+                        })
+                        .map(|s| s.id)
+                        .collect();
+                    if !actions.is_empty() {
+                        match self.workflow_identity(&p.head.sha, Priority::Normal) {
+                            Ok(map) => {
+                                if actions.iter().any(|id| {
+                                    map.get(id).is_none_or(|(path, event)| {
+                                        path.is_empty() || event.is_empty()
+                                    })
+                                }) {
+                                    ok = false;
+                                    last = format!(
+                                        "workflow identity unavailable on {} (pull request #{})",
+                                        short(&p.head.sha),
+                                        p.number
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                ok = false;
+                                last = e.to_string();
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    valid = true;
+                    break;
+                }
+                if attempts >= 8 {
+                    break;
+                }
+            }
+            if !valid {
+                return Err(Error::IdentityUnavailable {
+                    bases: bases.iter().cloned().collect(),
+                    detail: last,
+                });
+            }
+        }
+        Ok(bases)
+    }
+
     /// The full reconciliation read: every open pull request, the ones the engine knows,
     /// base branches, the engine's branches and every queue branch on GitHub. Also returns
     /// what the orphan sweep needs.
-    pub fn reconcile(&mut self, state: &State, rules: &Rules) -> Result<(Event, Sweep), Error> {
+    pub fn reconcile(&mut self, state: &State, rules: &Rules) -> Result<ReconcileRead, Error> {
         let open = self.api.open_pulls(Priority::Normal)?;
+        let identity_error = match self.verify_check_identity(&open) {
+            Ok(_) => None,
+            Err(Error::IdentityUnavailable { bases, detail }) => Some((bases, detail)),
+            Err(e) => return Err(e),
+        };
         let prefixes = queue_prefixes(rules);
         let mut queue_refs = Vec::new();
         for p in &prefixes {
@@ -677,14 +819,15 @@ impl GithubForge {
             })
             .map(|p| (p.number, p.head.ref_name.clone()))
             .collect();
-        Ok((
-            ev,
-            Sweep {
+        Ok(ReconcileRead {
+            event: ev,
+            sweep: Sweep {
                 queue_refs,
                 drafts,
                 prefixes,
             },
-        ))
+            identity_error,
+        })
     }
 
     /// Deletes queue branches and closes queue drafts that belong to no car of the engine
@@ -1451,6 +1594,11 @@ impl GithubForge {
                 .map(|(_, t)| t.clone())
                 .or_else(|| (idx + 1 == prs.len()).then(|| expected_tree.to_string()));
             let mut note = String::new();
+            // We called the merge endpoint and its reply did not say whether it landed. A
+            // merge found after such a call is ours even when it sits on another base; the
+            // tree check below must still run so a foreign base cannot hide an untested land
+            // (MQ-02). A hand merge nobody called stays `HeadChanged`.
+            let mut uncertain_merge = false;
             let landed_sha = loop {
                 let pull = self.pull(p.number, prio)?;
                 if pull.merged {
@@ -1464,6 +1612,15 @@ impl GithubForge {
                         c.parents.first().map(|x| x.sha.as_str()) == Some(expected.as_str())
                     };
                     if !on_expected {
+                        if uncertain_merge {
+                            note = format!(
+                                "the merge call's outcome was uncertain and it landed on {} instead of {}",
+                                short(&sha),
+                                short(&expected)
+                            );
+                            self.note(format!("#{}: {note}", p.number));
+                            break sha;
+                        }
                         error = Some(LandError::HeadChanged { number: p.number });
                         break 'prs;
                     }
@@ -1541,6 +1698,7 @@ impl GithubForge {
                         }
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
+                            uncertain_merge = true;
                             continue;
                         }
                         let text = refusal_text(405, &msg);
@@ -1562,6 +1720,7 @@ impl GithubForge {
                         // same head cannot help (G4).
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
+                            uncertain_merge = true;
                             continue;
                         }
                         let text = refusal_text(status, &message);
@@ -1577,6 +1736,7 @@ impl GithubForge {
                         let again = self.pull(p.number, prio)?;
                         if again.merged {
                             note = format!("the merge call failed ({e}) but the merge happened");
+                            uncertain_merge = true;
                             continue;
                         }
                         return Err(e);
@@ -2020,6 +2180,16 @@ impl GithubForge {
         }
         Ok(fallback)
     }
+}
+
+/// One reconciliation read: the snapshot, the sweep view and an optional check-identity
+/// failure that must hold the queue (the snapshot is still returned so short API storms can
+/// drain without acting on it).
+#[derive(Debug)]
+pub struct ReconcileRead {
+    pub event: Event,
+    pub sweep: Sweep,
+    pub identity_error: Option<(Vec<String>, String)>,
 }
 
 /// What the orphan sweep needs from a reconciliation read.

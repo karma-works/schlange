@@ -91,6 +91,35 @@ fn a_base_push_during_a_rate_limit_wait_does_not_land_on_the_foreign_commit() {
     t.shutdown();
 }
 
+/// MQ-02: the merge call lands on a base that moved in the one-request window and then lies
+/// with a 502. The adapter must still compare the landed tree with the tested one and halt;
+/// treating the unexpected parent as `HeadChanged` would silently continue on an untested tree.
+#[test]
+fn a_lying_502_after_a_base_push_halts_on_the_untested_tree() {
+    let t = arztagent().start();
+    let a = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(a).wait_queued();
+    t.gh.add_fault(
+        FaultRule::new("PUT", &format!("/pulls/{a}/merge"), FaultKind::Lie(502), 1)
+            .then(Then::PushBase(vec![("docs/x.md".into(), "x\n".into())])),
+    );
+    t.advance("5m");
+    t.wait_until("the queue halts on the untested landing", |t| {
+        t.status().is_some_and(|s| !s.halted.is_empty())
+    });
+    let s = t.status().unwrap();
+    assert!(s.halted.contains_key("main"), "{:?}", s.halted);
+    assert!(t.gh.pr(a).unwrap().merged);
+    // The landing itself cannot be prevented (GitHub executes the merge before the lie), so
+    // the queue's I0 checker must see exactly that landing; the point is the halt.
+    let violations = t.gh.invariant_violations(false);
+    assert!(
+        violations.iter().all(|v| v.contains("I0")),
+        "unexpected violations: {violations:?}"
+    );
+    t.shutdown();
+}
+
 /// G3: a transient 405 ("Base branch was modified") and a transient 409 are retried after a
 /// fresh read, and the pull requests land.
 #[test]

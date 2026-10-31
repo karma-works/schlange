@@ -228,6 +228,7 @@ fn config_check(
 
 fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id: u64) -> Check {
     let mut problems = Vec::new();
+    let mut always = Vec::new();
     let mut unknown = Vec::new();
     let mut seen = 0;
     for repo in repos {
@@ -266,12 +267,19 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
                     full.name
                 )),
                 Some(actors) => {
-                    let ok = actors.iter().any(|a| {
-                        a.actor_type == "Integration"
-                            && a.actor_id == Some(app_id)
-                            && a.bypass_mode.as_deref().unwrap_or("always") == "always"
-                    });
-                    if !ok {
+                    let app = |mode: &str| {
+                        actors.iter().any(|a| {
+                            a.actor_type == "Integration"
+                                && a.actor_id == Some(app_id)
+                                && a.bypass_mode.as_deref().unwrap_or("always") == mode
+                        })
+                    };
+                    if app("exempt") {
+                    } else if app("always") {
+                        // `always` lets the app bypass, but the pinned merge-queue ruleset
+                        // guidance recommends `exempt`; parts of the rules can stay blocked.
+                        always.push(format!("{} ruleset `{}`", repo.full(), full.name));
+                    } else {
                         problems.push(format!("{} ruleset `{}`", repo.full(), full.name));
                     }
                 }
@@ -287,13 +295,24 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
                 problems.join(", ")
             ),
         )
+    } else if !always.is_empty() {
+        check(
+            "ruleset-exception",
+            "WARN",
+            format!(
+                "the app bypasses with mode `always` in {}; the merge-queue guidance recommends `exempt`, because `always` can leave parts of the ruleset blocked. {BYPASS_NOTE}",
+                always.join(", ")
+            ),
+        )
     } else if !unknown.is_empty() {
         check("ruleset-exception", "WARN", unknown.join("; "))
     } else {
         check(
             "ruleset-exception",
             "OK",
-            format!("{seen} active branch ruleset(s), the app may bypass each. {BYPASS_NOTE}"),
+            format!(
+                "{seen} active branch ruleset(s), the app may bypass with `exempt`. {BYPASS_NOTE}"
+            ),
         )
     }
 }
