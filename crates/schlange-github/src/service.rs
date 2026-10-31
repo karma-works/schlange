@@ -29,8 +29,11 @@
 //!   What Schlange would have done and what Mergify did go into the shadow report.
 //! - **Lease** ([`crate::lease`], MQ-32): with `lease` a worker acts only while it holds its
 //!   repository's lease (local SQLite row plus a fence reference on GitHub, checked before every
-//!   write). A follower reads nothing and writes nothing; it takes over when the lease expires
-//!   and steps down when a write finds the fence moved.
+//!   write). A follower reads nothing and takes no action; it takes over when the lease
+//!   expires and steps down when a write finds the fence moved. Its one write is the router's
+//!   durable inbox row, written before the 202. That row is acknowledged only by a leading
+//!   worker and replayed only when a worker starts, so a delivery accepted by a follower waits
+//!   in the inbox until a worker restarts (see the note in the feature file).
 //! - **Event log** ([`crate::events`]): every decision and operator control, queryable through
 //!   `GET /repos/{owner}/{repo}/logs`.
 
@@ -178,7 +181,8 @@ pub struct ServeConfig {
 }
 
 pub enum Msg {
-    Webhook(Box<Parsed>),
+    /// A webhook hint, and its delivery id when it came from the durable inbox.
+    Webhook(Box<Parsed>, Option<String>),
     /// A full reconciliation now.
     Reconcile,
     Shutdown,
@@ -393,12 +397,29 @@ impl Router {
             self.record(&id);
             return (200, "repository not served".into());
         };
+        // The inbox write is the acknowledgement: after a crash the worker replays every
+        // unprocessed delivery, so an acknowledged checkbox edit cannot vanish between the
+        // HTTP 202 and the read. A redelivery of an id already in the inbox is not enqueued
+        // twice.
+        if let Some(store) = &self.store {
+            let repo = parsed.repo.clone().unwrap_or_default();
+            match store.inbox_put(&id, &repo, &event, body, crate::time::unix_now()) {
+                Ok(true) => {}
+                Ok(false) => return (200, "duplicate delivery".into()),
+                Err(e) => return (503, format!("inbox write failed: {e}")),
+            }
+        }
         self.shared.inflight.fetch_add(1, Ordering::SeqCst);
-        if sink.send(Msg::Webhook(Box::new(parsed))).is_err() {
+        if sink
+            .send(Msg::Webhook(Box::new(parsed), Some(id.clone())))
+            .is_err()
+        {
             self.shared.inflight.fetch_sub(1, Ordering::SeqCst);
             return (503, "worker stopped".into());
         }
-        self.record(&id);
+        if self.store.is_none() {
+            self.record(&id);
+        }
         (202, "accepted".into())
     }
 }
@@ -1579,14 +1600,19 @@ impl Worker {
     }
 
     fn run(mut self) {
+        let mut replay = self.pending_inbox();
         loop {
             self.shared.beat(&self.forge.api.repo.full());
             let mut hints = BTreeSet::new();
             let mut handled = 0;
             let mut reconcile = false;
             let mut stop = false;
+            let mut deliveries: Vec<String> = Vec::new();
             let mut take = |m: Msg, hints: &mut BTreeSet<Hint>, this: &mut Self| match m {
-                Msg::Webhook(p) => {
+                Msg::Webhook(p, delivery) => {
+                    if let Some(id) = delivery {
+                        deliveries.push(id);
+                    }
                     this.webhooks += 1;
                     this.forge.note(format!("webhook {}", p.summary));
                     hints.extend(p.hints);
@@ -1614,6 +1640,12 @@ impl Worker {
                     handled += 1;
                 }
             };
+            if (self.leading || self.lease.is_none()) && !replay.is_empty() {
+                while let Some((p, id)) = replay.pop_front() {
+                    self.shared.inflight.fetch_add(1, Ordering::SeqCst);
+                    take(Msg::Webhook(Box::new(p), Some(id)), &mut hints, &mut self);
+                }
+            }
             match self.rx.recv_timeout(self.poll) {
                 Ok(m) => {
                     take(m, &mut hints, &mut self);
@@ -1638,8 +1670,13 @@ impl Worker {
                     self.step_down("another process holds the lease");
                 }
                 if !self.leading {
-                    // A follower drops hints: the leader acts on them, and a takeover starts
-                    // with a full reconciliation.
+                    // A follower drops hints and leaves its inbox rows pending: it never calls
+                    // `inbox_done`. `pending_inbox` runs only at `run()` start, so neither a
+                    // takeover nor `recover()` replays those rows; a full reconciliation does
+                    // not reconstruct an edited comment. Known HA limitation: a delivery this
+                    // process accepted while another held the lease waits until a worker
+                    // restarts. With a load balancer in front of several processes, a comment
+                    // edit answered 202 here is therefore not acted on until a restart.
                     self.publish();
                     self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
                     continue;
@@ -1710,8 +1747,39 @@ impl Worker {
                 self.forge.flush_cosmetics();
             }
             self.publish();
+            if self.leading
+                && let Some(store) = &self.forge.store
+            {
+                let now = crate::time::unix_now();
+                for id in deliveries.drain(..) {
+                    let _ = store.inbox_done(&id, now, DELIVERIES_KEPT);
+                }
+            }
             self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
         }
+    }
+
+    /// Deliveries persisted before a crash and not yet finished by this repository's worker.
+    fn pending_inbox(&mut self) -> std::collections::VecDeque<(Parsed, String)> {
+        let mut out = std::collections::VecDeque::new();
+        let Some(store) = self.forge.store.clone() else {
+            return out;
+        };
+        let repo = self.forge.api.repo.full();
+        for (guid, row_repo, event, body) in store.inbox_pending().unwrap_or_default() {
+            if row_repo != repo {
+                continue;
+            }
+            match parse(&event, &body) {
+                Ok(parsed) => out.push_back((parsed, guid)),
+                Err(e) => {
+                    self.forge
+                        .note(format!("dropping unreadable inbox delivery {guid}: {e}"));
+                    let _ = store.inbox_done(&guid, crate::time::unix_now(), DELIVERIES_KEPT);
+                }
+            }
+        }
+        out
     }
 
     fn load_config(&mut self) {

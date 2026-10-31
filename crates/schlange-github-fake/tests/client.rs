@@ -870,6 +870,16 @@ fn an_exempt_ruleset_bypass_is_enough() {
         .find(|x| x.name == "ruleset-exception")
         .unwrap();
     assert_eq!(r.status, "OK", "{}", r.detail);
+    // `always` still bypasses, but the guidance recommends `exempt`: say so instead of OK.
+    gh.add_ruleset(json!({"id": 10, "name": "other", "target": "branch", "enforcement": "active",
+        "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "always"}]}));
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
+    let r = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(r.status, "WARN", "{}", r.detail);
     gh.shutdown();
 }
 

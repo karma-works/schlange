@@ -430,17 +430,38 @@ impl GithubForge {
         }
         let ours = p.user.login == self.opts.bot_login;
         let head = p.head.sha.clone();
-        for c in self.api.check_runs(&head, prio)? {
+        let runs = self.api.check_runs(&head, prio)?;
+        let actions = runs
+            .iter()
+            .any(|c| c.app.as_ref().and_then(|a| a.slug.as_deref()) == Some("github-actions"));
+        let suites = if actions {
+            Some(self.workflow_identity(&head, prio)?)
+        } else {
+            None
+        };
+        for c in runs {
             let app = c.app.as_ref().and_then(|a| a.slug.clone());
             if app.as_deref() == Some(self.opts.app_slug.as_str()) {
                 continue;
             }
+            let (workflow, event) = match (suites.as_ref(), c.check_suite.as_ref()) {
+                (Some(map), Some(suite)) => match map.get(&suite.id) {
+                    Some((path, event)) => (Some(path.clone()), Some(event.clone())),
+                    // A suite GitHub did not list as a workflow run (deleted, or an
+                    // incomplete read): keep it apart from every other suite instead of
+                    // letting a newer success hide it.
+                    None => (Some(format!("suite:{}", suite.id)), None),
+                },
+                _ => (None, None),
+            };
             pr.checks.push(CheckRun {
                 name: c.name.clone(),
                 app,
                 head_sha: c.head_sha.clone(),
                 conclusion: conclusion(&c.status, c.conclusion.as_deref()),
                 seq: c.id,
+                workflow,
+                event,
                 ..Default::default()
             });
         }
@@ -631,6 +652,24 @@ impl GithubForge {
         }
     }
 
+    /// Maps the check suites of one head to their GitHub Actions workflow file and event.
+    fn workflow_identity(
+        &self,
+        head: &str,
+        prio: Priority,
+    ) -> Result<BTreeMap<u64, (String, String)>, Error> {
+        let mut map = BTreeMap::new();
+        for run in self.api.workflow_runs(head, prio)? {
+            let Some(id) = run.check_suite_id else {
+                continue;
+            };
+            if run.head_sha == head && !run.path.is_empty() && !run.event.is_empty() {
+                map.insert(id, (run.path, run.event));
+            }
+        }
+        Ok(map)
+    }
+
     /// Reads the check suite identity of every open pull request head. A complete read of
     /// every suite (id, head and app) is required before the queue may act: a failure or an
     /// inconsistent suite fails closed with [`Error::IdentityUnavailable`]. GitHub reads are
@@ -678,6 +717,37 @@ impl GithubForge {
                             p.number
                         );
                         break;
+                    }
+                }
+                if ok {
+                    let actions: Vec<u64> = suites
+                        .iter()
+                        .filter(|s| {
+                            s.app.as_ref().and_then(|a| a.slug.as_deref()) == Some("github-actions")
+                        })
+                        .map(|s| s.id)
+                        .collect();
+                    if !actions.is_empty() {
+                        match self.workflow_identity(&p.head.sha, Priority::Normal) {
+                            Ok(map) => {
+                                if actions.iter().any(|id| {
+                                    map.get(id).is_none_or(|(path, event)| {
+                                        path.is_empty() || event.is_empty()
+                                    })
+                                }) {
+                                    ok = false;
+                                    last = format!(
+                                        "workflow identity unavailable on {} (pull request #{})",
+                                        short(&p.head.sha),
+                                        p.number
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                ok = false;
+                                last = e.to_string();
+                            }
+                        }
                     }
                 }
                 if ok {

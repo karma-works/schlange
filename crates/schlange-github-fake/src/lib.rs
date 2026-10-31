@@ -138,12 +138,19 @@ pub struct FakeComment {
 #[derive(Clone, Debug)]
 pub struct FakeRun {
     pub id: u64,
+    /// The check suite: GitHub Actions creates one per workflow run, so `re-run` (a new id)
+    /// with the same `workflow` and `event` supersedes, while another workflow or event stays
+    /// a check of its own.
+    pub suite_id: u64,
     pub name: String,
     pub head_sha: Sha,
     pub status: String,
     pub conclusion: Option<String>,
     pub app_slug: String,
     pub output_title: String,
+    /// Workflow file and triggering event (`github-actions` runs only).
+    pub workflow: String,
+    pub event: String,
 }
 
 #[derive(Clone, Debug)]
@@ -843,6 +850,7 @@ impl St {
         json!({
             "id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status,
             "conclusion": r.conclusion, "app": { "slug": r.app_slug },
+            "check_suite": { "id": r.suite_id },
             "output": { "title": r.output_title },
             "pull_requests": prs,
         })
@@ -927,10 +935,30 @@ impl St {
 
     /// Adds a check run and emits its webhooks.
     pub fn add_run(&mut self, sha: &str, name: &str, conclusion: Option<String>, app: &str) -> u64 {
+        let workflow = if app == "github-actions" {
+            format!(".github/workflows/{}.yml", name.replace(' ', "-"))
+        } else {
+            String::new()
+        };
+        self.add_run_in(sha, name, conclusion, app, &workflow, "pull_request")
+    }
+
+    /// Adds a check run in a named workflow run (the way GitHub Actions reports one).
+    pub fn add_run_in(
+        &mut self,
+        sha: &str,
+        name: &str,
+        conclusion: Option<String>,
+        app: &str,
+        workflow: &str,
+        event: &str,
+    ) -> u64 {
         let id = self.id();
+        let suite_id = self.id();
         let completed = conclusion.is_some();
         self.runs.push(FakeRun {
             id,
+            suite_id,
             name: name.into(),
             head_sha: sha.into(),
             status: if completed {
@@ -942,6 +970,8 @@ impl St {
             conclusion,
             app_slug: app.into(),
             output_title: String::new(),
+            workflow: workflow.into(),
+            event: event.into(),
         });
         self.emit_run("created", id);
         if completed {
@@ -1552,6 +1582,28 @@ impl FakeGithub {
         self.with(|s| {
             let sha = s.prs.get(&n).expect("pr").head_sha.clone();
             s.add_run(&sha, name, conclusion.map(str::to_string), "github-actions")
+        })
+    }
+
+    /// Reports a check run in a named GitHub Actions workflow/event (another suite).
+    pub fn report_check_in(
+        &self,
+        n: u64,
+        name: &str,
+        conclusion: Option<&str>,
+        workflow: &str,
+        event: &str,
+    ) -> u64 {
+        self.with(|s| {
+            let sha = s.prs.get(&n).expect("pr").head_sha.clone();
+            s.add_run_in(
+                &sha,
+                name,
+                conclusion.map(str::to_string),
+                "github-actions",
+                workflow,
+                event,
+            )
         })
     }
 
