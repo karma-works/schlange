@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use schlange_core::commands::CONTROLS_MARKER;
 use schlange_github::service::{PauseHook, Service, WorkerStatus};
 use schlange_github::time::ManualClock;
 use schlange_github_fake::tester::{Running, temp_dir};
@@ -957,5 +958,77 @@ fn two_processes_on_one_data_directory_never_both_lead() {
     assert!(status(&b).unwrap().queued.contains(&pr));
     b.shutdown();
     let _ = temp_dir;
+    t.shutdown();
+}
+
+#[test]
+fn a_follower_replays_the_inbox_it_accepted_before_taking_over() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .lease("proc-1", 60)
+        .persistent()
+        .start();
+    t.permission("karma-works", "write");
+    // A separate data directory: this process's inbox is its own, and the leader cannot read
+    // it. Only a takeover (or a restart) can replay what it accepted while following.
+    let dir_b = temp_dir("follower-inbox");
+    let clock_b = Arc::new(ManualClock::new(schlange_github::time::Clock::now(
+        t.clock.as_ref(),
+    )));
+    let b = t.second_service("proc-2", Some(dir_b.clone()), clock_b.clone());
+    wait("the second process follows", || {
+        status(&b).is_some_and(|s| s.role == "follower")
+    });
+    // A human pull request no rule queues: only the checkbox comment can queue it.
+    let pr = t
+        .open_pr("mallory")
+        .file("backend/a.py", "a = 1\n")
+        .create();
+    t.wait_until("the controls comment", |t| {
+        t.gh.comments_on(pr)
+            .iter()
+            .any(|c| c.body.contains(CONTROLS_MARKER) && c.body.contains("- [ ]"))
+    });
+    // Webhooks now go to the follower while the leader is still alive. The follower accepts
+    // the checkbox edit, writes its inbox row and drops the hint because it does not lead.
+    // Nothing has queued the pull request yet.
+    t.gh.set_webhook_target(Some(b.webhook_url()));
+    assert!(t.gh.tick(pr, "karma-works", CONTROLS_MARKER));
+    wait("the follower accepts the delivery without acting", || {
+        status(&b).is_some_and(|s| s.role == "follower" && s.webhooks >= 1)
+    });
+    wait("the webhook outbox drains", || {
+        t.gh.hooks_idle() && b.inflight() == 0
+    });
+    let pending = {
+        let db = rusqlite::Connection::open(dir_b.join("schlange.db")).unwrap();
+        db.query_row("SELECT COUNT(*) FROM inbox WHERE processed = 0", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert!(
+        pending >= 1,
+        "the follower accepted the delivery but has no pending inbox row"
+    );
+    // The follower's clock runs past the leader's lease. Taking over must replay the row this
+    // process accepted: a full reconciliation cannot reconstruct an edited comment.
+    clock_b.advance(61);
+    wait("the follower takes over", || {
+        status(&b).is_some_and(|s| s.role == "leader")
+    });
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !status(&b).is_some_and(|s| s.queued.contains(&pr)) && Instant::now() < deadline {
+        b.reconcile_now();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        status(&b).unwrap().queued.contains(&pr),
+        "the follower's accepted checkbox edit was not replayed after takeover:\n{}",
+        status(&b)
+            .map(|s| s.log_tail.join("\n  "))
+            .unwrap_or_default()
+    );
+    b.shutdown();
+    let _ = std::fs::remove_dir_all(&dir_b);
     t.shutdown();
 }
