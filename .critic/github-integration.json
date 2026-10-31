@@ -5,138 +5,138 @@
     {
       "subfeature": "app-auth",
       "verdict": "conformant",
-      "evidence": "client.rs:664 caches installation tokens until five minutes before expiry. RS256 JWT, token caching and 401 renewal tests passed.",
+      "evidence": "`cargo test -p schlange-github --lib` passed JWT RS256 tests; `cargo test -p schlange-github-fake` passed installation-token caching and downscoping tests.",
       "severity": "info"
     },
     {
       "subfeature": "rest-client",
       "verdict": "conformant",
-      "evidence": "GitHub client suite: 20 tests passed, covering ETags, pagination, redirects, host confinement, ambiguous writes and rate-limited writes returned without repetition.",
+      "evidence": "Fake-GitHub client tests passed pagination, ETags, retries, host confinement, redirects, ambiguous writes, combined statuses and rate-limit handling (20/20 client tests).",
       "severity": "info"
     },
     {
       "subfeature": "listener",
       "verdict": "conformant",
-      "evidence": "crates/schlange-github/src/http.rs:136 implements request limits and deadlines; :269 rejects a full queue with 503. Slow-client and health tests passed.",
+      "evidence": "`cargo test -p schlange-github --lib` passed `http::tests::a_slow_client_does_not_stall_the_others`; bounded-queue rejection is at crates/schlange-github/src/http.rs:269.",
       "severity": "info"
     },
     {
       "subfeature": "webhooks",
       "verdict": "deviating",
-      "evidence": "crates/schlange-github/src/service.rs:397 queues the payload in memory, then :401 records its delivery ID. A crash before processing loses acknowledged checkbox edits while persisted IDs suppress redelivery. The separate seen/enqueue/record operations also allow concurrent duplicates; persistence errors are ignored at :365.",
+      "evidence": "The feature admits that a webhook accepted by a lease follower remains pending until worker restart; takeover/recovery does not replay it (.agents/skills/verify-schlange/features/github-integration.md:32; crates/schlange-github/src/service.rs:33).",
       "severity": "major"
     },
     {
       "subfeature": "reconcile",
       "verdict": "conformant",
-      "evidence": "e2e lost_webhooks_are_recovered_by_reconciliation and a_restart_recovers_from_github_and_sweeps_orphans passed. service.rs:1911 recovers unhandled commands after reconciliation.",
+      "evidence": "`cargo test -p schlange-github-fake` passed `lost_webhooks_are_recovered_by_reconciliation`; the worker runs reconciliation at startup and periodically (crates/schlange-github/src/service.rs:14).",
       "severity": "info"
     },
     {
       "subfeature": "check-identity",
       "verdict": "deviating",
-      "evidence": "forge.rs:639 validates suites, but :438 constructs checks without workflow/event identity; api.rs:211 also discards check_suite. A temporary loopback fixture produced Failure and Success checks with workflow=None/event=None, then selected Success. Pinned configuration_conditions.md, 'Which Check Run a Condition Reads', requires each workflow/event's newest run to pass for required GitHub Actions checks. The three identity-read/restart tests passed but do not cover this distinction.",
-      "severity": "blocker"
+      "evidence": "All three `e2e_check_identity` tests passed, but the feature explicitly records that the GitHub read is not an atomic snapshot (.agents/skills/verify-schlange/features/github-integration.md:34).",
+      "severity": "minor"
     },
     {
       "subfeature": "watchdog",
       "verdict": "deviating",
-      "evidence": "crates/schlange-github/src/watchdog.rs:652 selects only Running cars without live dependencies; :764 detects transition to Verifying. Watchdog tests passed, but stalls in other phases remain outside its coverage, so full W-01 recovery is incomplete.",
-      "severity": "minor"
+      "evidence": "Watchdog unit, lease and shadow tests passed, but the feature states it detects only one stall class and lacks full W-01 conformance and sandbox evidence (.agents/skills/verify-schlange/features/github-integration.md:35).",
+      "severity": "major"
     },
     {
       "subfeature": "file-lists",
       "verdict": "conformant",
-      "evidence": "forge.rs:468 marks missing or truncated file counts incomplete. The security test a_constitution_path_beyond_the_file_list_cap_is_not_queued passed.",
+      "evidence": "`cargo test -p schlange-github-fake --test security` passed `a_constitution_path_beyond_the_file_list_cap_is_not_queued`.",
       "severity": "info"
     },
     {
       "subfeature": "pushers",
       "verdict": "conformant",
-      "evidence": "forge.rs:489 leaves head_pusher unknown; :2079 binds commands through branch activity rather than commit authors. Forged-author and command-race security tests passed.",
+      "evidence": "Security tests passed forged-author and command/push race cases, including `a_push_with_a_forged_bot_author_cancels_a_waiting_command`.",
       "severity": "info"
     },
     {
       "subfeature": "queue-cars",
       "verdict": "conformant",
-      "evidence": "The 11 e2e tests passed, including draft creation, three-PR batches, bisection and ambiguous creation outcomes. forge.rs:1215 handles merge conflicts and :1267 creates the draft.",
+      "evidence": "The 11 end-to-end tests passed queue branch creation, draft PR creation, batching, bisection and cleanup; the CLI scenario `p1-arztagent-two-step.yaml` passed I0-I5.",
       "severity": "info"
     },
     {
       "subfeature": "landing",
       "verdict": "deviating",
-      "evidence": "landing a_lying_502_after_a_base_push_halts_on_the_untested_tree passed. Its assertions at crates/schlange-github-fake/tests/landing.rs:111 confirm the PR already merged before the queue halted. Detection after landing cannot guarantee I0 or an atomic expected-base comparison.",
+      "evidence": "All five merge methods pass fake-GitHub tests, but squash/merge/rebase still use a pre-write base read because GitHub's merge API has no expected-base parameter (crates/schlange-github/src/forge.rs:1641). A base push in that window can land an untested tree before post-write detection (.agents/skills/verify-schlange/features/github-integration.md:39).",
       "severity": "major"
     },
     {
       "subfeature": "landing-retries",
       "verdict": "conformant",
-      "evidence": "forge.rs:997 schedules Failed instead of resending Land. Landing tests for a halt label during failures and a base push during a rate-limit wait passed.",
+      "evidence": "All nine landing tests passed, including halt-label and base-push changes during failed/rate-limited merge attempts.",
       "severity": "info"
     },
     {
       "subfeature": "refusals",
       "verdict": "conformant",
-      "evidence": "All nine landing tests passed, including transient 405/409, permanent 422, missing workflow permission and unknown mergeability; security tests for halt during 405/409 also passed.",
+      "evidence": "Landing and security tests passed transient 405/409 re-evaluation, permanent 422 dequeue, workflow-permission refusal and `mergeable: null` handling.",
       "severity": "info"
     },
     {
       "subfeature": "unknown-outcomes",
       "verdict": "conformant",
-      "evidence": "e2e a_5xx_after_the_merge_happened_does_not_land_twice and a_lying_5xx_on_draft_creation_and_queue_branch_merges_is_absorbed passed.",
+      "evidence": "End-to-end tests passed lying 5xx cases for landing, draft creation and queue-branch merges without duplicate landing.",
       "severity": "info"
     },
     {
       "subfeature": "read-your-writes",
       "verdict": "conformant",
-      "evidence": "forge.rs:383 preserves known merged/closed outcomes. landing reads_that_lag_behind_writes_change_nothing passed.",
+      "evidence": "`reads_that_lag_behind_writes_change_nothing` passed; stale merged, branch and draft reads did not reverse completed writes.",
       "severity": "info"
     },
     {
       "subfeature": "provisional-reads",
       "verdict": "conformant",
-      "evidence": "e2e storms_of_404_and_5xx_never_dequeue and client reads_retry_5xx_and_404_but_writes_report_an_unknown_outcome passed.",
+      "evidence": "`storms_of_404_and_5xx_never_dequeue` passed, as did client tests for bounded 404/5xx retries.",
       "severity": "info"
     },
     {
       "subfeature": "check-runs",
       "verdict": "conformant",
-      "evidence": "forge.rs:435 excludes the app's own checks; :1837 creates and completes cosmetic queue checks. Queue-operation and end-to-end tests passed.",
+      "evidence": "End-to-end runs created and completed `Schlange merge queue` checks; the ruleset-required-check test confirms Schlange's own check is excluded from its gate.",
       "severity": "info"
     },
     {
       "subfeature": "rate-limits",
       "verdict": "conformant",
-      "evidence": "client.rs:239 prioritizes landing and reserves budget from cosmetics/background reads. Budget, secondary-limit, rate-limited-write and e2e recovery tests passed.",
+      "evidence": "`rate_limits_are_waited_out_and_landing_still_happens`, client budget tests, and `a_rate_limited_write_is_handed_back_not_repeated` all passed.",
       "severity": "info"
     },
     {
       "subfeature": "permissions",
       "verdict": "conformant",
-      "evidence": "crates/schlange-github/src/permissions.rs defines required and optional permissions. serve installation_tokens_are_downscoped and doctor permission tests passed against the fake.",
+      "evidence": "crates/schlange-github/src/permissions.rs:25 defines six required permissions plus optional `workflows`; doctor comparison and token-downscoping tests passed.",
       "severity": "info"
     },
     {
       "subfeature": "ruleset-exception",
       "verdict": "deviating",
-      "evidence": "doctor.rs:269 accepts always or exempt, even treating an absent bypass_mode as always. Pinned merge-queue_github-rulesets.md, 'Bypass Actors', requires exempt and warns that always leaves parts blocked. Automated setup also remains missing.",
+      "evidence": "Mergify's pinned guidance says only `exempt` works completely and `always` leaves parts blocked (.research/mergify/merge-queue_github-rulesets.md:61). Schlange doctor reports `always` only as WARN, allowing a green exit (crates/schlange-github/src/doctor.rs:277). The setup script correctly installs `exempt` (scripts/schlange-setup.sh:104).",
       "severity": "major"
     },
     {
       "subfeature": "journal",
       "verdict": "conformant",
-      "evidence": "store.rs:111 enables WAL and FULL synchronization; service.rs:2078 checkpoints before effects and :2106 records intents. Crash-mid-landing, command deduplication and partial-build recovery tests passed.",
+      "evidence": "All six service tests passed, including crash-mid-landing recovery, command deduplication, durable delivery IDs and last-valid configuration persistence.",
       "severity": "info"
     },
     {
       "subfeature": "config",
-      "verdict": "conformant",
-      "evidence": "config validate crates/schlange-config/tests/golden/arztagent.yml exited 0: valid. serve_validates_the_configuration_and_keeps_the_last_valid_one passed; config.rs:122 searches the default branch.",
-      "severity": "info"
+      "verdict": "deviating",
+      "evidence": "`cargo run -q -p schlange -- config validate crates/schlange-config/tests/golden/arztagent.yml` passed, but `cargo test --workspace` failed because schema-valid `merge_queue.batch_pull_request` is rejected as unknown with exit 1 instead of unsupported exit 2 (`golden::experimental_merge_queue_options_are_not_silently_supported`). Also, the source documentation's per-repository product toggles (.research/mergify/integrations_github.md:9) have no Schlange equivalent.",
+      "severity": "major"
     }
   ],
   "missing_tests": [],
   "clean_room_ok": true,
-  "summary": "Deviating, principally because required-check workflow identity is discarded. All 176 focused GitHub tests and three CLI scenarios passed. cargo test --workspace failed at the batch_pull_request schema/golden expectation; a supplementary retry was stopped during the long forge fault sweep. Every named MQ ID has test/scenario coverage, but MQ-18 real workflow triggering remains unverified. No copied Mergify prose or code detected; repository files were unchanged.",
-  "commit": "5de7b4be3a64b95f89ee40340e7dd113f6101a6a"
+  "summary": "Core fake-GitHub flows are substantial and mostly green, but the feature remains non-conformant: webhook takeover can strand accepted deliveries, watchdog/check identity remain partial, landing lacks atomic expected-base protection, doctor accepts a known-inadequate ruleset mode, and configuration validation is red. `cargo fmt` and clippy passed; the required CLI validation and MQ-18 two-step scenario passed. The fixed stress test timed out once under the full package run and passed alone. Every named MQ ID has a test or scenario, though MQ-18 still lacks Schlange-on-real-GitHub workflow-trigger evidence. Clean-room scans found no shared 15-word prose against the pinned Markdown, schema, or OpenAPI corpus.",
+  "commit": "a3b0978dad464ba201796ed7898dc432065776ca"
 }

@@ -60,8 +60,8 @@ forge and fixed with a test (KONZEPT.md, rule 1).
    write). GitHub asks you, as admin, for consent.
 2. Constitution PR by a human: `pr-gate.yml` accepts the bot login of the Schlange app
    (today hard-coded `mergify[bot]`).
-3. Ruleset bypass for the Schlange app on `main`, by script following the pattern of
-   `scripts/mergify-setup.sh setup`.
+3. Ruleset bypass for the Schlange app on `main`:
+   `SCHLANGE_APP_ID=<app id> bash scripts/schlange-setup.sh setup`.
 4. Pause Mergify, do not uninstall it. It stays as the fallback until Schlange has landed
    stably for a few weeks.
 
