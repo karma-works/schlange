@@ -14,11 +14,144 @@ use std::time::{Duration, Instant};
 use schlange_core::commands::CONTROLS_MARKER;
 use schlange_github::service::{PauseHook, Service, WorkerStatus};
 use schlange_github::time::ManualClock;
+use schlange_github::webhook::sign;
 use schlange_github_fake::tester::{Running, temp_dir};
 use schlange_github_fake::{CiOn, CiRule, Tester};
 
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
 const REPO: &str = "karma-works/arzt-agent";
+
+fn post_edit(service: &Service, id: &str, body: &str, secret: &[u8]) -> u16 {
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build(),
+    )
+    .post(service.webhook_url())
+    .header("x-github-event", "issue_comment")
+    .header("x-github-delivery", id)
+    .header("x-hub-signature-256", &sign(secret, body.as_bytes()))
+    .send(body.as_bytes())
+    .unwrap()
+    .status()
+    .as_u16()
+}
+
+fn checkbox_edit(t: &Running, pr: u64) -> String {
+    assert!(t.gh.tick(pr, "karma-works", CONTROLS_MARKER));
+    let comment =
+        t.gh.comments_on(pr)
+            .into_iter()
+            .find(|c| c.body.contains(CONTROLS_MARKER))
+            .unwrap();
+    serde_json::json!({
+        "action": "edited", "repository": {"full_name": REPO},
+        "issue": {"number": pr, "pull_request": {}},
+        "comment": {"id": comment.id, "user": {"login": comment.user},
+            "body": comment.body,
+            "updated_at": schlange_github::time::format_rfc3339(comment.updated_at)},
+        "sender": {"login": "karma-works"}
+    })
+    .to_string()
+}
+
+#[test]
+fn a_follower_refuses_an_edit_without_deduping_it_and_the_leader_can_accept_it() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .lease("proc-1", 60)
+        .persistent()
+        .start();
+    t.permission("karma-works", "write");
+    let dir_b = temp_dir("follower-refuses-webhooks");
+    let b = t.second_service("proc-2", Some(dir_b.clone()), t.clock.clone());
+    wait("the second process follows", || {
+        status(&b).is_some_and(|s| s.role == "follower")
+    });
+    let pr = t.open_pr("mallory").file("a.py", "a = 1\n").create();
+    t.wait_until("the controls comment", |t| {
+        t.gh.comments_on(pr)
+            .iter()
+            .any(|c| c.body.contains(CONTROLS_MARKER))
+    });
+    // No webhook reaches the leader automatically. REST cannot recover the editor of this
+    // checkbox; only a signed redelivery can cause it to queue the otherwise ineligible PR.
+    t.gh.set_webhook_target(None);
+    let body = checkbox_edit(&t, pr);
+    let secret = &t.serve_cfg.webhook_secret;
+    for _ in 0..2 {
+        assert_eq!(post_edit(&b, "follower-edit", &body, secret), 503);
+    }
+    let store = b.store.as_ref().unwrap();
+    assert!(!store.delivery_seen("follower-edit").unwrap());
+    assert!(
+        !store
+            .inbox_pending()
+            .unwrap()
+            .iter()
+            .any(|r| r.0 == "follower-edit")
+    );
+    assert!(!t.status().unwrap().queued.contains(&pr));
+    let leader = t.service.as_ref().unwrap();
+    assert_eq!(post_edit(leader, "follower-edit", &body, secret), 202);
+    assert_eq!(post_edit(leader, "follower-edit", &body, secret), 200);
+    t.wait_until("redelivered edit queues the pull request", |t| {
+        t.status().is_some_and(|s| s.queued.contains(&pr))
+    });
+    assert_eq!(status(&b).unwrap().role, "follower");
+    b.shutdown();
+    let _ = std::fs::remove_dir_all(&dir_b);
+    t.shutdown();
+}
+
+#[test]
+fn a_live_leader_polls_an_inbox_row_without_a_channel_hint() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .lease("proc-1", 60)
+        .persistent()
+        .start();
+    t.permission("karma-works", "write");
+    let dir = t.serve_cfg.data_dir.clone().unwrap();
+    let b = t.second_service("proc-2", Some(dir), t.clock.clone());
+    wait("the second process follows", || {
+        status(&b).is_some_and(|s| s.role == "follower")
+    });
+    let pr = t.open_pr("mallory").file("a.py", "a = 1\n").create();
+    t.wait_until("the controls comment", |t| {
+        t.gh.comments_on(pr)
+            .iter()
+            .any(|c| c.body.contains(CONTROLS_MARKER))
+    });
+    t.gh.set_webhook_target(None);
+    let body = checkbox_edit(&t, pr);
+    // The follower's connection to the shared store writes a legacy delivery. There is no
+    // in-memory message, leadership change, clock advance or process restart to recover it.
+    let store = b.store.as_ref().unwrap();
+    store
+        .inbox_put(
+            "shared-edit",
+            REPO,
+            "issue_comment",
+            body.as_bytes(),
+            schlange_github::time::unix_now(),
+        )
+        .unwrap();
+    t.wait_until("the existing leader processes the shared inbox", |t| {
+        t.status().is_some_and(|s| s.queued.contains(&pr))
+            && store.delivery_seen("shared-edit").unwrap()
+    });
+    assert_eq!(t.status().unwrap().role, "leader");
+    assert_eq!(status(&b).unwrap().role, "follower");
+    assert!(
+        !store
+            .inbox_pending()
+            .unwrap()
+            .iter()
+            .any(|r| r.0 == "shared-edit")
+    );
+    b.shutdown();
+    t.shutdown();
+}
 
 #[test]
 fn failed_lineage_metadata_cannot_become_trusted_on_renewal() {
@@ -962,7 +1095,7 @@ fn two_processes_on_one_data_directory_never_both_lead() {
 }
 
 #[test]
-fn a_follower_replays_the_inbox_it_accepted_before_taking_over() {
+fn a_follower_replays_a_legacy_inbox_row_when_taking_over() {
     let t = arztagent_ci(Tester::new(ARZTAGENT))
         .lease("proc-1", 60)
         .persistent()
@@ -988,17 +1121,21 @@ fn a_follower_replays_the_inbox_it_accepted_before_taking_over() {
             .iter()
             .any(|c| c.body.contains(CONTROLS_MARKER) && c.body.contains("- [ ]"))
     });
-    // Webhooks now go to the follower while the leader is still alive. The follower accepts
-    // the checkbox edit, writes its inbox row and drops the hint because it does not lead.
-    // Nothing has queued the pull request yet.
-    t.gh.set_webhook_target(Some(b.webhook_url()));
-    assert!(t.gh.tick(pr, "karma-works", CONTROLS_MARKER));
-    wait("the follower accepts the delivery without acting", || {
-        status(&b).is_some_and(|s| s.role == "follower" && s.webhooks >= 1)
-    });
-    wait("the webhook outbox drains", || {
-        t.gh.hooks_idle() && b.inflight() == 0
-    });
+    // Simulate an inbox row accepted by the previous release while following. New routers
+    // refuse this with 503, but upgrading must not strand already acknowledged deliveries.
+    t.gh.set_webhook_target(None);
+    let body = checkbox_edit(&t, pr);
+    b.store
+        .as_ref()
+        .unwrap()
+        .inbox_put(
+            "legacy-edit",
+            REPO,
+            "issue_comment",
+            body.as_bytes(),
+            schlange_github::time::unix_now(),
+        )
+        .unwrap();
     let pending = {
         let db = rusqlite::Connection::open(dir_b.join("schlange.db")).unwrap();
         db.query_row("SELECT COUNT(*) FROM inbox WHERE processed = 0", [], |r| {

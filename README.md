@@ -93,6 +93,11 @@ observations from sharing a generation; the observer rotates among eligible cars
 
 ## Adopting Schlange
 
+For Arztagent, the [parity contract](docs/betrieb/arztagent-parity.md) defines the accepted
+GitHub last-request windows, exclusive-writer safeguards and leader-aware webhook ingress.
+The replacement does not claim atomic expected-base or label cancellation guarantees that
+GitHub does not expose. The simulated and localgit invariant checks remain unchanged.
+
 A merge queue decides what reaches `main`, so switch the way we do it for Arztagent: watch
 first, compare, then hand over, and keep the old queue as the way back.
 

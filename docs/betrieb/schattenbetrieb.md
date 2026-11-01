@@ -3,6 +3,9 @@
 - **Goal:** Schlange runs next to Mergify on `karma-works/arzt-agent` and makes the same
   decisions without acting (KONZEPT.md, feature S-SHADOW, phase 1).
 - **Acceptance:** two weeks without a deviating decision, then the switchover.
+- **Parity scope:** [Arztagent parity](arztagent-parity.md) accepts GitHub's last-request
+  windows for base and label changes under the documented safeguards; it does not require
+  a stronger atomicity guarantee than Mergify's publicly evidenced behaviour.
 - **Prerequisite:** S-SHADOW is built (`schlange serve --shadow`, `schlange shadow report`,
   see AGENTS.md). Before Arztagent, it must make the same decisions in the sandbox
   (`queue-lab`, next to Mergify); the open points are in
@@ -62,8 +65,17 @@ forge and fixed with a test (KONZEPT.md, rule 1).
    (today hard-coded `mergify[bot]`).
 3. Ruleset bypass for the Schlange app on `main`:
    `SCHLANGE_APP_ID=<app id> bash scripts/schlange-setup.sh setup`.
+   Also migrate the existing Mergify-only update lock and verify effective branch protection:
+   adding an exemption to a different ruleset alone does not permit the new queue to write.
 4. Pause Mergify, do not uninstall it. It stays as the fallback until Schlange has landed
    stably for a few weeks.
+
+Use one active Schlange instance initially. For multiple instances, route webhooks to the
+leader using `/readyz` (all repositories) or authenticated `/status` (per repository). A
+follower returns 503 before storing a new delivery. Ingress must retry it on the leader, or
+an operator must redeliver it: GitHub does not automatically retry failed webhooks. `/healthz`
+does not establish leadership. See the parity contract for acceptance/demotion races and the
+limits of separate data volumes.
 
 ## Intermediate step (optional, before S-SHADOW)
 

@@ -154,7 +154,12 @@ schlange (ein statisches Binary)
 - **Webhooks sind Hinweise, der Abgleich ist die Wahrheit.** Jeder Handler ist idempotent;
   Zustand wird vom Forge neu gelesen; Abgleich beim Start und periodisch.
 - **Ein Schreiber pro Repo und Branch**, Landen nur als Compare-and-Swap auf die Base
-  (erwarteter alter SHA, nie `force`).
+  (erwarteter alter SHA, nie `force`) im Forge-Modell und bei `localgit`. Für den GitHub-Adapter
+  gilt der [Arztagent-Parity-Vertrag](docs/betrieb/arztagent-parity.md), Entscheidung 01.11.2026:
+  exklusiver regulärer Schreiber, frische Prüfungen vor jedem Versuch und nachträgliche
+  Tree-Prüfung mit Halt. GitHub bietet beim PR-Merge kein erwartetes Base-SHA und keine atomare
+  Label-Prüfung. Die verbleibenden Zeitfenster sind unter diesen Betriebsannahmen akzeptiert;
+  sie allein verhindern die Parity-Abnahme nicht. Die Modell-Invarianten bleiben unverändert.
 - **Journal vor jedem Seiteneffekt**, Wiederanlauf aus Journal plus Forge-Zustand.
 - **Speicher:** SQLite (WAL) im Volume; Postgres erst, wenn nötig.
 - **Kein git-CLI im Container.** Queue-Branches und Merges laufen serverseitig über die
@@ -164,6 +169,11 @@ schlange (ein statisches Binary)
   Testumgebung.
 
 **Invarianten (werden nach jedem simulierten Schritt geprüft)**
+
+Die atomaren Modell-Eigenschaften I0/I1 sind keine stärkere Zusicherung für GitHubs letzte
+API-Anfrage. Grenzen, Betriebsannahmen und Abnahmekriterien für Arztagent stehen im verlinkten
+Parity-Vertrag. Eine beobachtete Abweichung wird weiterhin geprüft und gemeldet.
+
 - **I0:** Jeder Commit auf der Base hat einen Tree, der einem Commit mit grünen Pflicht-Checks
   entspricht, getestet auf der damaligen Base.
   - *Bündel (Mergifys Semantik, nachgetragen):* Bei `squash` ist jeder Commit eines Bündels der
