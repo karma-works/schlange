@@ -163,6 +163,13 @@ impl Lease {
         }
     }
 
+    /// Local admission hint only: does not acquire/renew the lease or read GitHub. Writes
+    /// still use `check`, since a remote takeover can race any local observation.
+    pub fn held_locally(&self) -> bool {
+        let i = self.lock();
+        i.held && self.clock.now() < i.expires
+    }
+
     /// Whether this process holds the lease now; takes or renews it when due. A follower
     /// tries again after a quarter of the time-to-live.
     pub fn ensure(&self) -> bool {

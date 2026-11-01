@@ -47,6 +47,10 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
    engine's `Refresh` reads must be consistent reads in every forge adapter (I1 depends on it).
    Fault mode (`crates/schlange-forge/src/faults.rs`): forge faults and engine crashes; the state
    is journaled before every side effect (`schlange_core::journal`).
+   For Arztagent's GitHub adapter, the accepted last-request limits and required operating
+   safeguards are in [the parity contract](docs/betrieb/arztagent-parity.md). Do not demand an
+   atomic expected-base or label check GitHub does not expose as a condition of Mergify parity;
+   do not weaken the model's invariant checker or claim those windows were eliminated.
 4. **Evidence.** A feature counts as working only with evidence from the `verify-schlange`
    skill (`.agents/skills/verify-schlange/SKILL.md`): build, doctor, drive, evidence.
 5. **Critic acceptance.** `status: conformant` in a feature file needs a green verification and
@@ -139,7 +143,12 @@ Security notes:
 - The listener bounds every request (thread pool, read timeout, deadline, size limits); put
   TLS in front of it.
 - Landing on GitHub is not a true compare-and-swap (the merge API has no expected base); see
-  `crates/schlange-github/src/api.rs` for the guards and the trade-off.
+  `crates/schlange-github/src/api.rs` for the guards and the trade-off, and
+  [Arztagent parity](docs/betrieb/arztagent-parity.md) for the accepted operating contract.
+- Webhook ingress must target the leader. A known follower returns 503 before accepting new
+  work; GitHub does not automatically retry failed deliveries. Use `/readyz` for ingress
+  readiness (`/healthz` is liveness), and retry refused POSTs or redeliver them explicitly.
+  Leaders poll their persistent inbox between operations; separate volumes are not replicated.
 - Shadow mode cannot write: the worker answers write decisions itself and the client's write
   gate refuses every request but a read (tests: panics). A process that lost its lease is
   refused the same way before any write is sent (the fence on GitHub moved); a remaining

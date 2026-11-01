@@ -5,8 +5,10 @@
 //!   slow client never stalls webhooks or `/healthz`. `POST /webhook` verifies the signature
 //!   (the secret must be at least [`MIN_SECRET_LEN`] bytes), drops delivery ids it already
 //!   handled, parses the payload and hands the hints to the repository's worker; it answers
-//!   202 at once. A delivery id is recorded only once the delivery was accepted: a delivery
-//!   answered 400 or 503 is redelivered by GitHub and handled then. `GET /healthz` answers
+//!   202 after persisting the delivery. A follower refuses new work with 503 before storing
+//!   it. GitHub does not automatically retry failed deliveries: ingress must route to the
+//!   leader and retry a refused delivery, or an operator must redeliver it. `GET /readyz`
+//!   checks webhook admission for all served repositories. `GET /healthz` answers
 //!   `ok` (503 when a worker stopped or its loop heartbeat is stale). A long reconciliation
 //!   can also trigger the heartbeat alarm; it is an operational signal, not a restart.
 //!   `GET /status` needs `Authorization: Bearer <admin
@@ -30,11 +32,9 @@
 //! - **Lease** ([`crate::lease`], MQ-32): with `lease` a worker acts only while it holds its
 //!   repository's lease (local SQLite row plus a fence reference on GitHub, checked before every
 //!   write). A follower reads nothing and takes no action; it takes over when the lease
-//!   expires and steps down when a write finds the fence moved. Its one write is the router's
-//!   durable inbox row, written before the 202. That row is acknowledged only by a leading
-//!   worker and replayed when a worker starts or takes over, so a delivery accepted by a
-//!   follower waits in the inbox until this process takes over or a worker restarts (see the
-//!   note in the feature file).
+//!   expires and steps down when a write finds the fence moved. A known follower does not
+//!   accept new webhooks. Durable inbox rows are replayed on start, takeover and periodically
+//!   by a leader, including deliveries accepted just before demotion or by an older version.
 //! - **Event log** ([`crate::events`]): every decision and operator control, queryable through
 //!   `GET /repos/{owner}/{repo}/logs`.
 
@@ -353,9 +353,37 @@ pub struct Router {
     store: Option<Store>,
     sinks: HashMap<String, Sender<Msg>>,
     shared: Arc<Shared>,
+    leases: Vec<Arc<Lease>>,
 }
 
 impl Router {
+    fn accepts_webhooks(&self, repo: &str) -> bool {
+        !self.shared.stop.load(Ordering::SeqCst)
+            && !self.shared.dead.lock().expect("dead").contains_key(repo)
+            && self
+                .shared
+                .statuses
+                .lock()
+                .expect("status")
+                .get(repo)
+                .is_some_and(|s| matches!(s.role.as_str(), "leader" | "single" | "shadow"))
+            && self
+                .leases
+                .iter()
+                .filter(|l| l.repo_full() == repo)
+                .all(|l| l.held_locally())
+            && self
+                .shared
+                .heartbeat
+                .lock()
+                .expect("heartbeat")
+                .get(repo)
+                .is_some_and(|at| {
+                    self.shared.heartbeat_now().saturating_duration_since(*at)
+                        <= self.shared.heartbeat_limit
+                })
+    }
+
     fn seen(&self, id: &str) -> bool {
         self.dedup.lock().expect("dedup").seen(id)
             || self
@@ -398,6 +426,15 @@ impl Router {
             self.record(&id);
             return (200, "repository not served".into());
         };
+        // Never acknowledge work a known follower cannot process. In particular, an edited
+        // comment cannot be recovered from REST, which does not identify its editor. Check
+        // before inbox_put: a refused id must remain eligible for redelivery after takeover.
+        if !self.accepts_webhooks(parsed.repo.as_deref().unwrap_or_default()) {
+            return (
+                503,
+                "repository worker not ready; deliver to the leader".into(),
+            );
+        }
         // The inbox write is the acknowledgement: after a crash the worker replays every
         // unprocessed delivery, so an acknowledged checkbox edit cannot vanish between the
         // HTTP 202 and the read. A redelivery of an id already in the inbox is not enqueued
@@ -816,6 +853,7 @@ impl Service {
             store: store.clone(),
             sinks,
             shared: shared.clone(),
+            leases: leases.clone(),
         });
         let sh = shared.clone();
         let admin = cfg.admin_token.clone();
@@ -1278,6 +1316,18 @@ fn route(req: &Request, router: &Router, shared: &Shared, admin: Option<&str>) -
         return repo_api(req, router, shared, path);
     }
     match (req.method.as_str(), path) {
+        ("GET", "/readyz") => {
+            if !router.sinks.is_empty()
+                && router
+                    .sinks
+                    .keys()
+                    .all(|repo| router.accepts_webhooks(repo))
+            {
+                Response::text(200, "ready")
+            } else {
+                Response::text(503, "not ready for webhooks")
+            }
+        }
         ("POST", "/webhook") | ("POST", "/") => {
             let get = |name: &str| req.header(name).map(str::to_string);
             let (s, t) = router.handle(&get, &req.body);
@@ -1602,8 +1652,16 @@ impl Worker {
 
     fn run(mut self) {
         let mut replay = self.pending_inbox();
+        let mut next_inbox_poll = Instant::now();
         loop {
             self.shared.beat(&self.forge.api.repo.full());
+            // A live leader must recover durable rows even without a new channel hint (for
+            // example after a check-identity hold, or a write by another process sharing
+            // this data directory). Separate hosts still need leader-aware ingress.
+            if self.leading && Instant::now() >= next_inbox_poll {
+                replay = self.pending_inbox();
+                next_inbox_poll = Instant::now() + Duration::from_secs(1);
+            }
             let mut hints = BTreeSet::new();
             let mut handled = 0;
             let mut reconcile = false;
@@ -1612,6 +1670,12 @@ impl Worker {
             let mut take = |m: Msg, hints: &mut BTreeSet<Hint>, this: &mut Self| match m {
                 Msg::Webhook(p, delivery) => {
                     if let Some(id) = delivery {
+                        // A polled inbox row can also be waiting in the channel. It is one
+                        // delivery, with one acknowledgement, even in the same worker round.
+                        if deliveries.contains(&id) {
+                            this.shared.inflight.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
                         deliveries.push(id);
                     }
                     this.webhooks += 1;
@@ -1678,12 +1742,10 @@ impl Worker {
                     self.step_down("another process holds the lease");
                 }
                 if !self.leading {
-                    // A follower drops hints and leaves its inbox rows pending: it never calls
-                    // `inbox_done`. A takeover refreshes `replay` from the inbox, so the rows
-                    // this process accepted are handled then; a full reconciliation cannot
-                    // reconstruct an edited comment. Known HA limitation: with a load balancer
-                    // in front of several processes, a comment edit answered 202 here is not
-                    // acted on until this process takes over or a worker restarts.
+                    // A delivery admitted before demotion (or by an older version) remains
+                    // pending, never acknowledged by this follower. A leader sharing this
+                    // store polls it; otherwise takeover/restart replays it. New deliveries
+                    // to a known follower are refused by the router before persistence.
                     self.publish();
                     self.shared.inflight.fetch_sub(handled, Ordering::SeqCst);
                     continue;
@@ -2507,9 +2569,8 @@ mod tests {
         assert!(stale_workers(&beats, now + limit + Duration::from_secs(1), limit).is_empty());
     }
 
-    #[test]
-    fn health_endpoint_reports_and_clears_stale_worker() {
-        let shared = Arc::new(Shared {
+    fn test_shared() -> Arc<Shared> {
+        Arc::new(Shared {
             statuses: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(BTreeMap::new()),
             dead: Mutex::new(BTreeMap::new()),
@@ -2525,13 +2586,77 @@ mod tests {
             events: Arc::new(EventLog::new(None)),
             shadow: Mutex::new(BTreeMap::new()),
             store: None,
-        });
+        })
+    }
+
+    #[test]
+    fn follower_webhooks_are_refused_before_dedup_and_can_be_redelivered() {
+        let shared = test_shared();
+        let (tx, rx) = channel();
+        let secret = b"test-secret-at-least-16-bytes";
+        let router = Router {
+            secret: secret.to_vec(),
+            dedup: Mutex::new(Dedup::new(10)),
+            store: None,
+            sinks: HashMap::from([("o/r".into(), tx)]),
+            shared: shared.clone(),
+            leases: vec![],
+        };
+        shared.beat("o/r");
+        let body = br#"{"action":"edited","repository":{"full_name":"o/r"},"issue":{"number":1,"pull_request":{}},"comment":{"id":7,"user":{"login":"schlange[bot]"},"body":"- [x] queue","updated_at":"2026-11-01T00:00:00Z"},"sender":{"login":"alice"}}"#;
+        let signature = crate::webhook::sign(secret, body);
+        let header = |name: &str| match name {
+            "x-github-event" => Some("issue_comment".into()),
+            "x-github-delivery" => Some("edit-1".into()),
+            "x-hub-signature-256" => Some(signature.clone()),
+            _ => None,
+        };
+        // Before the first worker publication, and then while following, neither the
+        // delivery nor its id may be accepted. There is no automatic GitHub retry.
+        assert_eq!(router.handle(&header, body).0, 503);
+        shared.statuses.lock().unwrap().insert(
+            "o/r".into(),
+            WorkerStatus {
+                role: "follower".into(),
+                ..WorkerStatus::default()
+            },
+        );
+        for _ in 0..2 {
+            assert_eq!(router.handle(&header, body).0, 503);
+            assert!(!router.seen("edit-1"));
+            assert!(rx.try_recv().is_err());
+            assert_eq!(shared.inflight.load(Ordering::SeqCst), 0);
+        }
+        let readiness = Request {
+            method: "GET".into(),
+            url: "/readyz".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert_eq!(route(&readiness, &router, &shared, None).status, 503);
+        shared.statuses.lock().unwrap().get_mut("o/r").unwrap().role = "leader".into();
+        assert_eq!(route(&readiness, &router, &shared, None).status, 200);
+        assert_eq!(router.handle(&header, body).0, 202);
+        assert_eq!(router.handle(&header, body).0, 200);
+        let Msg::Webhook(parsed, Some(id)) = rx.try_recv().unwrap() else {
+            panic!("webhook expected")
+        };
+        assert_eq!(id, "edit-1");
+        assert!(parsed.hints.iter().any(|hint| matches!(hint,
+            Hint::Comment(c) if c.edited && c.sender == "alice")));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn health_endpoint_reports_and_clears_stale_worker() {
+        let shared = test_shared();
         let router = Router {
             secret: vec![],
             dedup: Mutex::new(Dedup::new(10)),
             store: None,
             sinks: HashMap::new(),
             shared: shared.clone(),
+            leases: vec![],
         };
         let request = Request {
             method: "GET".into(),

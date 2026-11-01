@@ -25,6 +25,13 @@ Landing happens only when the base still is exactly the state that was tested an
 head has not changed. Afterwards Schlange checks that the landed tree equals the tested tree. A
 journal entry precedes every side effect.
 
+The atomic statement above is the model/localgit contract. For the GitHub adapter in Arztagent,
+apply [the accepted parity contract](../../../../docs/betrieb/arztagent-parity.md): one normal
+queue writer, fresh reads before every attempt and post-merge verification with halt. A base
+push or label change inside the final read/request window remains possible. This limit alone
+is not a parity blocker; it must remain documented and tested, not removed from the invariant
+checker. An observed `halt` prevents a new attempt, not a merge already executing at GitHub.
+
 ## Sub-features
 
 - `fresh-read`: built. A green front car first asks for a fresh read (`Refresh`) of its pull requests, its draft, the base and its branch; only if queue and merge conditions still hold on that read does the engine decide `Land` (MQ-11: a lost label webhook cannot let a pull request land).

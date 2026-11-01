@@ -64,12 +64,26 @@ fn serve_lands_a_pull_request_and_doctor_checks_the_app() {
             .http_status_as_error(false)
             .build(),
     );
-    let health = format!("http://127.0.0.1:{port}/healthz");
+    // An HTTP listener can be live before the worker has acquired its lease. Ingress must
+    // wait for webhook readiness, otherwise startup deliveries are correctly refused.
+    let ready = format!("http://127.0.0.1:{port}/readyz");
     let deadline = Instant::now() + Duration::from_secs(20);
-    while agent.get(&health).call().map(|r| r.status().as_u16()).ok() != Some(200) {
-        assert!(Instant::now() < deadline, "serve did not come up");
+    while agent.get(&ready).call().map(|r| r.status().as_u16()).ok() != Some(200) {
+        assert!(
+            Instant::now() < deadline,
+            "serve did not become webhook-ready"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
+    assert_eq!(
+        agent
+            .get(format!("http://127.0.0.1:{port}/healthz"))
+            .call()
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
     gh.set_webhook_target(Some(format!("http://127.0.0.1:{port}/webhook")));
     let n = gh.open_pr(
         "someone",
