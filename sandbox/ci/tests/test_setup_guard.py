@@ -10,6 +10,40 @@ START = Path(__file__).resolve().parents[1] / 'start-schlange.sh'
 
 
 class SetupGuardTests(unittest.TestCase):
+    def test_owner_preflight_distinguishes_unreadable_membership_from_nonowner(self):
+        program = '''source "$SETUP_SCRIPT"
+gh() {
+  case "$*" in
+    'auth status') return 0;;
+    'api user --jq .login') echo sandbox-user;;
+    'api orgs/schlange-sandbox') return 0;;
+    'api orgs/schlange-sandbox/memberships/sandbox-user --jq .role')
+      case "$TEST_MEMBERSHIP" in
+        unreadable) return 1;;
+        member) echo member;;
+        admin) echo admin;;
+      esac;;
+    *) return 1;;
+  esac
+}
+preflight
+'''
+        env = {**os.environ, 'SANDBOX_ORG': 'schlange-sandbox', 'SETUP_SCRIPT': str(SCRIPT),
+               'SANDBOX_HUMAN_TOKEN': 'sandbox-test-token'}
+        denied = subprocess.run(['bash', '-c', program], env={**env, 'TEST_MEMBERSHIP': 'unreadable'},
+                                capture_output=True, text=True)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn('cannot verify', denied.stderr)
+        self.assertIn('Members', denied.stderr)
+        self.assertNotIn('is not an owner', denied.stderr)
+        nonowner = subprocess.run(['bash', '-c', program], env={**env, 'TEST_MEMBERSHIP': 'member'},
+                                  capture_output=True, text=True)
+        self.assertNotEqual(nonowner.returncode, 0)
+        self.assertIn('is not an owner', nonowner.stderr)
+        owner = subprocess.run(['bash', '-c', program], env={**env, 'TEST_MEMBERSHIP': 'admin'},
+                               capture_output=True, text=True)
+        self.assertEqual(owner.returncode, 0, owner.stderr)
+
     def test_fixture_reset_retains_owner_preflight(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'preflight'

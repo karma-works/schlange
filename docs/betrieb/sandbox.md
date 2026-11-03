@@ -82,9 +82,14 @@ App keys and webhook secrets live only locally under `~/.config/schlange-sandbox
      including their rulesets.
    - **Variables**: read and write to set the fixture's `QUEUE_BOT_LOGIN` Actions variable.
    - **Workflows**: read and write to push the fixture's `.github/workflows/` files.
+   - **Actions**: read and write to dispatch the S14/S15 fixture workflows.
    - **GitHub App installation repository access**: read and write
      (`installation_repositories:write`) to add a disposable repository to the existing queue
      and driver app installations.
+
+   Grant the sandbox organisation permission **Members: read-only** as well: fixture resets
+   verify that the authenticated user is an organisation owner. An unreadable membership is
+   not evidence of ownership, so the reset stops before writing anything.
 
    Store it at `~/.config/schlange-sandbox/human-token` (chmod 600). It sees only the sandbox;
    keep the resource owner `schlange-sandbox`. Administration read access is insufficient
