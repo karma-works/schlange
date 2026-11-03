@@ -1055,6 +1055,32 @@ fn link_headers_to_another_host_are_not_followed() {
 }
 
 #[test]
+fn workflow_identity_reads_require_actions_read_even_with_checks_read() {
+    let cfg = FakeConfig {
+        permissions: schlange_github::permissions::SHADOW_PERMISSIONS
+            .iter()
+            .filter(|(name, ..)| *name != "actions")
+            .map(|(name, level, _)| (name.to_string(), level.to_string()))
+            .collect(),
+        ..FakeConfig::default()
+    };
+    let gh = FakeGithub::start(cfg);
+    let c = client(&gh, roomy());
+    let a = api(&gh, &c);
+    let sha = a.branch_sha("main", Priority::Normal).unwrap();
+    assert!(matches!(
+        a.workflow_runs(&sha, Priority::Normal),
+        Err(Error::Status { status: 403, .. })
+    ));
+    let mut permissions = gh.config().permissions;
+    permissions.insert("actions".into(), "read".into());
+    gh.set_permissions(permissions);
+    // A new client obtains a token after the permission grant.
+    let c = client(&gh, roomy());
+    assert!(api(&gh, &c).workflow_runs(&sha, Priority::Normal).is_ok());
+}
+
+#[test]
 fn doctor_accepts_a_read_only_app_for_shadow_mode_only() {
     let read_only = schlange_github::permissions::SHADOW_PERMISSIONS
         .iter()

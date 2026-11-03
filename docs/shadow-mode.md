@@ -62,6 +62,7 @@ The app must have exactly these permissions and events. More is a warning in
 | Pull requests | Read | pull requests, files, comments, labels, reviews |
 | Issues | Read | GitHub sends `issue_comment` webhooks (the `@mergifyio` commands) only with it |
 | Checks | Read | check runs, including Mergify's |
+| Actions | Read | workflow runs used to verify check identity |
 | Commit statuses | Read | statuses used as conditions |
 
 Webhook events: `check_run`, `check_suite`, `issue_comment`, `pull_request`,

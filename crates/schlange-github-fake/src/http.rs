@@ -511,6 +511,7 @@ pub(crate) fn required_permission(
             Some(("checks", level))
         }
         ["commits", _, "status"] => Some(("statuses", "read")),
+        ["actions", "runs", ..] => Some(("actions", "read")),
         ["git", ..] | ["merges"] | ["compare", ..] | ["contents", ..] | ["commits", ..] => {
             Some(("contents", level))
         }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# In the Actions runner: starts `schlange serve` against schlange-sandbox/schlange-e2e with
-# the sandbox queue app (credentials written by write-config.sh), in the background.
+# In the Actions runner: starts `schlange serve` against an active sandbox, or read-only
+# shadow observation on queue-lab, with the sandbox queue app, in the background.
 #
 #   bash sandbox/ci/start-schlange.sh [path of the schlange binary]
 #
@@ -12,10 +12,15 @@
 set -euo pipefail
 umask 077
 [ "${SANDBOX_ORG:-schlange-sandbox}" = schlange-sandbox ] || { echo 'refused: only schlange-sandbox' >&2; exit 1; }
-case "${SANDBOX_REPO:-schlange-e2e}" in
-  schlange-e2e|schlange-e2e-isolated) ;;
-  *) echo 'refused: unknown active sandbox repository' >&2; exit 1 ;;
+MODE="${SANDBOX_MODE:-active}"
+case "${SANDBOX_REPO:-schlange-e2e}:$MODE" in
+  schlange-e2e:active|schlange-e2e-isolated:active|queue-lab:shadow) ;;
+  *) echo 'refused: only active E2E repositories or shadow on queue-lab' >&2; exit 1 ;;
 esac
+mode_args=()
+if [ "$MODE" = shadow ]; then
+  mode_args=(--shadow --mergify-login 'mergify[bot]' --mergify-app mergify)
+fi
 BIN="${1:-target/release/schlange}"
 CONFIG="${SCHLANGE_SANDBOX_CONFIG:?run write-config.sh first}"
 TMP="${RUNNER_TEMP:?only in the runner}"
@@ -34,7 +39,7 @@ echo "::add-mask::$token"
 printf '%s' "$token" > "$TMP/admin-token"
 echo "SCHLANGE_ADMIN_TOKEN=$token" >> "${GITHUB_ENV:-/dev/null}"
 
-nohup "$BIN" serve \
+nohup "$BIN" serve "${mode_args[@]}" \
   --app-id "$app_id" \
   --private-key "$CONFIG/apps/queue.pem" \
   --webhook-secret-file "$CONFIG/apps/queue.webhook-secret" \
@@ -49,14 +54,16 @@ nohup "$BIN" serve \
 echo "$!" > "$TMP/schlange.pids"
 
 for _ in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-    echo "schlange serve is up ($REPO, reconcile every ${RECONCILE}s)"
+  if curl -fsS "http://127.0.0.1:$PORT/readyz" >/dev/null 2>&1; then
+    echo "schlange serve is ready ($REPO, $MODE, reconcile every ${RECONCILE}s)"
     echo "SCHLANGE_URL=http://127.0.0.1:$PORT" >> "${GITHUB_ENV:-/dev/null}"
     exit 0
   fi
   if ! kill -0 "$(head -1 "$TMP/schlange.pids")" 2>/dev/null; then
-    echo "::error::schlange serve exited"; grep -iE "error|panic|refus|fail" "$TMP/schlange-serve.log" | tail -n 20; exit 1
+    echo "::error::schlange serve exited; the full log remains private in the runner"
+    exit 1
   fi
   sleep 1
 done
-echo "::error::schlange serve did not answer /healthz"; grep -iE "error|panic|refus|fail" "$TMP/schlange-serve.log" | tail -n 20; exit 1
+echo "::error::schlange serve did not become ready; the full log remains private in the runner"
+exit 1
