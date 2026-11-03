@@ -252,8 +252,8 @@ def fetch_events(client, url, strict=False):
         if strict and (not isinstance(page, dict) or not isinstance(page.get("events"), list)):
             raise RuntimeError("invalid queue event log response")
         if strict and any(not isinstance(e, dict) or not isinstance(e.get("type"), str)
-                          or ("queue" in e["type"] and e["type"].endswith("enter")
-                              and not isinstance(e.get("pull_request"), int))
+                          or ("queue" in e["type"] and e["type"].endswith(("enter", "leave"))
+                              and type(e.get("pull_request")) is not int)
                           for e in page["events"]):
             raise RuntimeError("invalid queue event log entry")
         events += page.get("events", [])
@@ -669,13 +669,13 @@ def record(out):
     if m:
         url = (f"{MERGIFY_API}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
                f"&received_from={state['started']}")
-        trace["mergify_events"] = fetch_events(m, url)
+        trace["mergify_events"] = fetch_events(m, url, strict=True)
     # Schlange's event log (schlange-e2e): the same format, from its admin API in the runner.
     sc, base = schlange_client() if state["repo"] in ACTIVE_REPOS else (None, None)
     if sc:
         url = (f"{base}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
                f"&received_from={state['started']}")
-        trace["queue_events"] = fetch_events(sc, url)
+        trace["queue_events"] = fetch_events(sc, url, strict=True)
     (out / "trace.json").write_text(json.dumps(trace, indent=2, ensure_ascii=False))
     summary = {
         "prs": {k: {"number": v["number"], "end": "merged" if v["merged"] else v["state"], "labels": v["labels"],
@@ -714,6 +714,9 @@ def write_outcome(out):
             "dequeue_codes": [(e.get("metadata") or {}).get("dequeue_code") for e in left
                               if not (e.get("metadata") or {}).get("merged")] if events is not None else None,
         }
+        if trace["run"]["repo"] == "queue-lab" and v["merged"]:
+            merger = v.get("merged_by")
+            prs[k]["merged_by_mergify"] = merger == "mergify[bot]" if isinstance(merger, str) and merger else None
     landed = []
     for cm in reversed(trace["main"]):  # oldest first
         for num in re.findall(r"\(#(\d+)\)", cm["message"].split("\n")[0]):
@@ -909,9 +912,11 @@ def cmd_run(a):
     try:
         run.execute()
     finally:
-        record(out)
-        if not a.keep:
-            cleanup(a.org, a.repo, f"sbx/{out.name}/")
+        try:
+            record(out)
+        finally:
+            if not a.keep:
+                cleanup(a.org, a.repo, f"sbx/{out.name}/")
     write_outcome(out)
     # Timed-out observations cannot prove a baseline or compatibility.
     if getattr(run, "timed_out", False) and os.environ.get("SANDBOX_FAIL_ON_TIMEOUT") == "1":

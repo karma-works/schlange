@@ -47,6 +47,8 @@ def verify(report, recordings):
             row = by_number.get(number)
             if row is None:
                 raise ValueError(f'PR #{number} is missing from the shadow report')
+            if type(row.get('before_watching', False)) is not bool or row.get('before_watching', False):
+                raise ValueError(f'PR #{number} was not confirmed while shadow mode was watching')
             if row.get('verdict') != 'agree' or row.get('differences') != []:
                 verdict = row.get('verdict')
                 if verdict not in ('agree', 'disagree', 'pending', 'inconclusive'):
@@ -69,22 +71,38 @@ def verify(report, recordings):
                     raise ValueError(f'PR #{number} has inconsistent {field} agreement')
             if type(actual.get('queued')) is not bool or actual.get('end') not in ('open', 'closed', 'merged'):
                 raise ValueError('independent recording has no complete queue/landing evidence')
+            codes = actual.get('dequeue_codes')
+            if not isinstance(codes, list) or not all(isinstance(code, str) for code in codes):
+                raise ValueError('independent recording has no complete dequeue evidence')
+            entries = actual.get('enter_count')
+            if type(entries) is not int or entries != int(actual['queued']) or len(codes) > entries:
+                raise ValueError(f'PR #{number}: queue entry/dequeue history is not comparable')
             if (row.get('queued', {}).get('mergify') is not actual['queued']
                     or row.get('landed', {}).get('mergify') is not (actual['end'] == 'merged')):
                 raise ValueError(f'PR #{number}: observer differs from the independent queue events')
+            expected_reason = codes[-1] if codes else None
+            if row.get('dequeue_reason', {}).get('mergify') != expected_reason:
+                raise ValueError(f'PR #{number}: observer has a different dequeue reason')
             if actual['end'] == 'merged':
+                if actual.get('merged_by_mergify') is not True:
+                    raise ValueError(f'PR #{number}: independent recording does not prove a Mergify merge')
+                if codes:
+                    raise ValueError(f'PR #{number}: landed PR has an unverified dequeue history')
                 rank = row.get('order', {}).get('mergify')
                 if type(rank) is not int or rank <= 0:
                     raise ValueError(f'PR #{number}: missing landing rank')
                 ranks[key] = rank
+                reported_batch = row.get('batch', {}).get('mergify')
+                if (not isinstance(reported_batch, list) or not reported_batch
+                        or any(type(n) is not int or n <= 0 for n in reported_batch)
+                        or len(set(reported_batch)) != len(reported_batch)
+                        or number not in reported_batch):
+                    raise ValueError(f'PR #{number}: invalid landing batch')
                 successful_batches = [sorted(numbers[k] for k in batch['prs'])
                                       for batch in outcome.get('batches', [])
                                       if batch.get('ci_ok') == 'success']
-                if sorted(row.get('batch', {}).get('mergify', [])) not in successful_batches:
+                if sorted(reported_batch) not in successful_batches:
                     raise ValueError(f'PR #{number}: reported batch has no independent green evidence')
-            elif actual.get('dequeue_codes'):
-                if row.get('dequeue_reason', {}).get('mergify') != actual['dequeue_codes'][-1]:
-                    raise ValueError(f'PR #{number}: observer has a different dequeue reason')
         if (len(set(ranks.values())) != len(ranks)
                 or sorted(ranks, key=ranks.get) != outcome.get('landed')):
             raise ValueError('observer landing order differs from the independent recording')

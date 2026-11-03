@@ -60,8 +60,10 @@ for _ in $(seq 1 60); do
     exit 0
   fi
   if ! kill -0 "$(head -1 "$TMP/schlange.pids")" 2>/dev/null; then
-    echo "::error::schlange serve exited"; grep -iE "error|panic|refus|fail" "$TMP/schlange-serve.log" | tail -n 20; exit 1
+    echo "::error::schlange serve exited; the full log remains private in the runner"
+    exit 1
   fi
   sleep 1
 done
-echo "::error::schlange serve did not become ready"; grep -iE "error|panic|refus|fail" "$TMP/schlange-serve.log" | tail -n 20; exit 1
+echo "::error::schlange serve did not become ready; the full log remains private in the runner"
+exit 1
