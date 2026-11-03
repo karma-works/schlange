@@ -2704,6 +2704,7 @@ mod tests {
             ("contents", "write"),
             ("pull_requests", "write"),
             ("checks", "write"),
+            ("actions", "write"),
             ("statuses", "read"),
             ("administration", "read"),
         ]
@@ -2714,10 +2715,12 @@ mod tests {
         assert!(!p.contains_key("administration"));
         assert!(!p.contains_key("workflows"));
         assert_eq!(p.get("contents").map(String::as_str), Some("write"));
+        assert_eq!(p.get("actions").map(String::as_str), Some("read"));
         // Shadow mode asks for read access only, even from an app that could write.
         let p = token_permissions(&granted, true);
         assert_eq!(p.get("contents").map(String::as_str), Some("read"));
         assert_eq!(p.get("pull_requests").map(String::as_str), Some("read"));
+        assert_eq!(p.get("actions").map(String::as_str), Some("read"));
         assert!(p.values().all(|l| l == "read"), "{p:?}");
         assert!(ct_eq(b"abc", b"abc") && !ct_eq(b"abc", b"abd") && !ct_eq(b"a", b"ab"));
     }

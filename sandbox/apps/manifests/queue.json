@@ -8,6 +8,7 @@
     "pull_requests": "write",
     "issues": "write",
     "checks": "write",
+    "actions": "read",
     "statuses": "read",
     "workflows": "write"
   },

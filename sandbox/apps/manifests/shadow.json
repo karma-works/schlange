@@ -8,6 +8,7 @@
     "issues": "read",
     "pull_requests": "read",
     "checks": "read",
+    "actions": "read",
     "statuses": "read"
   },
   "default_events": [
