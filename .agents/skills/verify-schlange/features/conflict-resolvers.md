@@ -31,6 +31,7 @@ dequeueing the pull request.
 - `paths`
 - `package-manager`
 - `language`
+- The `csharp` language and strategy and the `maven` package manager are also missing.
 
 ## How to get to it (user POV)
 

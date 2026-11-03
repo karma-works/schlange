@@ -16,15 +16,15 @@
   ],
   "counts": {
     "action": 18,
-    "api": 79,
+    "api": 81,
     "attr": 76,
     "cli": 42,
     "cmd": 8,
     "config": 297,
     "default": 157,
-    "enum": 164
+    "enum": 167
   },
-  "total": 841,
+  "total": 846,
   "entries": [
     {
       "id": "action:assign",
@@ -267,6 +267,11 @@
       "tag": "merge_queue"
     },
     {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:GET /repos/{owner}/{repository}/queue/pause",
       "kind": "api",
       "tag": "queues",
@@ -441,6 +446,11 @@
     },
     {
       "id": "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/queue",
       "kind": "api",
       "tag": "merge_queue"
     },
@@ -4165,6 +4175,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:language:csharp",
+      "kind": "enum"
+    },
+    {
       "id": "enum:language:dockerfile",
       "kind": "enum"
     },
@@ -4294,6 +4308,10 @@
     },
     {
       "id": "enum:package-manager:gomod",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:maven",
       "kind": "enum"
     },
     {
@@ -4566,6 +4584,10 @@
     },
     {
       "id": "enum:strategy:cargo",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:csharp",
       "kind": "enum"
     },
     {

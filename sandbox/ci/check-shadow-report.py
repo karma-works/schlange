@@ -45,8 +45,20 @@ def verify(report, recordings):
         for key, number in numbers.items():
             selected.add(number)
             row = by_number.get(number)
-            if row is None or row.get('verdict') != 'agree' or row.get('differences') != []:
-                raise ValueError(f'PR #{number} has no complete agreement')
+            if row is None:
+                raise ValueError(f'PR #{number} is missing from the shadow report')
+            if row.get('verdict') != 'agree' or row.get('differences') != []:
+                verdict = row.get('verdict')
+                if verdict not in ('agree', 'disagree', 'pending', 'inconclusive'):
+                    verdict = 'invalid'
+                fields = ('queued', 'landed', 'order', 'batch', 'dequeue_reason')
+                different = [field for field in fields if isinstance(row.get(field), dict)
+                             and row[field].get('agree') is False]
+                before = row.get('before_watching')
+                before = str(before).lower() if type(before) is bool else 'unknown'
+                raise ValueError(f'PR #{number} has no complete agreement '
+                                 f'(verdict={verdict}, before_watching={before}, '
+                                 f'differing_fields={",".join(different) or "none"})')
             actual = outcome['prs'][key]
             for field in ('queued', 'landed', 'order', 'batch', 'dequeue_reason'):
                 comparison = row.get(field)

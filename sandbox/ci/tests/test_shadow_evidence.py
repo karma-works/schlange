@@ -54,6 +54,25 @@ class ShadowEvidenceTests(unittest.TestCase):
                 self.report['pull_requests'][0]['verdict'] = verdict
                 self.assertNotEqual(self.check().returncode, 0)
 
+    def test_failure_reports_safe_verdict_and_disagreeing_dimensions(self):
+        row = self.report['pull_requests'][0]
+        row['verdict'] = 'disagree'
+        row['queued']['agree'] = False
+        row['differences'] = ['untrusted diagnostic text']
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('PR #42', result.stderr)
+        self.assertIn('verdict=disagree', result.stderr)
+        self.assertIn('queued', result.stderr)
+        self.assertNotIn('untrusted diagnostic text', result.stderr)
+
+    def test_failure_does_not_print_unrecognized_verdict_text(self):
+        self.report['pull_requests'][0]['verdict'] = 'untrusted diagnostic text'
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('verdict=invalid', result.stderr)
+        self.assertNotIn('untrusted diagnostic text', result.stderr)
+
     def test_shared_observer_mistake_does_not_pass(self):
         row = self.report['pull_requests'][0]
         row['queued'] = {'schlange': False, 'mergify': False, 'agree': True}

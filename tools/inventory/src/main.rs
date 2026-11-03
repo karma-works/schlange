@@ -364,7 +364,7 @@ fn commands(md: &str, out: &mut BTreeMap<String, Entry>) -> Result<()> {
     let mut found = 0;
     for line in md.lines() {
         if line.starts_with("## ") {
-            in_list = line.trim() == "## Command List";
+            in_list = line.trim().eq_ignore_ascii_case("## Command List");
             continue;
         }
         if !in_list {
@@ -507,4 +507,35 @@ fn main() -> Result<ExitCode> {
         inventory["counts"]
     );
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod command_inventory_tests {
+    use super::commands;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn command_list_heading_accepts_capitalization_changes() {
+        for heading in ["Command List", "Command list"] {
+            let source = format!(
+                "## Unrelated\n- [ignore](./ignore)\n## {heading}\n- [One](./one)\n  - [Two](commands/two/)\n## After\n- [ignore](./later)\n"
+            );
+            let mut found = BTreeMap::new();
+            commands(&source, &mut found).unwrap();
+            assert_eq!(
+                found.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["cmd:one", "cmd:two"]
+            );
+        }
+    }
+
+    #[test]
+    fn command_list_still_fails_closed_if_missing_or_empty() {
+        for source in [
+            "## Different\n- [One](./one)",
+            "## Command list\nNo links here.",
+        ] {
+            assert!(commands(source, &mut BTreeMap::new()).is_err());
+        }
+    }
 }
