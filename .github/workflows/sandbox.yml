@@ -4,6 +4,8 @@ name: Sandbox
 # - queue-lab: Mergify active. Records Mergify's behaviour and, for every scenario that
 #   has a reviewed baseline in sandbox/baselines/, compares with it (reports when Mergify
 #   changes). Scenarios without a baseline are only recorded.
+#   With shadow_mode, a read-only Schlange observer runs alongside Mergify and its report
+#   is checked against the driver's independently collected queue events.
 # - schlange-e2e: Schlange active. The job builds the release binary and runs `schlange serve`
 #   with the queue app in the runner (no webhooks: it polls by reconciliation every 10 s).
 #   Every selected scenario needs a reviewed baseline; a missing baseline or wait timeout fails.
@@ -33,6 +35,10 @@ on:
         description: Report structured open-PR facts without changing the sandbox
         type: boolean
         default: false
+      shadow_mode:
+        description: Observe Mergify on queue-lab and verify the shadow report against driver recordings
+        type: boolean
+        default: false
       isolated_setup:
         description: Provision or maintain only the disposable E2E repository
         type: choice
@@ -58,6 +64,18 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate shadow selection
+        if: ${{ inputs.shadow_mode }}
+        env:
+          REPO: ${{ inputs.repo }}
+          INSPECT: ${{ inputs.inspect_only }}
+          UPDATE: ${{ inputs.update_fixture }}
+          SETUP: ${{ inputs.isolated_setup }}
+        run: |
+          test "$REPO" = queue-lab
+          test "$INSPECT" = false
+          test "$UPDATE" = false
+          test -z "$SETUP" || test "$SETUP" = none
       - name: Credentials from the secrets
         env:
           SANDBOX_QUEUE_APP: ${{ secrets.SANDBOX_QUEUE_APP }}
@@ -90,12 +108,12 @@ jobs:
           REPO: ${{ inputs.repo || 'queue-lab' }}
         run: python3 -I sandbox/driver/sandbox.py inspect-open --repo "$REPO"
       - name: Rust toolchain and cache (schlange-e2e)
-        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
       - name: Build schlange (schlange-e2e)
-        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: |
           tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see CI job mergify-drift)"
           cargo build --release --locked -p schlange
@@ -108,9 +126,10 @@ jobs:
         if: ${{ inputs.repo == 'schlange-e2e-isolated' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: python3 -I sandbox/driver/sandbox.py doctor --repo schlange-e2e-isolated
       - name: Start schlange serve (schlange-e2e)
-        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
           SANDBOX_REPO: ${{ inputs.repo }}
+          SANDBOX_MODE: ${{ inputs.shadow_mode && 'shadow' || 'active' }}
         run: bash sandbox/ci/start-schlange.sh target/release/schlange
       - name: State of the sandbox
         if: ${{ !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
@@ -132,8 +151,37 @@ jobs:
         run: |
           read -ra names <<<"$SCENARIOS"
           bash sandbox/ci/run-scenarios.sh "$REPO" "${names[@]}"
+      - name: Verify shadow report against independent Mergify recordings
+        if: ${{ always() && inputs.shadow_mode && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          curl -fsS -H "Authorization: Bearer $SCHLANGE_ADMIN_TOKEN" "$SCHLANGE_URL/status" \
+            > "$RUNNER_TEMP/shadow-status-private.json"
+          python3 -I - "$RUNNER_TEMP/shadow-status-private.json" "$RUNNER_TEMP/shadow-evidence/service.json" <<'PY'
+          import json, sys
+          source = json.load(open(sys.argv[1]))['schlange-sandbox/queue-lab']
+          fields = ('role', 'shadow_suppressed', 'writes_refused', 'config_error', 'config_warnings', 'reconciliations')
+          result = {key: source[key] for key in fields}
+          with open(sys.argv[2], 'w') as destination:
+              json.dump(result, destination, indent=2)
+          assert result['role'] == 'shadow', 'service is not in shadow mode'
+          assert result['writes_refused'] == 0, 'shadow attempted a forbidden write'
+          assert result['shadow_suppressed'] > 0, 'no suppressed decisions were observed'
+          assert result['config_error'] is None, 'shadow configuration is invalid'
+          PY
+          for attempt in $(seq 1 12); do
+            target/release/schlange shadow report --json --repo schlange-sandbox/queue-lab \
+              --data-dir "$RUNNER_TEMP/schlange-data" > "$RUNNER_TEMP/shadow-evidence/report.json" || true
+            if python3 -I sandbox/ci/check-shadow-report.py "$RUNNER_TEMP/shadow-evidence/report.json" \
+                "$RUNNER_TEMP/sandbox-runs" > "$RUNNER_TEMP/shadow-evidence/verification.json"; then
+              cat "$RUNNER_TEMP/shadow-evidence/verification.json"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
       - name: Stop schlange serve, show the end of its log
-        if: ${{ always() && (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated') }}
+        if: ${{ always() && (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) }}
         run: |
           if [ -f "$RUNNER_TEMP/schlange.pids" ]; then xargs -r kill < "$RUNNER_TEMP/schlange.pids" || true; fi
           # The log mentions pull request titles and bodies: the public job log gets only
@@ -152,5 +200,6 @@ jobs:
             ${{ runner.temp }}/sandbox-runs/*/outcome.json
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
-          retention-days: 14
+            ${{ runner.temp }}/shadow-evidence/*.json
+          retention-days: 90
           if-no-files-found: ignore

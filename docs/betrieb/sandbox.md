@@ -217,7 +217,7 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   `schlange-e2e` and `schlange-e2e-isolated`, whether Schlange behaves like Mergify (`sandbox.py compare`).
 - **Schedule:** Sundays, all scenarios on `queue-lab` (about 3–4 hours; free in a public
   repo).
-- **Result:** table in the job summary. As an artifact (14 days) only `outcome.json`,
+- **Result:** table in the job summary. As an artifact (90 days) only `outcome.json`,
   `run.json` and `scenario.json`; `trace.json` and `summary.json` contain Mergify texts and
   stay in the runner. For the full recording, run the scenario locally.
 - **Security:** the workflow starts only through `workflow_dispatch` (write access needed) and
@@ -233,6 +233,44 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   failure (as it does for Mergify itself), so nothing is queued and every `schlange-e2e`
   scenario times out. Fix by hand: Mergify installation, "Only select repositories",
   `queue-lab` only.
+
+### Validate the real shadow observer
+
+Run the same workflow with `repo=queue-lab` and `shadow_mode=true`, for example:
+
+```bash
+gh workflow run sandbox.yml --ref <reviewed-branch-or-commit> \
+  -f repo=queue-lab -f shadow_mode=true \
+  -f scenarios="s01-single-pr s08-constitution-and-commands s09-red-checks"
+```
+
+The observer uses `serve --shadow`, downscoped read-only installation tokens and the shadow
+write gate. Only the sandbox queue app is used. This is a sandbox rehearsal; Arztagent's
+deployment still needs its separate read-only app. The source app registration itself has
+write permissions for the separate active E2E repository, so the rehearsal does not prove
+that the production shadow app's registration is read-only.
+
+The workflow refuses shadow mode on any other repository, combined fixture reset, inspection
+or provisioning. It shares queue-lab's concurrency lock with reference runs. It records the
+CLI report and a service summary (shadow role, suppressed decisions, refused writes and config
+status), without publishing engine state or upstream comment texts. Every selected scenario PR
+must have an `agree` verdict. Pending, inconclusive, missing or timed-out evidence fails.
+`check-shadow-report.py` also compares what the observer says Mergify did with the driver's
+independent Mergify event-log outcome: queue entry, merge, relative landing order, green batch
+membership and the final dequeue reason. Matching two incorrectly interpreted observer values
+is therefore insufficient. Queue entry counts remain part of the separate active comparison.
+
+Both sandbox modes currently poll by reconciliation, not webhooks. A successful rehearsal is
+evidence for reading/reporting decisions, not for webhook ingress or full two-week acceptance.
+New artifacts are retained for 90 days. Preserve the run URL, source SHA, scenario, run metadata
+and comparison output when reviewing a baseline; a successful workflow without a reference
+means only that a recording was made.
+
+Workflow dispatch in S14 and S15 needs repository **Actions: read and write** on the sandbox
+human token. **Workflows: write** permits editing workflow files and does not grant dispatch.
+Keep the token limited to `schlange-sandbox`, and update the `SANDBOX_HUMAN_TOKEN` Actions secret
+after changing its permissions. Never substitute an unrestricted account token for scenario
+actors.
 
 ## Results of the first full comparison (2026-10-28)
 
