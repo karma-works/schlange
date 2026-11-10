@@ -10,17 +10,24 @@ inventory:
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}"
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue-impact"
   - "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue"
+  - "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/queue"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
   - "api:GET /repos/{owner}/{repository}/queues"
   - "api:GET /repos/{owner}/{repository}/queues/branches"
   - "api:GET /repos/{owner}/{repository}/queues/configuration"
   - "cli:mergify queue status"
   - "cli:mergify queue show"
+  - "cli:mergify queue add"
+  - "cli:mergify queue remove"
 unsupported:
   - "api:GET /repos/{owner}/{repository}/merge-queue/branches"
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/*"
   - "api:POST /repos/{owner}/{repository}/merge-queue/pull/*"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
   - "api:GET /repos/{owner}/{repository}/queues*"
   - "cli:mergify queue show"
+  - "cli:mergify queue add"
+  - "cli:mergify queue remove"
 problems:
   - "MQ-43"
   - "W-13"
@@ -30,13 +37,14 @@ source: "https://docs.mergify.com/api-usage"
 
 # Queue status through API and CLI
 
-Read the state of the queue, of single pull requests and the effect of a dequeue; dequeue a pull
-request through the API.
+Read the state of the queue, of single pull requests and the effect of a dequeue; list the open
+pull requests nobody has queued yet; queue and dequeue a pull request through the API or the CLI.
 
 ## Sub-features
 
 - `status`: built. `schlange_core::status::queue_status` gives the documented shape in our own words: `mode`, `batches` (id = car id, name = queue branch, `parent_ids`, `status.code` mapped onto the documented codes: `preparing`, `running`, `waiting_for_merge`, `waiting_for_previous_batches`, `frozen`, `failed`, `bisecting`, `waiting_for_requeue`, `started_at`, `scopes`, `queue_rule_name`, `checks_summary`, `pull_requests`, `queue_pull_request_number`), `waiting_pull_requests` (number, title, `queued_at`, `priority_alias`, `priority_rule_name`, `scopes`, `all_scopes`, `is_frozen`), `pause`; plus `freezes`, `halted` and a `held` text per pull request. `schlange serve` serves it at `GET /repos/{owner}/{repo}/merge-queue/status` behind the admin token (401 without, 404 without a configured token); `schlange queue status [--json]` prints it.
 - `pull-request`, `dequeue-impact`, `dequeue`, `configuration`, `branches`: missing.
+- `queue`, `unqueued`: missing. Queueing through the API (like the `queue` command) and the list of open pull requests that wait to be queued, both new in the sources pinned on 2026-11-10; the CLI counterparts `queue add` and `queue remove` as well. Comment commands remain the way to queue and dequeue ([commands](commands.md)).
 - `estimates`: missing (`estimated_merge_at` and the like are not reported).
 
 ## How to get to it (user POV)

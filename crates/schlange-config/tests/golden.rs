@@ -103,54 +103,25 @@ fn arztagent_is_valid_and_strict_exit_codes() {
     assert_eq!(strict.exit_code, exit::UNSUPPORTED);
 }
 
+/// The schema pinned on 2026-11-10 dropped the experimental `merge_queue.batch_pull_request`
+/// (now a setting of the merge queue settings API) and `merge_queue.resolve_conflicts`. Whatever
+/// their value, they are unknown keys: invalid for Mergify, so invalid here. The experimental
+/// `conflict_resolvers` remain, and every kind of entry is reported as not built.
 #[test]
 fn experimental_merge_queue_options_are_not_silently_supported() {
     let schema = schema();
     let features = FeatureMap::embedded().unwrap();
-    for (setting, expected) in [
-        (
-            "batch_pull_request: true",
-            "config:merge_queue.batch_pull_request",
-        ),
-        (
-            "batch_pull_request: false",
-            "config:merge_queue.batch_pull_request",
-        ),
-        (
-            "resolve_conflicts: {}",
-            "config:merge_queue.resolve_conflicts",
-        ),
-        (
-            "resolve_conflicts: {pull_requests: none, comment: false}",
-            "config:merge_queue.resolve_conflicts",
-        ),
+    for (setting, key) in [
+        ("batch_pull_request: true", "batch_pull_request"),
+        ("batch_pull_request: false", "batch_pull_request"),
+        ("batch_pull_request: null", "batch_pull_request"),
+        ("resolve_conflicts: {}", "resolve_conflicts"),
         (
             "resolve_conflicts: {pull_requests: queueable}",
-            "config:merge_queue.resolve_conflicts",
+            "resolve_conflicts",
         ),
-        (
-            "resolve_conflicts: {pull_requests: all, comment: true}",
-            "config:merge_queue.resolve_conflicts",
-        ),
+        ("resolve_conflicts: null", "resolve_conflicts"),
     ] {
-        let src = format!("merge_queue:\n  {setting}\n");
-        let report = validate("t.yml", &src, &schema, &features, true);
-        assert_eq!(
-            report.exit_code,
-            exit::UNSUPPORTED,
-            "{setting}: {}",
-            report.to_text()
-        );
-        assert!(
-            report
-                .support
-                .iter()
-                .any(|r| r.id == expected && !r.supported),
-            "{setting}: {}",
-            report.to_text()
-        );
-    }
-    for setting in ["batch_pull_request: null", "resolve_conflicts: null"] {
         let src = format!("merge_queue:\n  {setting}\n");
         let report = validate("t.yml", &src, &schema, &features, true);
         assert_eq!(
@@ -159,6 +130,43 @@ fn experimental_merge_queue_options_are_not_silently_supported() {
             "{setting}: {}",
             report.to_text()
         );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.stage == schlange_config::validate::Stage::Schema
+                    && f.pointer == format!("/merge_queue/{key}")),
+            "{setting}: {}",
+            report.to_text()
+        );
+    }
+    for (entry, expected) in [
+        (
+            "paths: [Cargo.lock]\n    strategy: cargo",
+            "config:conflict_resolvers.strategy",
+        ),
+        (
+            "package-manager: npm\n    directories: [/]",
+            "config:conflict_resolvers.package-manager",
+        ),
+        ("language: rust", "config:conflict_resolvers.language"),
+        ("auto: true", "config:conflict_resolvers.auto"),
+    ] {
+        let src = format!("conflict_resolvers:\n  - {entry}\n");
+        let report = validate("t.yml", &src, &schema, &features, true);
+        assert_eq!(
+            report.exit_code,
+            exit::UNSUPPORTED,
+            "{entry}: {}",
+            report.to_text()
+        );
+        for id in ["config:conflict_resolvers", expected] {
+            assert!(
+                report.support.iter().any(|r| r.id == id && !r.supported),
+                "{entry}: {id}: {}",
+                report.to_text()
+            );
+        }
     }
 }
 

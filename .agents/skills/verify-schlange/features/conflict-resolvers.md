@@ -5,10 +5,6 @@ priority: P2
 arztagent: false
 status: missing
 inventory:
-  - "config:merge_queue.resolve_conflicts"
-  - "config:merge_queue.resolve_conflicts.*"
-  - "default:merge_queue.resolve_conflicts.*"
-  - "enum:pull_requests:*"
   - "config:conflict_resolvers"
   - "config:conflict_resolvers.*"
   - "default:conflict_resolvers.*"
@@ -27,10 +23,12 @@ dequeueing the pull request.
 
 ## Sub-features
 
-- `merge-queue-resolve-conflicts`: missing. Explicit `merge_queue.resolve_conflicts` settings, including an empty object, are reported as unsupported.
-- `paths`
-- `package-manager`
-- `language`
+- `paths`, `directories`: missing.
+- `strategy`: missing.
+- `package-manager`: missing.
+- `language`: missing.
+- `auto`: missing. A fourth kind of entry, `auto: true` with optional `directories`, added to the schema pinned on 2026-11-10.
+- `merge_queue.resolve_conflicts` was dropped from that schema; `config validate` rejects it as an unknown key (exit 1).
 
 ## How to get to it (user POV)
 
