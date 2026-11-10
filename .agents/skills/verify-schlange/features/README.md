@@ -82,7 +82,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 
 ## Features
 
-86 files: P1 36, P2 45, P3 5.
+87 files: P1 36, P2 46, P3 5.
 
 | Priority | Feature | Status | Arztagent |
 |---|---|---|---|
@@ -163,6 +163,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P2 | [Queue modes `parallel` and `isolated`](queue-modes.md) | partial |  |
 | P2 | [Pause the queue](queue-pause.md) | partial |  |
 | P2 | [Priorities (`priority_rules`)](queue-priority.md) | partial |  |
+| P2 | [Merge queue settings through the API](queue-settings-api.md) | missing |  |
 | P2 | [Skip intermediate results](queue-skip-intermediate.md) | partial |  |
 | P2 | [Queue status through API and CLI](queue-status-api.md) | partial |  |
 | P2 | [Update method of a pull request](queue-update-method.md) | missing |  |

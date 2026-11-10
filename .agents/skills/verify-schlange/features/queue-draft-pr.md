@@ -9,10 +9,6 @@ inventory:
   - "config:queue_rules.allow_inplace_checks"
   - "default:queue_rules.queue_branch_prefix"
   - "default:queue_rules.allow_inplace_checks"
-  - "config:merge_queue.batch_pull_request"
-  - "default:merge_queue.batch_pull_request"
-unsupported:
-  - "config:merge_queue.batch_pull_request"
 problems:
   - "MQ-18"
   - "MQ-36"
@@ -36,7 +32,7 @@ one pull request at a time in serial mode without retries and with single-step C
 - `draft-pr`: built in the simulated forge (one draft per car); the exact title and body Mergify writes are not reproduced.
 - `in-place`: built. Computed, not configured: only when `max_parallel_checks` is 1, mode `serial`, batch size 1 (the max of a range), `max_checks_retries` 0 and `merge_conditions` empty or equal to `queue_conditions`, and the pull request is up to date with its base; then no queue branch and no draft. A pull request behind its base is tested through a draft instead of being updated in place (deviation, see `p1-in-place.yaml`).
 - `allow-inplace-checks`: the deprecated option is accepted and ignored, as the documentation says the value is computed; not flagged by `config validate`.
-- `batch-pull-request`: missing (listed as `unsupported`). The schema marks `batch_pull_request` as experimental, with a default of `true`, but does not describe its behavior. Explicit `true` and `false` settings are flagged. The implicit default is accepted for compatibility; its parity has not been verified.
+- `batch-pull-request`: not a configuration option any more. The schema pinned on 2026-11-10 dropped `merge_queue.batch_pull_request`, so `config validate` rejects it as an unknown key (exit 1); the switch now lives in the merge queue settings API ([queue-settings-api](queue-settings-api.md)). Schlange has no such switch and always opens one draft per batch, as the option's earlier default (`true`) did; parity with Mergify's behavior has not been verified.
 - `cleanup`: built. Queue branch and draft disappear after landing, failure, dequeue, reset and foreign push; I3 checks it after every step.
 
 ## How to get to it (user POV)
