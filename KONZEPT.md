@@ -51,7 +51,7 @@ Abgeleitet aus `arzt-agent/.mergify.yml`, `ci.yml`, `pr-gate.yml`, `ai-review.ym
   vom Validator als „nicht unterstützt“ gemeldet.
 
 **Queue (`queue_rules`)**
-- `name`, `merge_method: squash`, `batch_size: 5`, `batch_max_wait_time: 5 minutes`.
+- `name`, `merge_method: squash`, `batch_size: 3`, `batch_max_wait_time: 2 minutes`.
 - Two-Step-CI: `queue_conditions` (Einreihen) und `merge_conditions` (auf dem Queue-PR).
 - Queue-PRs als Entwurfs-PR auf `mergify/merge-queue/<10 hex>`; sie erzeugen
   `pull_request`-Events, auf die `ci.yml` (`mode=full`), `ai-review.yml` und `pr-gate.yml`
@@ -65,9 +65,9 @@ Abgeleitet aus `arzt-agent/.mergify.yml`, `ci.yml`, `pr-gate.yml`, `ai-review.ym
   Status-Kommentare wie Mergify.
 
 **Bedingungen**
-- Attribute: `base`, `draft`, `label`, `#check-failure`, `check-success`, `author`, `files`,
+- Attribute: `base`, `draft`, `label`, `check-failure`, `check-success`, `author`, `files`,
   `dependabot-update-type`, `sender`.
-- Operatoren `=`, `~=`, Negation `-`, Längenoperator `#`, Kombinator `or`.
+- Operatoren `=`, `~=`, Negation `-`, Kombinator `or`.
 - Check-Semantik exakt wie Mergify: neueste Check-Suite, `check-failure` umfasst auch
   cancelled, timed-out und action_required; „skipped“ ist kein Erfolg.
 

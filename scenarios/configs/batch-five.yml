@@ -1,0 +1,26 @@
+# Two-step CI with batches of up to five and a five-minute wait (Arztagent's values until its
+# #1851; the golden copy of its configuration now has three and two minutes). Quick checks on
+# the pull request queue it, `ci-ok` on the queue draft merges it.
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 5
+    batch_max_wait_time: 5 minutes
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - "#check-failure = 0"
+      - check-success = ci-ok
+      - check-success = Risk class and data protection
+      - check-success = KI-Review
+    merge_conditions:
+      - check-success = ci-ok
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - base = main
+      - author = arztagent-bot
+    actions:
+      queue:

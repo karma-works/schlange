@@ -1,0 +1,55 @@
+# Arztagent's real `.mergify.yml` holds a pull request out of the queue while any check on it
+# is red, except the Journeys (`-check-failure ~= ^(?!verify-arztagent journeys$)`, Arztagent
+# #1851): they are informational and not required to merge.
+# #1: only `verify-arztagent journeys` fails on the pull request; it is queued and lands.
+# #2: `Scanners` fails on the pull request; it never enters the queue.
+# #3: the Journeys and `Scanners` fail; the Journeys exception does not cover `Scanners`.
+name: p1-arztagent-journeys-informational
+description: A red Journeys check does not hold a pull request; any other red check does.
+config: ../crates/schlange-config/tests/golden/arztagent.yml
+
+ci:
+  - check: Risk class and data protection
+    duration: 1m
+  - check: ci-ok
+    duration: 3m
+    runs_on: pull_request
+  - check: ci-ok
+    duration: 20m
+    runs_on: queue
+  - check: KI-Review
+    duration: 5m
+    runs_on: pull_request
+  - check: verify-arztagent journeys
+    duration: 8m
+    runs_on: pull_request
+  - check: Scanners
+    duration: 2m
+    runs_on: pull_request
+
+pull_requests:
+  - number: 1
+    author: arztagent-bot
+    files: { backend/a.py: "a = 1\n" }
+    checks: { verify-arztagent journeys: failure }
+  - number: 2
+    author: arztagent-bot
+    files: { backend/b.py: "b = 1\n" }
+    checks: { Scanners: failure }
+  - number: 3
+    author: karma-works
+    files: { docs/c.md: "c\n" }
+    checks: { verify-arztagent journeys: failure, Scanners: failure }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+
+expect:
+  - { pr: 1, state: merged, queue: default }
+  - { pr: 2, state: open, queued: false }
+  - { pr: 3, state: open, queued: false }
+expect_merged_order: [1]
+expect_log:
+  - "check `verify-arztagent journeys` completed"
