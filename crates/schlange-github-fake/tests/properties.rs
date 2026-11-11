@@ -196,8 +196,8 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------------------
-// A bors-style stress test with Arztagent's real `.mergify.yml` (batch of five, `ci-ok` on the
-// draft, `#check-failure = 0`, the constitution regex): many pull requests, a full suite that
+// A bors-style stress test with Arztagent's real `.mergify.yml` (batch of three, `ci-ok` on the
+// draft, `-check-failure`, the constitution regex): many pull requests, a full suite that
 // breaks for marked pull requests, checks that fail once and then pass (flakes), pushes while
 // queued, a moving base, drafts, `halt`, API faults, webhook faults and restarts of `serve`
 // (a crash: memory lost, the journal stays). Whatever happens, I0 (every commit on the base is
@@ -273,7 +273,7 @@ fn arztagent_tester(drop: f64, duplicate: f64, delay_ms: u64, seed: u64) -> Test
             CiOn::Both,
         ))
         // A red check on the pull request itself keeps it out (`check-success = ci-ok`,
-        // `#check-failure = 0`).
+        // `-check-failure`).
         .ci(CiRule::fails_on("ci-ok", CiOn::PullRequest, "RED_PR_CHECK"))
         .ci(full_suite)
         .ci(CiRule::success("KI-Review", CiOn::PullRequest))
@@ -417,7 +417,8 @@ proptest! {
 /// once) and a restart in the middle, the broken one never lands, the pull requests that
 /// share no batch with the flake land, and the base only ever holds tested trees. A flake in
 /// a batch whose every split passes blames the batch's last pull request, as Mergify does
-/// (`queue-bisection`, Gotchas): such a pull request (#7 here) may be dequeued, no other.
+/// (`queue-bisection`, Gotchas): such a pull request may be dequeued, no other. With batches
+/// of three the flake (#5) shares a batch with #4 and #6, so #6 is that pull request.
 #[test]
 fn arztagent_stress_scenario_lands_the_good_pull_requests() {
     let mut t = arztagent_tester(0.0, 0.0, 0, 1).start();
@@ -445,7 +446,7 @@ fn arztagent_stress_scenario_lands_the_good_pull_requests() {
         let n = prs[i];
         if *kind == 1 {
             assert!(!landed.contains(&n), "the broken #{n} landed");
-        } else if i != 6 {
+        } else if i != 5 {
             assert!(
                 landed.contains(&n),
                 "#{n} (kind {kind}) did not land: {landed:?}"

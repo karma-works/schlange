@@ -1,0 +1,91 @@
+name: schlange
+services:
+  schlange:
+    image: ${SCHLANGE_IMAGE:?set a locally built image or immutable registry digest}
+    user: "65532:65532"
+    command:
+      - serve
+      - --private-key
+      - /run/secrets/app-key.pem
+      - --webhook-secret-file
+      - /run/secrets/webhook-secret
+      - --admin-token-file
+      - /run/secrets/admin-token
+    environment:
+      SCHLANGE_GITHUB_APP_ID: ${SCHLANGE_GITHUB_APP_ID:?set the numeric GitHub App ID}
+      SCHLANGE_REPOS: ${SCHLANGE_REPOS:?set owner/name}
+      SCHLANGE_SHADOW: ${SCHLANGE_SHADOW:-true}
+      SCHLANGE_DATA_DIR: /data
+      SCHLANGE_LISTEN: 0.0.0.0:8080
+      HTTPS_PROXY: http://egress:3128
+      HTTP_PROXY: http://egress:3128
+      https_proxy: http://egress:3128
+      http_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+    volumes:
+      - ${SCHLANGE_ROOT:-/var/lib/schlange}/data:/data
+      - ${SCHLANGE_SECRETS:-/etc/schlange/secrets}/app-key.pem:/run/secrets/app-key.pem:ro
+      - ${SCHLANGE_SECRETS:-/etc/schlange/secrets}/webhook-secret:/run/secrets/webhook-secret:ro
+      - ${SCHLANGE_SECRETS:-/etc/schlange/secrets}/admin-token:/run/secrets/admin-token:ro
+    # Admin API is reachable only on the host; Caddy exposes only POST /webhook.
+    ports: ["127.0.0.1:18080:8080"]
+    networks: [queue]
+    depends_on: [egress]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    stop_grace_period: 45s
+    logging: &logs
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+
+  ingress:
+    image: ${CADDY_IMAGE:?set a reviewed Caddy image digest}
+    user: "65532:65532"
+    command: [caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+    environment:
+      SCHLANGE_HOST: ${SCHLANGE_HOST:?set the public webhook DNS name}
+      ACME_EMAIL: ${ACME_EMAIL:?set the TLS certificate contact}
+    ports: ["80:8080", "443:8443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${SCHLANGE_ROOT:-/var/lib/schlange}/tls:/data
+    tmpfs: ["/tmp:uid=65532,gid=65532,mode=0700,noexec,nosuid,size=16m"]
+    networks: [queue, public]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    logging: *logs
+
+  egress:
+    image: ${SQUID_IMAGE:?set a reviewed Ubuntu Squid image digest}
+    user: "65532:65532"
+    entrypoint: [squid, -N, -f, /etc/squid/squid.conf]
+    volumes: ["./squid.conf:/etc/squid/squid.conf:ro"]
+    tmpfs: ["/tmp:uid=65532,gid=65532,mode=0700,noexec,nosuid,size=16m"]
+    networks: [queue, outbound]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    logging: *logs
+
+networks:
+  # Schlange has no external network or direct internet route. Only egress can forward
+  # requests; ingress accepts webhook traffic but is not a forward proxy.
+  queue:
+    internal: true
+  public: {}
+  outbound: {}

@@ -31,10 +31,17 @@ compares that with what Mergify did, per pull request.
   (`crate::lease::ShadowGate`) refuses every request but a `GET` (installation tokens
   excepted) before it is sent, and panics in tests.
 - `observe-mergify`: built, as our reading of what GitHub shows (to be confirmed on the
-  sandbox): drafts by `--mergify-login` on the queue prefix list their pull requests as `#n`;
+  sandbox): drafts by `--mergify-login` on `ShadowConfig::mergify_queue_prefix` list their
+  pull requests in the title's terminal `(#n, #m)` list or a dedicated embarkment section;
+  the title list takes precedence over body sections about PRs ahead. Incidental references in member titles
+  and other body sections are ignored;
   pull requests merged by that login landed through Mergify (`merged_by`, `merged_at`);
-  Mergify's check run (app `--mergify-app`) on a pull request means queued; a dequeue code in
-  a concluded run's title or summary is the reason it left.
+  only confirmed draft membership means queued. Generic `Summary` and rule-evaluation runs
+  are never queue evidence. A known literal dequeue code in a concluded run's title or
+  summary is recorded once per GitHub check-run ID, including for closed PRs whose heads
+  come from the recent-pulls read. Literal `PR_CLOSED` is preserved as observer evidence
+  even though the engine currently calls this path assumed `PR_DEQUEUED`; this produces
+  an honest disagreement pending sandbox evidence. Missing codes are not inferred from prose.
 - `compare`: built. Per pull request: queued, landed, landing order (rank among the pull
   requests both landed; Mergify's merges in one second keep their batch's order), the batch
   it landed in, the dequeue code. Verdicts `agree`, `disagree`, `inconclusive` (Mergify merged
@@ -42,7 +49,7 @@ compares that with what Mergify did, per pull request.
   `schlange shadow report [--json]` (exit 1 on a disagreement) and
   `GET /repos/{owner}/{repo}/shadow/report` behind the admin token.
 - `read-only-app`: built. A read-only app (metadata, contents, issues, pull requests,
-  checks, statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for
+  checks, actions, statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for
   read-only installation tokens, `schlange doctor --shadow` accepts the app and warns about any
   write permission, and skips the ruleset exception. Tests: `cargo test -p schlange-github-fake
   --test shadow a_read_only_app_is_enough_for_shadow_mode` (the fake GitHub refuses endpoints
@@ -80,7 +87,21 @@ Preconditions:
 
 ## Gotchas
 
-- The scripted other queue in the fake is ours; Mergify's real check-run names and draft
-  descriptions must be confirmed on the sandbox before the comparison means anything.
+- The scripted other queue in the fake is ours. The strict embarkment parser currently
+  accepts a terminal parenthesized PR-number list in the title (including the issue's
+  concrete `Fix #412 (#500)` example), otherwise its explicit
+  `Embarked pull requests:` body section with one leading `#n` or
+  `#n: title` entry per line; it stops at an empty line or another section. Real draft
+  formatting must be confirmed on the sandbox before adding a format adapter. Unrecognized
+  formats produce no membership facts, rather than scraping arbitrary references.
+- Check-only queue entry before draft creation remains unobserved until an unambiguous
+  real queue-check format is verified. Dequeue outputs containing no known literal code
+  likewise remain unobserved; no production equivalence is claimed for these cases.
+- Regression tests cover generic summary/rule runs, incidental issue references, nonqueue
+  bot branches, closed queued PRs and repeated reconciliation of completed check-run IDs.
+  These tests are fake-GitHub evidence, not a replacement for real sandbox rehearsal.
+- Persisted facts from an older observer are retained, including potentially false queue
+  or batch observations. Archive that database and use a fresh shadow data directory for
+  acceptance after this fix; historical disagreements are not silently rewritten.
 - Schlange cannot test its own drafts in shadow; a batch Mergify never built stays pending.
 - Two weeks without a differing decision are the acceptance of phase 1.

@@ -364,7 +364,8 @@ fn commands(md: &str, out: &mut BTreeMap<String, Entry>) -> Result<()> {
     let mut found = 0;
     for line in md.lines() {
         if line.starts_with("## ") {
-            in_list = line.trim() == "## Command List";
+            // The heading's capitalisation has changed between docs releases.
+            in_list = line.trim().eq_ignore_ascii_case("## Command List");
             continue;
         }
         if !in_list {

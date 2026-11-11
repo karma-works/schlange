@@ -35,8 +35,8 @@ container `schlange:verify` (musl, `FROM scratch`, user 65532) and checks its si
 ## 2. Doctor
 
 `$V doctor [--image]` runs `schlange doctor` on the binary and, with `--image`, inside the
-container read-only with all capabilities dropped (`no-new-privileges` is left out on the VPS, where it breaks exec for every image). Green means no FAIL line. WARN for the
-missing schema in the container is expected; SKIP lines name checks not built yet. A FAIL is a
+container read-only with all capabilities dropped (`no-new-privileges` is left out on the VPS, where it breaks exec for every image). Green means no FAIL line. The container's embedded clean-room runtime validator reports
+OK without an upstream schema; SKIP lines name checks not built yet. A FAIL is a
 reason to fix, not to drive anyway.
 
 ## 3. Drive

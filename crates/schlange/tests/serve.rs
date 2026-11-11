@@ -277,3 +277,108 @@ fn serve_without_credentials_is_an_environment_error() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--app-id"));
 }
+
+#[test]
+fn serve_without_upstream_schema_keeps_last_valid_repository_config() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let dir = std::env::temp_dir().join(format!("schlange-embedded-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let valid = include_str!("../../schlange-config/tests/golden/arztagent.yml");
+    gh.push_base(&[(".mergify.yml".into(), valid.into())]);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_schlange"));
+    env_for(&mut cmd, &gh);
+    cmd.arg("serve")
+        .current_dir(&dir) // no .research directory in this directory or its ancestors
+        .env("SCHLANGE_LISTEN", format!("127.0.0.1:{port}"))
+        .env("SCHLANGE_WEBHOOK_SECRET", "fake-webhook-secret")
+        .env("SCHLANGE_DATA_DIR", dir.join("data"))
+        .env("SCHLANGE_ADMIN_TOKEN", "runtime-test-admin-token")
+        .args(["--reconcile-every", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _child = Kill(cmd.spawn().unwrap());
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build(),
+    );
+    let status = || -> Option<serde_json::Value> {
+        agent
+            .get(format!("http://127.0.0.1:{port}/status"))
+            .header("authorization", "Bearer runtime-test-admin-token")
+            .call()
+            .ok()?
+            .body_mut()
+            .read_to_string()
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+    };
+    let wait = |error: bool| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(value) = status() {
+                if let Some(worker) = value.as_object().and_then(|w| w.values().next()) {
+                    if worker["last_reconcile"].is_number()
+                        && worker["config_error"].is_string() == error
+                    {
+                        return worker.clone();
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "runtime config state not reached: {:?}",
+                status()
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    };
+    wait(false);
+    for invalid in [
+        format!("{valid}unknown_option: true\n"),
+        valid.replace("merge_method: squash", "merge_method: false"),
+        valid.replace("base = main", "nosuchattribute = main"),
+    ] {
+        gh.push_base(&[(".mergify.yml".into(), invalid)]);
+        let worker = wait(true);
+        assert!(
+            worker["config_error"]
+                .as_str()
+                .unwrap()
+                .contains("last valid"),
+            "{worker}"
+        );
+        gh.push_base(&[(".mergify.yml".into(), valid.into())]);
+        wait(false);
+    }
+    let mut doctor = Command::new(env!("CARGO_BIN_EXE_schlange"));
+    env_for(&mut doctor, &gh);
+    let out = doctor
+        .current_dir(&dir)
+        .args(["doctor", "--offline", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let schema = value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "schema")
+        .unwrap();
+    assert_eq!(schema["status"], "OK");
+    assert!(schema["detail"].as_str().unwrap().contains("embedded"));
+    drop(_child);
+    gh.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}

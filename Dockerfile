@@ -28,8 +28,8 @@ USER 65532:65532
 WORKDIR /data
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 # `serve` keeps its SQLite database (journal, snapshots, webhook dedup, audit) here; mount a
-# volume so a restart resumes from it. The Mergify schema is not in the image: mount it and
-# set SCHLANGE_SCHEMA, `serve` does not start without it.
+# volume so a restart resumes from it. Runtime validation uses Schlange's embedded contract.
+# An optional upstream schema can be mounted for explicit validation; no Mergify file is baked in.
 ENV SCHLANGE_DATA_DIR=/data
 VOLUME ["/data"]
 # --offline: the health check must not spend GitHub rate limit every 30 seconds.

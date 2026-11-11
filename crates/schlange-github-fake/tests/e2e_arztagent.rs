@@ -1,7 +1,8 @@
 //! Arztagent's `.mergify.yml` (the golden copy), the parts the other end-to-end tests do not
 //! pin down, over HTTP against the fake GitHub: Dependabot update types, the
-//! `KI-Review or dependabot` condition, `batch_max_wait_time: 5 minutes`, and
-//! `commands_restrictions` with the real logins `karma-works` and `julianhaegele-create`.
+//! `KI-Review or dependabot` condition, `batch_max_wait_time: 2 minutes`, the Journeys
+//! exception of `-check-failure`, and `commands_restrictions` with the real logins
+//! `karma-works` and `julianhaegele-create`.
 
 use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, Tester};
@@ -66,7 +67,7 @@ fn dependabot_major_and_constitution_updates_are_not_queued() {
         "version-update:semver-patch",
         ".github/workflows/ci.yml",
     );
-    // A patch update with a failing check on the side: `#check-failure = 0` holds it back.
+    // A patch update with a failing check on the side: `-check-failure` holds it back.
     let red = dependabot(&t, "version-update:semver-patch", "other.json");
     for n in [major, workflow, red] {
         green(&t, n, false);
@@ -142,7 +143,7 @@ fn a_second_workflow_success_does_not_hide_a_failed_required_check() {
 }
 
 #[test]
-fn a_partial_batch_waits_exactly_five_minutes() {
+fn a_partial_batch_waits_exactly_two_minutes() {
     let t = start();
     let a = t.open_pr(BOT).file("a.py", "a\n").create();
     let b = t.open_pr(BOT).file("b.py", "b\n").create();
@@ -152,11 +153,11 @@ fn a_partial_batch_waits_exactly_five_minutes() {
     t.pr(a).wait_queued();
     t.pr(b).wait_queued();
     t.settle();
-    t.advance("4m");
+    t.advance("1m");
     t.settle();
     assert!(
         t.gh.open_queue_drafts().is_empty(),
-        "nothing is built before batch_max_wait_time (5 minutes) is over"
+        "nothing is built before batch_max_wait_time (2 minutes) is over"
     );
     t.advance("1m");
     let draft = t.queue_pr().get();
@@ -168,6 +169,49 @@ fn a_partial_batch_waits_exactly_five_minutes() {
     t.queue_pr().check("ci-ok").succeed();
     t.pr(a).wait_merged();
     t.pr(b).wait_merged();
+    t.assert_invariants();
+    t.shutdown();
+}
+
+/// Arztagent #1851: `-check-failure ~= ^(?!verify-arztagent journeys$)`. A red Journeys check
+/// neither keeps a pull request out of the queue nor removes it from it; any other red check
+/// keeps it out, also next to a red Journeys check.
+#[test]
+fn a_red_journeys_check_neither_holds_nor_dequeues_a_pull_request() {
+    let t = start();
+    let journeys = t.open_pr(BOT).file("a.py", "a\n").create();
+    let red_later = t.open_pr(BOT).file("b.py", "b\n").create();
+    let scanners = t.open_pr(BOT).file("c.py", "c\n").create();
+    let both = t.open_pr(BOT).file("d.py", "d\n").create();
+    t.pr(journeys).check("verify-arztagent journeys").fail();
+    t.pr(scanners).check("Scanners").fail();
+    t.pr(both).check("verify-arztagent journeys").fail();
+    t.pr(both).check("Scanners").fail();
+    for n in [journeys, red_later, scanners, both] {
+        green(&t, n, true);
+    }
+    t.pr(journeys).wait_queued();
+    t.pr(red_later).wait_queued();
+    t.pr(red_later).check("verify-arztagent journeys").fail();
+    t.settle();
+    assert!(
+        queued(&t, red_later),
+        "a red Journeys check does not dequeue it"
+    );
+    for n in [scanners, both] {
+        assert!(!queued(&t, n), "#{n}: a red Scanners check keeps it out");
+    }
+    t.advance("2m");
+    let draft = t.queue_pr().get();
+    let tree = t.gh.tree_of(&draft.head_sha);
+    assert!(tree.contains_key("a.py") && tree.contains_key("b.py"));
+    assert!(!tree.contains_key("c.py") && !tree.contains_key("d.py"));
+    t.queue_pr().check("ci-ok").succeed();
+    t.pr(journeys).wait_merged();
+    t.pr(red_later).wait_merged();
+    for n in [scanners, both] {
+        assert!(!queued(&t, n));
+    }
     t.assert_invariants();
     t.shutdown();
 }

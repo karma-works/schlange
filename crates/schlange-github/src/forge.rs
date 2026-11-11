@@ -456,6 +456,7 @@ impl GithubForge {
             };
             pr.checks.push(CheckRun {
                 name: c.name.clone(),
+                app_id: c.app.as_ref().and_then(|a| a.id),
                 app,
                 head_sha: c.head_sha.clone(),
                 conclusion: conclusion(&c.status, c.conclusion.as_deref()),

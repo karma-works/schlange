@@ -52,6 +52,93 @@ fn post(url: &str, event: &str, id: &str, body: &str, secret: &[u8]) -> (u16, St
     )
 }
 
+/// REST cannot recover a checkbox editor. The acknowledged signed delivery must survive
+/// a worker crash before its hints are processed, and a replay must not execute it twice.
+#[test]
+fn acknowledged_checkbox_edit_survives_a_crash_before_worker_processing() {
+    use schlange_core::commands::CONTROLS_MARKER;
+    let config = "queue_rules:\n  - name: default\n    queue_conditions: [base = main]\n    merge_conditions: [check-success = full]\npull_request_rules:\n  - name: bots\n    conditions: [author = bot]\n    actions:\n      queue:\ncommands_restrictions:\n  queue:\n    conditions: [sender = alice]\n";
+    let mut t = Tester::new(config)
+        .persistent()
+        .crash_at(CrashPoint::BeforeInboxEdit)
+        .start();
+    t.permission("alice", "write");
+    let pr = t.open_pr("human").file("a.txt", "a\n").create();
+    t.pr(pr).wait_comment(CONTROLS_MARKER);
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&pr));
+    // Update REST state without automatic delivery, then POST the exact signed edit.
+    t.gh.set_webhook_target(None);
+    assert!(t.gh.tick(pr, "alice", CONTROLS_MARKER));
+    let comment =
+        t.gh.comments_on(pr)
+            .into_iter()
+            .find(|c| c.body.contains(CONTROLS_MARKER))
+            .unwrap();
+    let body = serde_json::json!({
+        "action": "edited", "repository": {"full_name": t.gh.config().full_name()},
+        "issue": {"number": pr, "pull_request": {}},
+        "comment": {"id": comment.id, "user": {"login": comment.user},
+            "body": comment.body,
+            "updated_at": schlange_github::time::format_rfc3339(comment.updated_at)},
+        "sender": {"login": "alice"}
+    })
+    .to_string();
+    let secret = t.serve_cfg.webhook_secret.clone();
+    let id = "checkbox-edit-before-worker-crash";
+    let url = t.service.as_ref().unwrap().webhook_url();
+    let (status, text) = post(&url, "issue_comment", id, &body, &secret);
+    assert_eq!(status, 202, "{text}");
+    t.wait_dead();
+    let store = t.service.as_ref().unwrap().store.clone().unwrap();
+    let pending = store.inbox_pending().unwrap();
+    assert!(
+        pending
+            .iter()
+            .any(|row| row.0 == id && row.3 == body.as_bytes())
+    );
+    assert!(
+        !t.status().unwrap().queued.contains(&pr),
+        "edit not processed before crash"
+    );
+    t.stop_service();
+    t.start_service();
+    // No webhook redelivery: only the durable inbox supplies alice's identity.
+    t.pr(pr).wait_queued();
+    t.wait_until("inbox edit completed", |_| {
+        !store.inbox_pending().unwrap().iter().any(|row| row.0 == id)
+    });
+    let before = t
+        .decisions()
+        .iter()
+        .filter(|d| d.contains("\"enqueue\""))
+        .count();
+    assert_eq!(before, 1);
+    let url = t.service.as_ref().unwrap().webhook_url();
+    assert_eq!(
+        post(&url, "issue_comment", id, &body, &secret),
+        (200, "duplicate delivery".into())
+    );
+    t.settle();
+    assert_eq!(
+        t.decisions()
+            .iter()
+            .filter(|d| d.contains("\"enqueue\""))
+            .count(),
+        before
+    );
+    assert!(
+        t.gh.squashes().is_empty(),
+        "pending full check prevents landing"
+    );
+    t.wait_until("a queue draft", |t| !t.gh.open_queue_drafts().is_empty());
+    t.queue_pr().check("full").succeed();
+    t.pr(pr).wait_merged();
+    t.settle();
+    t.assert_invariants();
+    t.shutdown();
+}
+
 /// MQ-31 on GitHub: `serve` dies right after GitHub merged a pull request, before the reply
 /// reached the engine. The new process restarts from the journal (the queue as it was,
 /// including the pull request waiting behind), resolves the landing from GitHub's state

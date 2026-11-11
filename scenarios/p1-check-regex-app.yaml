@@ -1,0 +1,43 @@
+# A regex on a `check-*` attribute sees each check run under its bare name and as
+# `@<app-slug>/<name>` (observed on Mergify, Arztagent, 2026-11-10). Every pull request has a
+# failing `verify-arztagent journeys` run from GitHub Actions.
+# - #1: the exemption names only the bare name. The qualified form `@github-actions/verify-
+#   arztagent journeys` still matches `^(?!…)`, so `-check-failure` is unmet: never queued.
+# - #2: the exemption also allows the `@github-actions/` prefix: queued and merged.
+# - #3: same exemption, but another app also reports a failing `verify-arztagent journeys`.
+#   `@other-app/verify-arztagent journeys` is not exempt: never queued.
+name: p1-check-regex-app
+description: Regex on check attributes matches bare and app-qualified check names.
+config: configs/check-regex-app.yml
+
+ci:
+  - check: quick
+    app: github-actions
+    duration: 1m
+  - check: verify-arztagent journeys
+    app: github-actions
+    duration: 30s
+    conclusion: failure
+    runs_on: pull_request
+  - check: verify-arztagent journeys
+    app: other-app
+    duration: 30s
+    runs_on: pull_request
+    fail_when_prs: [3]
+
+pull_requests:
+  - { number: 1, author: bare-bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "b\n" } }
+  - { number: 3, author: bot, files: { c.txt: "c\n" } }
+
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 0s, open: 3 }
+
+expect:
+  - { pr: 1, state: open }
+  - { pr: 2, state: merged }
+  - { pr: 3, state: open }
+expect_log:
+  - "enqueue #2 into `qualified-exemption`"

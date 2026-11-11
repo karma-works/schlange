@@ -8,4 +8,4 @@
 {"type":"close_car","car":"<car1>","branch":"mergify/merge-queue/<branch1>","draft":2}
 {"type":"merged","number":1,"queue":"default","sha":"<sha5>"}
 {"type":"cosmetic","cosmetic":{"kind":"labels","number":1,"add":[],"remove":["queued"]}}
-{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · merged\n\nMerged by the queue as c09d38f."}}
+{"type":"cosmetic","cosmetic":{"kind":"status_comment","number":1,"body":"<!-- schlange:status -->\n**Merge queue** · merged\n\nMerged by the queue as e04d72a."}}

@@ -32,14 +32,14 @@ Nothing in the repository changes: no workflow, no ruleset, no configuration fil
 | A host that runs a container permanently, with outbound HTTPS to `api.github.com` | `curl -sI https://api.github.com` |
 | An HTTPS URL that reaches the host's port 8080 for webhooks (section 6) | – |
 | Docker (or the static binary) on the host | `docker version` |
-| A checkout of Schlange to build the image and fetch Mergify's schema | `cargo`, `git` |
+| A checkout of Schlange to build the image | `cargo`, `git` |
 
 ## 1. Validate the configuration
 
 On a machine with a Schlange checkout:
 
 ```bash
-tools/fetch-mergify-sources                         # the pinned schema into .research/mergify/
+tools/fetch-mergify-sources                         # development validation only; optional at runtime
 cargo build --release -p schlange
 target/release/schlange config validate --strict /path/to/the/repository/.mergify.yml
 ```
@@ -62,6 +62,7 @@ The app must have exactly these permissions and events. More is a warning in
 | Pull requests | Read | pull requests, files, comments, labels, reviews |
 | Issues | Read | GitHub sends `issue_comment` webhooks (the `@mergifyio` commands) only with it |
 | Checks | Read | check runs, including Mergify's |
+| Actions | Read | resolve workflow identity for GitHub Actions checks |
 | Commit statuses | Read | statuses used as conditions |
 
 Webhook events: `check_run`, `check_suite`, `issue_comment`, `pull_request`,
@@ -104,7 +105,7 @@ Copy the image (or build it on the host) and create, on the host:
 │   ├── app.pem              # the app's private key           (0400, uid 65532)
 │   ├── webhook-secret       # the webhook secret               (0400, uid 65532)
 │   └── admin-token          # random, for the admin API        (0400, uid 65532)
-└── schema.json      # .research/mergify/schema.json from step 1
+
 ```
 
 ```bash
@@ -118,13 +119,15 @@ sudo sh -c 'chown -R 65532:65532 /srv/schlange-shadow/data /srv/schlange-shadow/
   chmod 0400 /srv/schlange-shadow/secrets/*'
 ```
 
-`serve` does not start without the schema: it validates the configuration like
-`config validate` and never applies an invalid one.
+`serve` uses Schlange's embedded clean-room structural validator by default. It rejects
+unknown keys, invalid types and conditions, semantic errors and explicitly enabled unsupported
+options. `--schema` or `SCHLANGE_SCHEMA` selects optional external runtime validation.
+`config validate` in development still requires the pinned upstream schema. An invalid
+configuration never replaces the last valid configuration.
 
 **Docker from a snap** (Ubuntu's `snap install docker`) cannot mount paths like `/srv`: put
-data, secrets and the schema into named volumes instead and mount those
-(`-v schlange-shadow-secrets:/run/secrets:ro`, `-v schlange-shadow-config:/config:ro` with
-`SCHLANGE_SCHEMA=/config/schema.json`, `-v schlange-shadow-data:/data`). Fill a volume through a
+data and secrets into named volumes instead and mount those
+(`-v schlange-shadow-secrets:/run/secrets:ro`, `-v schlange-shadow-data:/data`). Fill a volume through a
 throw-away container, for example
 `sudo tar -C secrets -cf - . | docker run --rm -i -v schlange-shadow-secrets:/dst alpine sh -c 'tar -xf - -C /dst && chown -R 65532:65532 /dst && chmod 0400 /dst/*'`.
 
@@ -139,7 +142,6 @@ SCHLANGE_GITHUB_PRIVATE_KEY=/run/secrets/app.pem
 SCHLANGE_REPOS=<owner>/<repository>          # several: comma-separated, one app installed on all
 SCHLANGE_WEBHOOK_SECRET_FILE=/run/secrets/webhook-secret
 SCHLANGE_ADMIN_TOKEN_FILE=/run/secrets/admin-token
-SCHLANGE_SCHEMA=/schema.json
 SCHLANGE_SHADOW=true
 SCHLANGE_MERGIFY_LOGIN=mergify[bot]
 SCHLANGE_MERGIFY_APP=mergify
@@ -149,7 +151,6 @@ run() {
   docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
     --env-file /srv/schlange-shadow/env \
     -v /srv/schlange-shadow/secrets:/run/secrets:ro \
-    -v /srv/schlange-shadow/schema.json:/schema.json:ro \
     -v /srv/schlange-shadow/data:/data "$@"
 }
 run schlange:shadow doctor --shadow
@@ -173,7 +174,6 @@ docker run -d --name schlange-shadow --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --env-file /srv/schlange-shadow/env \
   -v /srv/schlange-shadow/secrets:/run/secrets:ro \
-  -v /srv/schlange-shadow/schema.json:/schema.json:ro \
   -v /srv/schlange-shadow/data:/data \
   -p 127.0.0.1:8080:8080 \
   schlange:shadow serve
@@ -294,7 +294,7 @@ Only after acceptance:
 |---|---|
 | `HTTP 403: Resource not accessible by integration` in the log | a permission from step 2 is missing; `doctor --shadow` names it |
 | `doctor` says `app-permissions` FAIL with `--shadow` missing | you ran `doctor` without `--shadow`; the acting queue needs write access |
-| `configuration not read` / invalid | the schema is missing or older than the configuration; fetch it again (step 1) |
+| `configuration not read` / invalid | inspect the validation error and correct unsupported options or invalid structure; when using an explicit upstream schema, check that it matches the pinned version |
 | no decisions at all | no webhooks and the first reconciliation has not run yet; check `docker logs` and `doctor`'s `webhooks` line |
 | every pull request `disagree` on "queued" | Mergify's bot login or app slug differs; set `SCHLANGE_MERGIFY_LOGIN` and `SCHLANGE_MERGIFY_APP` |
 | `inconclusive` piling up | Schlange restarted often or reconciles slowly; check webhook delivery |
