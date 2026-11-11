@@ -152,8 +152,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (307) | – | built 256, partial 14 | 37 |
-| Sub-features Arztagent uses (167) | – | built 149, partial 9 | 9 |
+| Sub-features (311) | – | built 256, partial 14 | 41 |
+| Sub-features Arztagent uses (166) | – | built 149, partial 9 | 8 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -189,7 +189,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Commit message on merge](.agents/skills/verify-schlange/features/queue-commit-message.md) | partial | 4 / 0 / 1 | yes |
 | [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 4 / 1 / 0 | yes |
 | [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 6 / 0 / 0 | yes |
-| [Queue pull requests as drafts on `mergify/merge-queue/`](.agents/skills/verify-schlange/features/queue-draft-pr.md) | partial | 4 / 0 / 1 | yes |
+| [Queue pull requests as drafts on `mergify/merge-queue/`](.agents/skills/verify-schlange/features/queue-draft-pr.md) | partial | 4 / 0 / 0 | yes |
 | [Queue labels and status comments](.agents/skills/verify-schlange/features/queue-labels-comments.md) | partial | 4 / 0 / 0 | yes |
 | [Landing as compare-and-swap with evidence](.agents/skills/verify-schlange/features/queue-landing.md) | partial | 6 / 2 / 0 | yes |
 | [Merge method `squash`](.agents/skills/verify-schlange/features/queue-merge-method-squash.md) | partial | 3 / 0 / 2 | yes |
@@ -239,7 +239,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Pause the queue](.agents/skills/verify-schlange/features/queue-pause.md) | partial | 5 / 0 / 1 |  |
 | [Priorities (`priority_rules`)](.agents/skills/verify-schlange/features/queue-priority.md) | partial | 5 / 0 / 1 |  |
 | [Skip intermediate results](.agents/skills/verify-schlange/features/queue-skip-intermediate.md) | partial | 1 / 0 / 2 |  |
-| [Queue status through API and CLI](.agents/skills/verify-schlange/features/queue-status-api.md) | partial | 1 / 0 / 1 |  |
+| [Queue status through API and CLI](.agents/skills/verify-schlange/features/queue-status-api.md) | partial | 1 / 0 / 3 |  |
 | [Scopes for monorepos](.agents/skills/verify-schlange/features/scopes.md) | partial | 3 / 0 / 4 |  |
 | [MCP server](.agents/skills/verify-schlange/features/S-MCP.md) | missing | 0 / 0 / 0 |  |
 | [CI helpers for queue runs](.agents/skills/verify-schlange/features/ci-helpers.md) | missing | 0 / 0 / 0 |  |
@@ -247,7 +247,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Further file and line attributes](.agents/skills/verify-schlange/features/conditions-files-other.md) | missing | 0 / 0 / 0 |  |
 | [Review attributes](.agents/skills/verify-schlange/features/conditions-reviews.md) | missing | 0 / 0 / 0 |  |
 | [Time and schedule](.agents/skills/verify-schlange/features/conditions-time.md) | missing | 0 / 0 / 0 |  |
-| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 1 |  |
+| [Conflict resolvers (experimental)](.agents/skills/verify-schlange/features/conflict-resolvers.md) | missing | 0 / 0 / 4 |  |
 | [Update method of a pull request](.agents/skills/verify-schlange/features/queue-update-method.md) | missing | 1 / 0 / 2 |  |
 
 </details>

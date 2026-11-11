@@ -27,8 +27,6 @@ dequeueing the pull request.
 - `package-manager`: missing.
 - `language`: missing.
 - `auto`: missing (`auto: true` with optional `directories`, added to the schema in November 2026).
-- The schema marks the section as experimental, so every explicit `conflict_resolvers`, an empty list included, is reported as unsupported.
-- `merge_queue.resolve_conflicts` was removed from the schema in November 2026; a configuration that still sets it is invalid (`unknown key`).
 
 ## How to get to it (user POV)
 
@@ -45,3 +43,5 @@ Preconditions:
 ## Gotchas
 
 - Takes effect only when the batch branch itself lands.
+- The schema marks the section as experimental, so every explicit `conflict_resolvers`, an empty list included, is reported as unsupported.
+- `merge_queue.resolve_conflicts` was removed from the schema in November 2026; a configuration that still sets it is invalid (`unknown key`).
