@@ -155,7 +155,7 @@ pub struct Setup {
     /// More branches at the initial commit.
     pub branches: Vec<String>,
     /// Checks the protection of the base branch requires (`branch_protection_injection_mode`).
-    pub required_checks: Vec<String>,
+    pub required_checks: Vec<schlange_core::model::RequiredCheck>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,7 +251,7 @@ pub struct Simulation<G: GitStore = Repo> {
 
 pub const LIMITATIONS: [&str; 7] = [
     "scopes: file patterns only (no manual scopes, no capacities); parallel and isolated mode: a batch failure that needs a split rebuilds every other car",
-    "skip_intermediate_results: serial mode with squash, merge or rebase only; direct merge behind the base (scopes), batch_pull_request: not built",
+    "skip_intermediate_results: serial mode with squash, merge or rebase only; direct merge behind the base (scopes), the merge queue settings API (batch_pull_request): not built",
     "allow_queue_branch_edit: the edit is accepted; merge-batch and fast-forward land it, squash, merge and rebase halt on the tree check",
     "in place: only for an up-to-date pull request; Mergify would update it first (update_method not built)",
     "priorities: re-evaluated while a pull request waits; a running bisection is never interrupted",

@@ -670,7 +670,7 @@ pub fn parse_duration(text: &str) -> Option<u64> {
             "d" | "day" | "days" => 86400,
             _ => return None,
         };
-        total += number.take()? * factor;
+        total = total.checked_add(number.take()?.checked_mul(factor)?)?;
         matched = true;
         rest = &rest[word_end..];
     }
@@ -692,6 +692,11 @@ mod tests {
         assert_eq!(parse_duration("soon"), None);
         assert_eq!(parse_duration("5"), Some(5));
         assert_eq!(parse_duration("5 parsecs"), None);
+        assert_eq!(parse_duration("18446744073709551615 days"), None);
+        assert_eq!(
+            parse_duration("18446744073709551615 seconds 1 second"),
+            None
+        );
     }
 
     #[test]
@@ -704,8 +709,8 @@ mod tests {
         assert_eq!(rules.pull_request_rules.len(), 2);
         assert_eq!(rules.pull_request_rules[0].queue, Some(None));
         let q = &rules.queue_rules[0];
-        assert_eq!(q.batch_size, BatchSize::Fixed(5));
-        assert_eq!(q.batch_max_wait_time, 300);
+        assert_eq!(q.batch_size, BatchSize::Fixed(3));
+        assert_eq!(q.batch_max_wait_time, 120);
         assert_eq!(q.merge_method.as_deref(), Some("squash"));
         assert_eq!(q.checks_timeout, ChecksTimeout::Auto);
         assert_eq!(q.batch_max_failure_resolution_attempts, None);

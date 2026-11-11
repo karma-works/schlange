@@ -7,6 +7,7 @@ status: missing
 inventory:
   - "api:GET /ci/{owner}/queue/stats/{stat}"
   - "api:GET /ci/{owner}/runners/stats/{stat}"
+  - "api:GET /ci/{owner}/repositories/{repository}/traces-status"
 problems:
   - "W-15"
 source: "https://docs.mergify.com/ci-insights"

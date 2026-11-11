@@ -1,0 +1,33 @@
+name: Qualified check probe
+
+# Synthetic S19 check, dispatched from main onto a PR head. No PR code is executed.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Sandbox pull request number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == schlange-sandbox/* ]] || exit 1
+          [[ "$PR" =~ ^[0-9]+$ ]] || exit 1
+          head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+            -f name=qualified-probe -f head_sha="$head" -f status=completed -f conclusion=success \
+            -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            -f 'output[title]=Qualified check probe' -f 'output[summary]=Synthetic sandbox success.' >/dev/null

@@ -1,13 +1,7 @@
-//! The configuration as `serve` and `doctor` load it: the configuration file from the
-//! repository's **default branch** only, searched under the six documented names in their
-//! order (`schlange_config::config_file::NAMES`; two files are an error), through the same
-//! pipeline as `schlange config validate`: YAML (stage 1), Mergify's schema (2), conditions
-//! (3), semantics (4). Findings of stage 5 (features Schlange does not support yet) are
-//! warnings: the configuration is used, and the warnings are logged and shown by the doctor.
-//!
-//! An invalid configuration is never applied: `serve` keeps the last valid one and reports
-//! the errors (log, `/status`, doctor). A `pull_request_rules` entry without `conditions` is
-//! a schema error, so it can never match every pull request.
+//! Runtime configuration for `serve` and `doctor`, read from the default branch only.
+//! Without an explicit schema, Schlange uses its own embedded structural contract for
+//! supported engine options. An explicit upstream schema preserves development validation.
+//! Invalid configurations never replace the last valid one.
 
 use std::path::Path;
 
@@ -28,7 +22,7 @@ pub enum Found {
     Ambiguous(String),
 }
 
-/// The validator with the pinned schema and the feature map.
+/// Runtime validator: embedded contract or explicitly selected upstream schema.
 pub struct ConfigCheck {
     pub schema: Schema,
     pub features: FeatureMap,
@@ -38,19 +32,35 @@ pub struct ConfigCheck {
 #[derive(Clone, Debug)]
 pub struct Loaded {
     pub rules: Rules,
-    /// Stage 5: what Schlange does not support yet (the configuration is still used).
+    /// Stage 5 warnings (explicit active unsupported settings are rejected by the embedded validator).
     pub warnings: Vec<String>,
 }
 
 impl ConfigCheck {
-    /// The schema from `explicit`, `$SCHLANGE_SCHEMA` or `.research/mergify/schema.json`
-    /// above `start`, and the embedded feature map.
-    pub fn locate(explicit: Option<&Path>, start: &Path) -> Result<ConfigCheck, String> {
-        let path = schlange_config::schema::locate(explicit, start)
-            .ok_or_else(|| schlange_config::schema::SchemaError::NotFound.to_string())?;
-        let schema = Schema::load(&path).map_err(|e| e.to_string())?;
-        let features = FeatureMap::embedded().map_err(|e| e.to_string())?;
-        Ok(ConfigCheck { schema, features })
+    /// Use an explicitly supplied schema (argument or environment), otherwise the embedded
+    /// clean-room runtime contract. Automatic upstream discovery belongs to `config validate`.
+    pub fn locate(explicit: Option<&Path>, _start: &Path) -> Result<ConfigCheck, String> {
+        let path = explicit
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os(schlange_config::schema::ENV_VAR).map(Into::into));
+        match path {
+            Some(path) => Ok(ConfigCheck {
+                schema: Schema::load(&path).map_err(|e| e.to_string())?,
+                features: FeatureMap::embedded().map_err(|e| e.to_string())?,
+            }),
+            None => Self::embedded(),
+        }
+    }
+
+    pub fn embedded() -> Result<Self, String> {
+        Ok(Self {
+            schema: schlange_config::runtime::schema().map_err(|e| e.to_string())?,
+            features: FeatureMap::embedded().map_err(|e| e.to_string())?,
+        })
+    }
+
+    pub fn is_embedded(&self) -> bool {
+        self.schema.path == Path::new(schlange_config::runtime::NAME)
     }
 
     /// Validates a configuration text; `Err` lists the errors (stages 1–4). A configuration
@@ -78,7 +88,12 @@ impl ConfigCheck {
         let errors: Vec<String> = report
             .findings
             .iter()
-            .filter(|f| f.severity == Severity::Error)
+            .filter(|f| {
+                f.severity == Severity::Error
+                    || (self.is_embedded()
+                        && f.severity == Severity::Unsupported
+                        && !f.pointer.is_empty())
+            })
             .map(|f| format!("{}: {:?}: {}", at(f), f.stage, f.message))
             .collect();
         if !errors.is_empty() {
@@ -89,8 +104,16 @@ impl ConfigCheck {
             }
             return Err(text);
         }
-        let rules =
-            Rules::from_yaml_extended(text, own, load).map_err(|e| format!("{file}: {e}"))?;
+        let rules = Rules::from_yaml_extended(text, own, |name| {
+            let remote = load(name)?;
+            // The inherited document can contain active options too. Validate it before
+            // merging; YAML deserialization alone deliberately ignores many unknown keys.
+            if self.is_embedded() {
+                self.check(name, &remote)?;
+            }
+            Ok(remote)
+        })
+        .map_err(|e| format!("{file}: {e}"))?;
         let warnings = report
             .findings
             .iter()

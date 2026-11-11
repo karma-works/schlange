@@ -125,7 +125,7 @@ decisions against the fake GitHub), then review the diff.
 | `--repo` | `SCHLANGE_REPOS` | – | `owner/name`, comma-separated |
 | `--webhook-secret-file` | `SCHLANGE_WEBHOOK_SECRET_FILE` or `SCHLANGE_WEBHOOK_SECRET` | – | at least 16 bytes; `--webhook-secret` on the command line works but warns (visible in `ps`) |
 | `--data-dir` | `SCHLANGE_DATA_DIR` | `/data` | `schlange.db` (SQLite, WAL): journal, snapshots, `auto` history, webhook dedup, audit |
-| `--schema` | `SCHLANGE_SCHEMA` | `.research/mergify/schema.json` upwards | `serve` does not start without it: the configuration is validated like `config validate` |
+| `--schema` | `SCHLANGE_SCHEMA` | embedded runtime contract | Optional upstream schema for `serve` and `doctor`; `config validate` still discovers/requires `.research/mergify/schema.json` |
 | `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status` and the queue API; without it both answer 404 |
 | `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |

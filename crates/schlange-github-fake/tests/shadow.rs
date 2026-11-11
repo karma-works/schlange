@@ -292,12 +292,13 @@ fn the_report_survives_a_restart_from_the_database() {
 }
 
 /// The shadow app's permissions: everything Schlange reads, nothing it could write with.
-const READ_ONLY: [(&str, &str); 6] = [
+const READ_ONLY: [(&str, &str); 7] = [
     ("metadata", "read"),
     ("contents", "read"),
     ("pull_requests", "read"),
     ("issues", "read"),
     ("checks", "read"),
+    ("actions", "read"),
     ("statuses", "read"),
 ];
 
@@ -370,4 +371,100 @@ fn pull_requests_merged_before_shadow_mode_saw_them_are_inconclusive() {
     assert_ne!(verdict(&r, a), "inconclusive", "{r:#}");
     assert_no_writes(&t);
     t.shutdown();
+}
+
+#[test]
+fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT)).shadow().start();
+    let n = t
+        .open_pr(BOT)
+        .file(".github/workflows/x.yml", "on: push\n")
+        .create();
+    for (name, conclusion) in [
+        ("Summary", "success"),
+        ("Rule: ready (queue)", "neutral"),
+        ("Rule: checks (queue)", "failure"),
+    ] {
+        t.gh.mergify_check(n, name, Some(conclusion));
+    }
+    reconcile(&t);
+    assert_eq!(verdict(&report(&t), n), "absent");
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn structured_embarkment_ignores_issue_mentions_and_borrows_checks() {
+    let t = arztagent_ci(Tester::new(ARZTAGENT)).shadow().start();
+    let n = t
+        .open_pr(BOT)
+        .file("backend/a.py", "a = 1\n")
+        .title("Fixes #12 (#500)")
+        .create();
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let draft = t.gh.mergify_embark(&[n]);
+    // The member's title has unrelated references, as does prose outside the list.
+    t.gh.edit_body(
+        draft,
+        &format!("Embarked pull requests:\n#{n}: Fixes #12 (#500)\n\nPull requests ahead:\n#42\n"),
+    );
+    reconcile(&t);
+    t.wait_until("Schlange borrowed the exact draft's checks", |t| {
+        t.decisions()
+            .iter()
+            .any(|d| d.contains("\"type\":\"land\""))
+    });
+    t.gh.mergify_land(draft);
+    reconcile(&t);
+    let r = report(&t);
+    assert_eq!(verdict(&r, 12), "absent");
+    assert_eq!(verdict(&r, 500), "absent");
+    assert_eq!(verdict(&r, 42), "absent");
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_closed_queued_pr_keeps_its_dequeue_reason_and_completed_runs_are_deduplicated() {
+    use schlange_github::store::Store;
+    // The engine currently calls a closed PR PR_DEQUEUED. Preserve any actual
+    // PR_CLOSED observation as a disagreement until sandbox evidence settles parity.
+    for (code, expected) in [("PR_DEQUEUED", "agree"), ("PR_CLOSED", "disagree")] {
+        let t = arztagent_ci(Tester::new(ARZTAGENT))
+            .shadow()
+            .persistent()
+            .start();
+        let n = green_pr(&t, "backend/a.py", "a = 1\n");
+        t.pr(n).wait_queued();
+        t.gh.mergify_embark(&[n]);
+        reconcile(&t);
+        t.gh.close_pr(n);
+        t.gh.mergify_dequeue(n, code);
+        reconcile(&t);
+        let r = report(&t);
+        assert_eq!(verdict(&r, n), expected, "{r:#}");
+        let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+        let reason = || {
+            store
+                .shadow_facts(&t.gh.config().full_name())
+                .unwrap()
+                .into_iter()
+                .find(|f| f.pr == n && f.side == "mergify" && f.kind == "dequeued")
+                .unwrap()
+        };
+        let before = reason();
+        assert_eq!(before.data["code"], code);
+        t.advance("3m");
+        reconcile(&t);
+        let after = reason();
+        assert_eq!(
+            before.seq, after.seq,
+            "the same check-run ID was observed twice"
+        );
+        assert_eq!(before.at, after.at);
+        assert_no_writes(&t);
+        t.shutdown();
+    }
 }

@@ -1,0 +1,15 @@
+[Unit]
+Description=Check Schlange heartbeat, leadership and halted trains
+After=schlange.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=45s
+EnvironmentFile=/etc/schlange/stack.env
+ExecStart=/usr/bin/python3 /etc/schlange/monitor.py --token-file /etc/schlange/secrets/admin-token --repos ${SCHLANGE_REPOS}
+User=root
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

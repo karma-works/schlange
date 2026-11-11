@@ -1,8 +1,8 @@
-# Sandbox copy of arzt-agent/.mergify.yml. Differences: only the logins.
+# Sandbox copy of arzt-agent/.mergify.yml with sandbox logins and an opt-in check probe.
 #   arztagent-bot          -> @DRIVER_LOGIN@ (test actor)
 #   karma-works            -> @HUMAN_LOGIN@
 #   julianhaegele-create   -> removed (the second human is missing in the sandbox)
-# setup.sh replaces the placeholders. Everything else stays byte for byte the same.
+# setup.sh replaces the placeholders. S19 alone opts into the qualified-regex probe by label.
 
 # Merge-Queue (PLAN-MERGIFY.md, 6.2). Mergify liest diese Datei nur von main.
 # Klasse "verfassung": nur Menschen ändern sie (governance/risk-paths.yaml, CODEOWNERS).
@@ -25,6 +25,10 @@ queue_rules:
       - "#check-failure = 0"
       - check-success = ci-ok
       - check-success = Risk class and data protection
+      # S19 isolates app-qualified regex matching; ordinary scenarios leave this label absent.
+      - or:
+          - -label = sbx-qualified-regex
+          - check-success ~= ^@github-actions/qualified-probe$
       # Dependabot bekommt im KI-Review keine Secrets; Major-Updates reiht ein Mensch ein.
       - or:
           - check-success = KI-Review

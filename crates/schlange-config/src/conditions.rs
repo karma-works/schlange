@@ -78,6 +78,9 @@ pub struct Atom {
     pub attribute: String,
     pub operator: Option<Operator>,
     pub value: Option<String>,
+    /// Forge-injected integration pin; configuration text cannot set this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration_id: Option<u64>,
 }
 
 /// A condition tree.
@@ -144,6 +147,7 @@ pub fn parse_atom(text: &str) -> Result<Atom, String> {
             attribute: attribute.to_string(),
             operator: None,
             value: None,
+            integration_id: None,
         });
     }
     let Some((spelling, operator)) = OPERATORS.iter().find(|(s, _)| after.starts_with(s)) else {
@@ -166,6 +170,7 @@ pub fn parse_atom(text: &str) -> Result<Atom, String> {
         attribute: attribute.to_string(),
         operator: Some(*operator),
         value: Some(value.to_string()),
+        integration_id: None,
     })
 }
 
@@ -248,7 +253,8 @@ mod tests {
                 length: false,
                 attribute: "draft".into(),
                 operator: None,
-                value: None
+                value: None,
+                integration_id: None
             }
         );
         let a = atom("#check-failure = 0");

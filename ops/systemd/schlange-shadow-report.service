@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Schlange read-only shadow comparison
+After=schlange.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/schlange/stack.env
+ExecStart=/usr/bin/python3 /etc/schlange/shadow-report.py
+WorkingDirectory=/etc/schlange
+User=root
+UMask=0077
+TimeoutStartSec=10m

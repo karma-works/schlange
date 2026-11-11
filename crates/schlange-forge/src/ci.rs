@@ -34,6 +34,7 @@ pub enum RunsOn {
 pub struct CiScript {
     pub check: String,
     pub app: Option<String>,
+    pub app_id: Option<u64>,
     pub duration: Time,
     /// Conclusion when no rule below applies; `None`: the check never reports.
     pub conclusion: Option<Conclusion>,
@@ -68,6 +69,7 @@ impl CiScript {
         CiScript {
             check: check.to_string(),
             app: None,
+            app_id: None,
             duration,
             conclusion,
             runs_on: RunsOn::Both,

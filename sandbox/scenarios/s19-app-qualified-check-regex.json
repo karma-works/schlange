@@ -1,0 +1,19 @@
+{
+  "id": "S19",
+  "title": "App-qualified regex waits for a GitHub Actions check on the same PR head",
+  "refs": ["MQ-14", "MQ-15"],
+  "strict_batches": true,
+  "expected_batches": [["a"]],
+  "steps": [
+    {"open": "a", "draft": true},
+    {"label": "a", "add": "sbx-qualified-regex", "as": "human"},
+    {"ready": "a"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "app": "github-actions", "timeout": 1200},
+    {"wait_check": "a", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "app": "github-actions", "timeout": 1200},
+    {"assert_unqueued": "a"},
+    {"dispatch_workflow": "qualified-check.yml", "pr": "a", "ref": "main", "as": "human", "inputs": {"pr": "{pr}"}},
+    {"wait_check": "a", "name": "qualified-probe", "app": "github-actions", "conclusion": "success", "workflow": "qualified-check.yml", "custom": true, "timeout": 1200},
+    {"wait": "merged", "prs": ["a"], "timeout": 2400}
+  ]
+}

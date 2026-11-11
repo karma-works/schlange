@@ -84,7 +84,9 @@ preflight_isolated() {
 preflight() {
   preflight_common
   local role
-  role=$(gh api "orgs/$ORG/memberships/$ME" --jq .role 2>/dev/null || echo none)
+  if ! role=$(gh api "orgs/$ORG/memberships/$ME" --jq .role 2>/dev/null); then
+    die "cannot verify ownership of $ORG; check API access and the token's organisation Members read permission"
+  fi
   [ "$role" = admin ] || die "$ME is not an owner of $ORG (role: $role)"
 }
 

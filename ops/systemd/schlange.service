@@ -1,0 +1,18 @@
+[Unit]
+Description=Schlange self-hosted merge queue
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/schlange
+ExecStart=/usr/bin/docker compose --env-file stack.env -f compose.yaml up --detach --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file stack.env -f compose.yaml stop --timeout 45
+TimeoutStartSec=180
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
