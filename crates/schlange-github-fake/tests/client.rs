@@ -870,7 +870,7 @@ fn an_exempt_ruleset_bypass_is_enough() {
         .find(|x| x.name == "ruleset-exception")
         .unwrap();
     assert_eq!(r.status, "OK", "{}", r.detail);
-    // `always` still bypasses, but the guidance recommends `exempt`: say so instead of OK.
+    // `always` can leave queue operations blocked: this is a deployment failure.
     gh.add_ruleset(json!({"id": 10, "name": "other", "target": "branch", "enforcement": "active",
         "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "always"}]}));
     let checks =
@@ -879,7 +879,80 @@ fn an_exempt_ruleset_bypass_is_enough() {
         .iter()
         .find(|x| x.name == "ruleset-exception")
         .unwrap();
-    assert_eq!(r.status, "WARN", "{}", r.detail);
+    assert_eq!(r.status, "FAIL", "{}", r.detail);
+    assert!(r.detail.contains("schlange-setup.sh setup"), "{}", r.detail);
+    gh.shutdown();
+}
+
+#[test]
+fn doctor_requires_bypass_only_on_queue_base_rulesets() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let c = client(&gh, roomy());
+    let repo = RepoName::parse(&gh.config().full_name()).unwrap();
+    let cc = schlange_github_fake::tester::config_check();
+    gh.create_branch("release/1");
+    gh.push_base(&[(
+        ".mergify.yml".into(),
+        "queue_rules:\n  - name: default\n    queue_conditions:\n      - base = main\n".into(),
+    )]);
+    gh.add_ruleset(
+        json!({"id": 1, "name": "release", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/release/*"], "exclude": []}},
+        "bypass_actors": []}),
+    );
+    gh.add_ruleset(
+        json!({"id": 2, "name": "excluded main", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/main"]}},
+        "bypass_actors": []}),
+    );
+    gh.add_ruleset(json!({"id": 3, "name": "main", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "exempt"}]}));
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
+    let result = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(result.status, "OK", "{}", result.detail);
+    assert!(result.detail.contains("1 active"), "{}", result.detail);
+
+    // A second configured queue base makes its ruleset relevant immediately.
+    gh.push_base(&[(
+        ".mergify.yml".into(),
+        "queue_rules:\n  - name: release\n    queue_conditions:\n      - base *= release/*\n"
+            .into(),
+    )]);
+    let checks =
+        doctor::github_checks(&c, std::slice::from_ref(&repo), Some(77), 86_400, Some(&cc));
+    let result = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(result.status, "FAIL", "{}", result.detail);
+    assert!(result.detail.contains("release"), "{}", result.detail);
+    gh.shutdown();
+}
+
+#[test]
+fn doctor_resolves_default_branch_selectors_without_assuming_main() {
+    let gh = FakeGithub::start(FakeConfig {
+        default_branch: "trunk".into(),
+        ..FakeConfig::default()
+    });
+    let c = client(&gh, roomy());
+    let repo = RepoName::parse(&gh.config().full_name()).unwrap();
+    gh.add_ruleset(json!({"id": 1, "name": "main only", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}}, "bypass_actors": []}));
+    gh.add_ruleset(json!({"id": 2, "name": "default", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "bypass_actors": [{"actor_id": 4242, "actor_type": "Integration", "bypass_mode": "exempt"}]}));
+    let checks = doctor::github_checks(&c, &[repo], Some(77), 86_400, None);
+    let result = checks
+        .iter()
+        .find(|x| x.name == "ruleset-exception")
+        .unwrap();
+    assert_eq!(result.status, "OK", "{}", result.detail);
     gh.shutdown();
 }
 
@@ -1090,4 +1163,38 @@ fn doctor_accepts_a_read_only_app_for_shadow_mode_only() {
     let (status, detail) = find(&acting, "app-permissions");
     assert_eq!(status, "FAIL");
     assert!(detail.contains("contents: read → write"), "{detail}");
+}
+
+#[test]
+fn doctor_requires_actions_read_for_active_and_shadow_check_identity() {
+    let mut permissions: std::collections::BTreeMap<String, String> =
+        schlange_github::permissions::PERMISSIONS
+            .iter()
+            .map(|(name, level, _)| (name.to_string(), level.to_string()))
+            .collect();
+    permissions.remove("actions");
+    let gh = FakeGithub::start(FakeConfig {
+        permissions,
+        ..FakeConfig::default()
+    });
+    let c = client(&gh, roomy());
+    let repo = RepoName::parse(&gh.config().full_name()).unwrap();
+    let cc = schlange_github_fake::tester::config_check();
+    for shadow in [false, true] {
+        let checks = doctor::github_checks_for(
+            &c,
+            std::slice::from_ref(&repo),
+            None,
+            86_400,
+            Some(&cc),
+            shadow,
+        );
+        let permission = checks.iter().find(|c| c.name == "app-permissions").unwrap();
+        assert_eq!(permission.status, "FAIL", "{}", permission.detail);
+        assert!(
+            permission.detail.contains("actions: none → read"),
+            "{}",
+            permission.detail
+        );
+    }
 }

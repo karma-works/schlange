@@ -1,0 +1,61 @@
+# Test derivative of the Arztagent source snapshot. Only the Journeys exemption differs:
+# match both bare and GitHub Actions-qualified names. No production configuration is edited.
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 3
+    batch_max_wait_time: 2 minutes
+    queue_conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - "-check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys$)"
+      - check-success = ci-ok
+      - check-success = Risk class and data protection
+      - or:
+          - check-success = KI-Review
+          - author = dependabot[bot]
+    merge_conditions:
+      - check-success = ci-ok
+      - -check-failure = ci-failed-backend
+      - -check-failure = ci-failed-cli
+      - -check-failure = ci-failed-connector
+      - -check-failure = ci-failed-doctolib
+      - -check-failure = ci-failed-governance
+      - -check-failure = ci-failed-typescript
+      - -check-failure = ci-failed-voice
+
+pull_request_rules:
+  - name: Agenten- und Menschen-PRs automatisch einreihen
+    conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - or:
+          - author = arztagent-bot
+          - author = karma-works
+          - author = julianhaegele-create
+      - -files ~= ^(?!(?:aa\-kalender\-backend/quality/test_owners\.json|aa\-kalender\-backend/quality/w0\-wire\-baseline\.json|aa\-kalender\-backend/quality/stand/.*|\.agents/skills/verify\-arztagent/journeys/.*|\.agents/skills/verify\-arztagent/scripts/.*|\.agents/skills/verify\-arztagent/SKILL\.md|\.agents/skills/verify\-arztagent/features/.*|\.agents/skills/verify\-telefonassistent/journeys/.*|\.agents/skills/verify\-telefonassistent/features/.*|\.agents/skills/verify\-telefonassistent/scenarios/.*)$)(?:\.github/.*|\.claude/.*|\.githooks/.*|governance/.*|AGENTS\.md|\.agents/skills/.*|[^/]*/quality/.*|aa\-migration/[^/]*/quality/.*|(?:.*/)?biome\.json|scripts/policy\.ts|scripts/check\-policy\.ts|scripts/agent\-[^/]*|\.gitleaks\.toml|\.gitleaksignore|\.mergify\.yml)$
+    actions:
+      queue:
+
+  - name: Dependabot Patch und Minor einreihen
+    conditions:
+      - base = main
+      - -draft
+      - -label = halt
+      - author = dependabot[bot]
+      - or:
+          - dependabot-update-type = version-update:semver-patch
+          - dependabot-update-type = version-update:semver-minor
+      - -files ~= ^(?!(?:aa\-kalender\-backend/quality/test_owners\.json|aa\-kalender\-backend/quality/w0\-wire\-baseline\.json|aa\-kalender\-backend/quality/stand/.*|\.agents/skills/verify\-arztagent/journeys/.*|\.agents/skills/verify\-arztagent/scripts/.*|\.agents/skills/verify\-arztagent/SKILL\.md|\.agents/skills/verify\-arztagent/features/.*|\.agents/skills/verify\-telefonassistent/journeys/.*|\.agents/skills/verify\-telefonassistent/features/.*|\.agents/skills/verify\-telefonassistent/scenarios/.*)$)(?:\.github/.*|\.claude/.*|\.githooks/.*|governance/.*|AGENTS\.md|\.agents/skills/.*|[^/]*/quality/.*|aa\-migration/[^/]*/quality/.*|(?:.*/)?biome\.json|scripts/policy\.ts|scripts/check\-policy\.ts|scripts/agent\-[^/]*|\.gitleaks\.toml|\.gitleaksignore|\.mergify\.yml)$
+    actions:
+      queue:
+
+commands_restrictions:
+  queue:
+    conditions:
+      - or:
+          - sender = karma-works
+          - sender = julianhaegele-create

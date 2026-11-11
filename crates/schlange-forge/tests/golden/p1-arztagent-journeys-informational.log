@@ -1,0 +1,38 @@
++0:00:00  action    #1 opened by arztagent-bot on main, files: backend/a.py
++0:00:00  action    #2 opened by arztagent-bot on main, files: backend/b.py
++0:00:00  action    #3 opened by karma-works on main, files: docs/c.md
++0:01:00  ci        #1 check `Risk class and data protection` completed on 7fbc924: success
++0:01:00  ci        #2 check `Risk class and data protection` completed on 8bca68d: success
++0:01:00  ci        #3 check `Risk class and data protection` completed on c359b6a: success
++0:02:00  ci        #1 check `Scanners` completed on 7fbc924: success
++0:02:00  ci        #2 check `Scanners` completed on 8bca68d: failure
++0:02:00  ci        #3 check `Scanners` completed on c359b6a: failure
++0:03:00  ci        #1 check `ci-ok` completed on 7fbc924: success
++0:03:00  ci        #2 check `ci-ok` completed on 8bca68d: success
++0:03:00  ci        #3 check `ci-ok` completed on c359b6a: success
++0:05:00  ci        #1 check `KI-Review` completed on 7fbc924: success
++0:05:00  ci        #2 check `KI-Review` completed on 8bca68d: success
++0:05:00  ci        #3 check `KI-Review` completed on c359b6a: success
++0:05:00  webhook   #1 check `KI-Review` completed on 7fbc924: success
++0:05:00  decision  enqueue #1 into `default` (rule `Agenten- und Menschen-PRs automatisch einreihen`)
++0:05:00  decision  labels #1 +queued
++0:05:00  decision  status comment #1: **Merge queue** · queue `default` — Waiting for its turn: first in its queue.
++0:07:00  webhook   timer
++0:07:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base 5a8b940 + #1 (checks #1)
++0:07:00  reply     car 2 built at cc3a024, draft #1000
++0:07:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
++0:07:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked in draft pull request #1000.
++0:08:00  ci        #1 check `verify-arztagent journeys` completed on 7fbc924: failure
++0:08:00  ci        #2 check `verify-arztagent journeys` completed on 8bca68d: success
++0:08:00  ci        #3 check `verify-arztagent journeys` completed on c359b6a: failure
++0:08:00  ci        #1000 check `Risk class and data protection` completed on cc3a024: success
++0:27:00  ci        #1000 check `ci-ok` completed on cc3a024: success
++0:27:00  webhook   #1000 check `ci-ok` completed on cc3a024: success
++0:27:00  decision  read #1 #1000 main mergify/merge-queue/c0afd78982 before acting
++0:27:00  decision  land car 2: squash #1 onto main if it is still 5a8b940
++0:27:00  message   #1: Pull request 1 (#1)
++0:27:00  reply     car 2 landed #1 as 7fbc924
++0:27:00  decision  close car 2, delete mergify/merge-queue/c0afd78982, close #1000
++0:27:00  decision  #1 merged as 7fbc924
++0:27:00  decision  labels #1 -queued
++0:27:00  decision  status comment #1: **Merge queue** · merged — Merged by the queue as 7fbc924.

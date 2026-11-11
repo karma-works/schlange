@@ -831,14 +831,10 @@ fn pr_head_in_car<G: GitStore>(
     forge.repo.is_ancestor(&pr.head_sha, &car.head)
 }
 
-fn required_conditions(checks: &[String]) -> Vec<schlange_config::conditions::Condition> {
-    let v = serde_json::Value::Array(
-        checks
-            .iter()
-            .map(|c| serde_json::Value::String(format!("check-success = {c}")))
-            .collect(),
-    );
-    schlange_config::conditions::parse_list(&v, "", &mut Vec::new())
+fn required_conditions(
+    checks: &[schlange_core::model::RequiredCheck],
+) -> Vec<schlange_config::conditions::Condition> {
+    schlange_core::gates::check_conditions(checks)
 }
 
 fn merge_view(pr: &PullRequest, draft: Option<&PullRequest>, head: &str) -> PullRequest {

@@ -184,7 +184,7 @@ pub enum Event {
     /// (`branch_protection_injection_mode`).
     RequiredChecks {
         base: String,
-        checks: Vec<String>,
+        checks: Vec<crate::model::RequiredCheck>,
     },
 }
 
@@ -543,7 +543,7 @@ pub struct State {
     pub check_identity_unavailable: BTreeSet<String>,
     /// Checks the protection of each base branch requires (as last read).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub required_checks: BTreeMap<String, Vec<String>>,
+    pub required_checks: BTreeMap<String, Vec<crate::model::RequiredCheck>>,
     /// Why a queued pull request may not land right now (a freeze, a merge protection, the
     /// pause), for status output; recomputed on every step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

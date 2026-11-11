@@ -21,11 +21,11 @@
 
 use std::borrow::Cow;
 
-use schlange_config::conditions::{self, Condition};
+use schlange_config::conditions::{Atom, Condition, Operator};
 use schlange_config::rules::{InjectionMode, QueueRule, Rules};
 
 use crate::engine::{self, Control, Decision, EntryStatus, Pause, State};
-use crate::model::{PullRequest, Time};
+use crate::model::{PullRequest, RequiredCheck, Time};
 
 /// Applies an operator's control change.
 pub(crate) fn apply(state: &mut State, control: &Control, out: &mut Vec<Decision>) {
@@ -96,14 +96,22 @@ pub(crate) fn refresh_priorities(state: &mut State, rules: &Rules) {
     }
 }
 
-fn check_conditions(checks: &[String]) -> Vec<Condition> {
-    let v = serde_json::Value::Array(
-        checks
-            .iter()
-            .map(|c| serde_json::Value::String(format!("check-success = {c}")))
-            .collect(),
-    );
-    conditions::parse_list(&v, "", &mut Vec::new())
+/// Required checks are typed atoms: check names are literal values, and app IDs cannot be
+/// confused with app slugs or supplied through a condition string.
+pub fn check_conditions(checks: &[RequiredCheck]) -> Vec<Condition> {
+    checks
+        .iter()
+        .map(|c| {
+            Condition::Atom(Atom {
+                negate: false,
+                length: false,
+                attribute: "check-success".into(),
+                operator: Some(Operator::Eq),
+                value: Some(c.context().into()),
+                integration_id: c.integration_id(),
+            })
+        })
+        .collect()
 }
 
 /// The queue conditions of a rule on `base`, with the required checks of the base branch's
@@ -217,5 +225,61 @@ mod tests {
         pr.base = "dev".into();
         pr.labels.clear();
         assert!(!f.holds(&pr, &ctx, 15), "does not match");
+    }
+}
+
+#[cfg(test)]
+mod required_check_tests {
+    use super::*;
+    use crate::model::{CheckRun, Conclusion, RequiredCheck};
+
+    #[test]
+    fn required_check_pin_requires_the_numeric_integration_on_the_current_head() {
+        let check: RequiredCheck = serde_json::from_value(serde_json::json!({
+            "context": "lint", "integration_id": 42
+        }))
+        .unwrap();
+        let conditions = check_conditions(&[check]);
+        let Condition::Atom(atom) = &conditions[0] else {
+            panic!("injected atom")
+        };
+        assert_eq!(
+            crate::explain::atom_text(atom),
+            "check-success = lint (integration 42)"
+        );
+        let mut pr = PullRequest::new(1, "bot", "main", "topic", "head");
+        let holds = |p: &PullRequest| {
+            crate::eval::eval_list(
+                &conditions,
+                p,
+                &crate::eval::Context::default(),
+                &mut vec![],
+            )
+            .0
+        };
+        pr.checks.push(CheckRun {
+            name: "lint".into(),
+            app: Some("wrong-app".into()),
+            app_id: Some(7),
+            head_sha: "head".into(),
+            conclusion: Some(Conclusion::Success),
+            seq: 1,
+            ..Default::default()
+        });
+        assert!(
+            !holds(&pr),
+            "another integration cannot satisfy the ruleset"
+        );
+        pr.checks[0].app_id = None;
+        pr.checks[0].status = true;
+        assert!(
+            !holds(&pr),
+            "an unverified commit status cannot satisfy an app pin"
+        );
+        pr.checks[0].status = false;
+        pr.checks[0].app_id = Some(42);
+        assert!(holds(&pr));
+        pr.checks[0].head_sha = "old-head".into();
+        assert!(!holds(&pr));
     }
 }

@@ -20,12 +20,66 @@ pub enum Conclusion {
     Stale,
 }
 
+/// A required context, optionally pinned to the numeric GitHub integration ID.
+/// Plain strings keep persisted journals and scenario files backward compatible.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RequiredCheck {
+    Context(String),
+    Pinned {
+        context: String,
+        integration_id: u64,
+    },
+}
+
+impl RequiredCheck {
+    pub fn context(&self) -> &str {
+        match self {
+            Self::Context(context) | Self::Pinned { context, .. } => context,
+        }
+    }
+
+    pub fn integration_id(&self) -> Option<u64> {
+        match self {
+            Self::Context(_) => None,
+            Self::Pinned { integration_id, .. } => Some(*integration_id),
+        }
+    }
+}
+
+impl From<String> for RequiredCheck {
+    fn from(value: String) -> Self {
+        Self::Context(value)
+    }
+}
+
+impl From<&str> for RequiredCheck {
+    fn from(value: &str) -> Self {
+        Self::Context(value.into())
+    }
+}
+
+impl std::fmt::Display for RequiredCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Context(context) => f.write_str(context),
+            Self::Pinned {
+                context,
+                integration_id,
+            } => write!(f, "{context} (integration {integration_id})"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     pub name: String,
     /// Slug of the app that published the run (`github-actions`); `None` if unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// Numeric publishing integration, verified by the forge (never a status author).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<u64>,
     pub head_sha: String,
     /// `None` while queued or in progress.
     pub conclusion: Option<Conclusion>,
@@ -242,10 +296,15 @@ impl PullRequest {
     ///   later. The docs read it that way for checks the base branch requires; the engine does
     ///   not know which checks are required, so it reads every check that way (fail closed).
     pub fn current_checks(&self) -> Vec<&CheckRun> {
-        type Key<'a> = (bool, &'a str, Option<&'a str>);
+        type Key<'a> = (bool, &'a str, Option<&'a str>, Option<u64>);
         let mut groups: Vec<(Key, Vec<&CheckRun>)> = Vec::new();
         for run in self.checks.iter().filter(|c| c.head_sha == self.head_sha) {
-            let key = (run.status, run.name.as_str(), run.app.as_deref());
+            let key = (
+                run.status,
+                run.name.as_str(),
+                run.app.as_deref(),
+                run.app_id,
+            );
             let suite = (run.workflow.as_deref(), run.event.as_deref());
             let Some((_, runs)) = groups.iter_mut().find(|(k, _)| *k == key) else {
                 groups.push((key, vec![run]));
