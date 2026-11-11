@@ -76,6 +76,9 @@ pub struct InventoryEntry {
     /// A default's value (`null` included); absent for other kinds.
     #[serde(default = "no_value")]
     pub value: serde_json::Value,
+    /// The schema marks the option as experimental (`x-mergify-experimental`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 /// Placeholder for an entry without a value: never "off".
@@ -248,6 +251,14 @@ impl FeatureMap {
         self.ids.contains(id)
     }
 
+    /// Whether the inventory marks `id` as experimental.
+    pub fn is_experimental(&self, id: &str) -> bool {
+        self.inventory
+            .entries
+            .iter()
+            .any(|e| e.experimental && e.id == id)
+    }
+
     /// Features whose inventory patterns match `id` (exactly one when the map is consistent).
     pub fn owners(&self, id: &str) -> Vec<&Feature> {
         self.features
@@ -401,6 +412,7 @@ mod tests {
                     kind: "attr".into(),
                     ty: None,
                     value: serde_json::Value::Null,
+                    experimental: false,
                 })
                 .to_vec(),
         };
