@@ -5,7 +5,11 @@ priority: P3
 arztagent: false
 status: missing
 inventory:
-  - "api:*/ci/{owner}/repositories/*"
+  - "api:*/ci/{owner}/repositories/{repository}/quarantines*"
+  - "api:*/ci/{owner}/repositories/{repository}/test-states*"
+  - "api:*/ci/{owner}/repositories/{repository}/search/tests"
+  - "api:*/ci/{owner}/repositories/{repository}/tests/*"
+  - "api:*/ci/{owner}/repositories/{repository}/test-selection/*"
   - "cli:mergify tests *"
   - "cli:mergify ci junit-process"
   - "cli:mergify ci junit-upload"
