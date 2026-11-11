@@ -50,7 +50,7 @@ Preconditions:
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
 - **In place.** Run `target/release/schlange sim run scenarios/p1-in-place.yaml`. Log has `car 2: check #1 in place` (no queue branch for #1) and, for #2 (behind main), a car `on mergify/merge-queue/…`; both land. Exit 0.
-- **Drafts for batches.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml` (Arztagent's configuration: batches of five, two-step CI). Every car runs on a `mergify/merge-queue/…` branch with a draft; `(checks #1 #2 #3)` and `(checks #4 #5 #6 #7 #8)`. Exit 0.
+- **Drafts for batches.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml` (two-step CI, batches of five). Every car runs on a `mergify/merge-queue/…` branch with a draft; `(checks #1 #2 #3)` and `(checks #4 #5 #6 #7 #8)`. Exit 0.
 - **Cleanup.** In both runs the invariant report shows `I3 checked`: after every simulated step the queue branches (prefix plus ten hex characters) and open drafts on the forge are exactly those of the engine's cars.
 
 ## Gotchas

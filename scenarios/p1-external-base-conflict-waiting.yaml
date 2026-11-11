@@ -1,4 +1,4 @@
-# S10's Arztagent config waits five minutes before building a partial batch. Exercise an
+# S10's Arztagent config waits two minutes before building a partial batch. Exercise an
 # external push while both pull requests are already queued but that wait has not elapsed.
 name: p1-external-base-conflict-waiting
 description: A queued pull request conflicts with an external base push during the batch wait.

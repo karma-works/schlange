@@ -50,6 +50,7 @@ Preconditions:
 
 - **Tests.** `cargo test -p schlange-core` table test of all conclusions × attributes.
 - **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#7` (`ci-ok` failure) and `#10` (cancelled check) are not queued; `#1` enters only after its last required check completes.
+- **Negated regex on `check-failure`.** Run `target/release/schlange sim run scenarios/p1-arztagent-journeys-informational.yaml` (Arztagent's `-check-failure ~= ^(?!verify-arztagent journeys$)`). Exit `0`; `#1`, red only in `verify-arztagent journeys`, lands; `#2` (`Scanners` red) and `#3` (both red) are not queued. Against the fake GitHub: `cargo test -p schlange-github-fake --test e2e_arztagent a_red_journeys_check` (a red Journeys check after enqueueing does not dequeue either).
 
 ## Gotchas
 
