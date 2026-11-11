@@ -28,9 +28,19 @@ queue_rules:
       - or:
           - check-success = KI-Review
           - author = dependabot[bot]
-    # Mergen: volle Suite auf dem Queue-PR.
+    # Mergen: volle Suite auf dem Queue-PR. Ein rotes Paket meldet ci.yml sofort als
+    # ci-failed-<Paket>; dann ist die Bedingung endgültig falsch und Mergify nimmt den Queue-PR
+    # heraus, ohne auf den langsamsten Job und ci-ok zu warten. Explizite Namen mit "=", weil
+    # nur genannte Checks als endgültig rot zählen (auch in Schlange).
     merge_conditions:
       - check-success = ci-ok
+      - -check-failure = ci-failed-backend
+      - -check-failure = ci-failed-cli
+      - -check-failure = ci-failed-connector
+      - -check-failure = ci-failed-doctolib
+      - -check-failure = ci-failed-governance
+      - -check-failure = ci-failed-typescript
+      - -check-failure = ci-failed-voice
 
 pull_request_rules:
   - name: Agenten- und Menschen-PRs automatisch einreihen
