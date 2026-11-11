@@ -3,7 +3,10 @@
 # Size:   scripts/image-size.sh
 
 FROM rust:1.98.1-alpine3.22 AS build
-RUN apk add --no-cache musl-dev ca-certificates
+# Optional build-only CA bundle for managed HTTPS proxies. Secret mounts never enter a layer.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca; fi; \
+    apk add --no-cache musl-dev ca-certificates
 WORKDIR /src
 # Dependencies first, for layer caching.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -12,7 +15,12 @@ COPY crates crates
 COPY tools/inventory tools/inventory
 # build.rs of schlange-config embeds the feature map.
 COPY .agents/skills/verify-schlange/features .agents/skills/verify-schlange/features
-RUN cargo build --locked --release -p schlange --target x86_64-unknown-linux-musl \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then \
+      export SSL_CERT_FILE=/run/secrets/proxy_ca \
+        CARGO_HTTP_CAINFO=/run/secrets/proxy_ca CURL_CA_BUNDLE=/run/secrets/proxy_ca; \
+    fi; \
+    cargo build --locked --release -p schlange --target x86_64-unknown-linux-musl \
  && cp target/x86_64-unknown-linux-musl/release/schlange /schlange
 RUN echo 'schlange:x:65532:65532:schlange:/data:/sbin/nologin' > /passwd \
  && echo 'schlange:x:65532:' > /group \

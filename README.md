@@ -155,8 +155,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (311) | – | built 256, partial 14 | 41 |
-| Sub-features Arztagent uses (166) | – | built 149, partial 9 | 8 |
+| Sub-features (313) | – | built 260, partial 13 | 40 |
+| Sub-features Arztagent uses (168) | – | built 153, partial 8 | 7 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -173,7 +173,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Commands `queue`, `dequeue`, `refresh`](.agents/skills/verify-schlange/features/commands.md) | partial | 9 / 0 / 0 | yes |
 | [Who may run commands (`commands_restrictions`)](.agents/skills/verify-schlange/features/commands-restrictions.md) | partial | 7 / 0 / 0 | yes |
 | [Attributes `base`, `draft`, `label`, `author`, `sender`](.agents/skills/verify-schlange/features/conditions-basic.md) | partial | 5 / 0 / 1 | yes |
-| [Check attributes and check semantics](.agents/skills/verify-schlange/features/conditions-checks.md) | partial | 4 / 0 / 0 | yes |
+| [Check attributes and check semantics](.agents/skills/verify-schlange/features/conditions-checks.md) | partial | 6 / 0 / 0 | yes |
 | [Dependabot attributes](.agents/skills/verify-schlange/features/conditions-dependabot.md) | partial | 1 / 0 / 0 | yes |
 | [Attribute `files` with regex](.agents/skills/verify-schlange/features/conditions-files.md) | partial | 4 / 1 / 0 | yes |
 | [Condition syntax and combinators](.agents/skills/verify-schlange/features/conditions-syntax.md) | partial | 2 / 0 / 0 | yes |
@@ -187,7 +187,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Bisection of red batches](.agents/skills/verify-schlange/features/queue-bisection.md) | partial | 6 / 0 / 0 | yes |
 | [Bot accounts for merge, draft and update](.agents/skills/verify-schlange/features/queue-bot-accounts.md) | partial | 1 / 0 / 0 | yes |
 | [Foreign pushes to queue branches](.agents/skills/verify-schlange/features/queue-branch-edit.md) | partial | 3 / 0 / 0 | yes |
-| [Required checks from branch protection and rulesets](.agents/skills/verify-schlange/features/queue-branch-protection.md) | partial | 3 / 1 / 1 | yes |
+| [Required checks from branch protection and rulesets](.agents/skills/verify-schlange/features/queue-branch-protection.md) | partial | 5 / 0 / 0 | yes |
 | [Check timeout and retries (defaults)](.agents/skills/verify-schlange/features/queue-checks-timeout.md) | partial | 7 / 0 / 0 | yes |
 | [Commit message on merge](.agents/skills/verify-schlange/features/queue-commit-message.md) | partial | 4 / 0 / 1 | yes |
 | [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 4 / 1 / 0 | yes |

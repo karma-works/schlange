@@ -15,6 +15,11 @@ check. Review the example's immutable Caddy and Ubuntu Squid image pins (used fo
 checks), updating them under the host's patch policy. Record all three image identifiers with
 the release.
 
+When the build host uses a private HTTPS proxy CA, pass the combined trusted CA bundle as a
+BuildKit secret: `docker build --secret id=proxy_ca,src=/path/to/ca-bundle.pem -t schlange:dev .`.
+The optional secret is mounted only for dependency fetching; it is never copied into an image
+layer or the final runtime certificate store. Keep TLS verification enabled.
+
 Copy `ops/` to `/etc/schlange`, then prepare directories as root:
 
 ```bash
@@ -77,7 +82,10 @@ Schlange runs as `65532:65532` with a read-only root, all capabilities dropped,
 Docker network has no external route. Its HTTP client uses the explicit `HTTPS_PROXY` setting
 to Squid, which accepts only CONNECT to exactly `api.github.com:443`; arbitrary HTTP,
 other ports and other hosts are denied. Squid does not intercept TLS or log requests. Caddy
-has a separate internet network for ACME. Its only application route is `POST /webhook`, with
+has a separate internet network for ACME. The pinned Caddy binary carries the
+`NET_BIND_SERVICE` file capability, so ingress retains that single bounding capability
+alongside `no-new-privileges`; otherwise Linux refuses to execute it. Schlange and Squid retain
+zero capabilities. Caddy's only application route is `POST /webhook`, with
 a 2 MB body limit and bounded timeouts. Do not attach Schlange to an external Docker network,
 publish Squid's port, or replace the ACL with a broad GitHub domain wildcard.
 

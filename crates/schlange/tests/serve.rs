@@ -321,14 +321,12 @@ fn serve_without_upstream_schema_keeps_last_valid_repository_config() {
     let wait = |error: bool| {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            if let Some(value) = status() {
-                if let Some(worker) = value.as_object().and_then(|w| w.values().next()) {
-                    if worker["last_reconcile"].is_number()
-                        && worker["config_error"].is_string() == error
-                    {
-                        return worker.clone();
-                    }
-                }
+            if let Some(value) = status()
+                && let Some(worker) = value.as_object().and_then(|w| w.values().next())
+                && worker["last_reconcile"].is_number()
+                && worker["config_error"].is_string() == error
+            {
+                return worker.clone();
             }
             assert!(
                 Instant::now() < deadline,

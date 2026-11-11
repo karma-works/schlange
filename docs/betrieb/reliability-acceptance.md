@@ -16,6 +16,21 @@ perform the production changes in issue #31.
 
 ## External acceptance still required
 
+Attempted sandbox run
+[43058424608](https://github.com/karma-works/schlange/actions/runs/43058424608)
+on commit `4e53294` stopped at fixture preparation before any scenario ran:
+the configured `SANDBOX_HUMAN_TOKEN` could not prove ownership of
+`schlange-sandbox`. The guard requests API access and organisation Members read
+permission. An organisation owner must repair this sandbox-scoped secret; do
+not substitute a broader token or remove the ownership guard. No baseline was
+produced by this attempt.
+
+The formal `scripts/critic.sh pr` attempt was blocked by an HTTP CONNECT 403 to
+`chatgpt.com/backend-api/codex/responses` from this environment. No critic verdict
+was produced. A separate subagent review identified two integration bugs that
+were corrected (the runtime queue-mode enum and same-name foreign integration
+pins), but that review does not substitute for the required critic verdict.
+
 - Record and review real Mergify baselines for S14–S19, recheck provisional S11
   and the S13/S16/S17 conflict-reason distinction. Never infer a baseline from a
   fake or timed-out run. The sandbox workflow supports active and shadow runs;

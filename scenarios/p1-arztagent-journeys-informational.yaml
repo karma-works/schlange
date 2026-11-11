@@ -1,29 +1,33 @@
-# Arztagent's real `.mergify.yml` holds a pull request out of the queue while any check on it
-# is red, except the Journeys (`-check-failure ~= ^(?!verify-arztagent journeys$)`, Arztagent
-# #1851): they are informational and not required to merge.
-# #1: only `verify-arztagent journeys` fails on the pull request; it is queued and lands.
-# #2: `Scanners` fails on the pull request; it never enters the queue.
-# #3: the Journeys and `Scanners` fail; the Journeys exception does not cover `Scanners`.
+# This test derivative expands the source snapshot's Journeys regex to exempt both bare and
+# @github-actions/ names. The unchanged source snapshot's bare exemption does not exempt
+# app-qualified failures; e2e_arztagent covers that actual-source behavior separately.
+# #1: only Journeys fails and lands; #2/#3: Scanners fails and never enters.
 name: p1-arztagent-journeys-informational
 description: A red Journeys check does not hold a pull request; any other red check does.
-config: ../crates/schlange-config/tests/golden/arztagent.yml
+config: configs/arztagent-journeys-informational.yml
 
 ci:
-  - check: Risk class and data protection
+  - app: github-actions
+    check: Risk class and data protection
     duration: 1m
-  - check: ci-ok
+  - app: github-actions
+    check: ci-ok
     duration: 3m
     runs_on: pull_request
-  - check: ci-ok
+  - app: github-actions
+    check: ci-ok
     duration: 20m
     runs_on: queue
-  - check: KI-Review
+  - app: github-actions
+    check: KI-Review
     duration: 5m
     runs_on: pull_request
-  - check: verify-arztagent journeys
+  - app: github-actions
+    check: verify-arztagent journeys
     duration: 8m
     runs_on: pull_request
-  - check: Scanners
+  - app: github-actions
+    check: Scanners
     duration: 2m
     runs_on: pull_request
 
