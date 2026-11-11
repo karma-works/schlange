@@ -1,0 +1,31 @@
+# Two queues that differ only in how they exempt a failing `verify-arztagent journeys` check
+# from `-check-failure`. Authors pick the queue.
+queue_rules:
+  - name: bare-exemption
+    queue_conditions:
+      - base = main
+      - check-success = quick
+      - -check-failure ~= ^(?!verify-arztagent journeys$)
+    merge_conditions:
+      - check-success = quick
+  - name: qualified-exemption
+    queue_conditions:
+      - base = main
+      - check-success = quick
+      - -check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys$)
+    merge_conditions:
+      - check-success = quick
+
+pull_request_rules:
+  - name: bare exemption
+    conditions:
+      - author = bare-bot
+    actions:
+      queue:
+        name: bare-exemption
+  - name: qualified exemption
+    conditions:
+      - author = bot
+    actions:
+      queue:
+        name: qualified-exemption

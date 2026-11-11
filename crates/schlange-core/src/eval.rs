@@ -138,6 +138,21 @@ fn checks_where(
     )
 }
 
+/// Like [`checks_where`] without an app, but each run also under `@<app-slug>/<name>` when
+/// its app is known (what a regex or glob on a `check-*` attribute matches against).
+fn check_names_with_app(pr: &PullRequest, pred: impl Fn(Option<Conclusion>) -> bool) -> AttrValue {
+    AttrValue::List(
+        pr.current_checks()
+            .into_iter()
+            .filter(|c| pred(c.conclusion))
+            .flat_map(|c| {
+                std::iter::once(c.name.clone())
+                    .chain(c.app.as_ref().map(|a| format!("@{a}/{}", c.name)))
+            })
+            .collect(),
+    )
+}
+
 /// Whether a check reference from a condition (`name` or `@<app>/<name>`) names this run.
 pub fn check_matches(reference: &str, run: &crate::model::CheckRun) -> bool {
     match schlange_config::conditions::qualified(reference) {
@@ -315,7 +330,14 @@ pub fn eval_atom(atom: &Atom, pr: &PullRequest, ctx: &Context) -> Result<bool, E
             };
             (value, &unqualified)
         }
-        None => (attribute(pr, ctx, &atom.attribute)?, atom),
+        None => match (check_predicate(&atom.attribute), atom.operator) {
+            // Observed on Mergify: a regex or glob sees every run twice, as `<name>` and, when
+            // its app is known, as `@<app-slug>/<name>`. `=`, `!=` and `#` stay on bare names.
+            (Some(pred), Some(Operator::Regex | Operator::Glob)) if !atom.length => {
+                (check_names_with_app(pr, pred), atom)
+            }
+            _ => (attribute(pr, ctx, &atom.attribute)?, atom),
+        },
     };
     let bad_op = |op: Operator| EvalError::BadOperator {
         attribute: atom.attribute.clone(),
@@ -792,6 +814,56 @@ mod tests {
             .is_err(),
             "an unbalanced brace is an error, not a literal"
         );
+    }
+
+    /// Observed on Mergify (Arztagent, 2026-11-10): a regex or glob on a `check-*` attribute
+    /// sees each run under its bare name and under `@<app-slug>/<name>`, so a negative
+    /// lookahead that names only the bare name still matches the qualified form. `=` and `!=`
+    /// keep comparing bare names.
+    #[test]
+    fn check_regex_sees_bare_and_app_qualified_names() {
+        use Conclusion::*;
+        let mut p = pr();
+        let mut journeys = run("verify-arztagent journeys", "h2", Some(Failure), 1);
+        journeys.app = Some("github-actions".into());
+        let mut lint = run("lint", "h2", Some(Success), 2);
+        lint.app = Some("other-app".into());
+        p.checks = vec![journeys.clone(), lint.clone()];
+        let old = "-check-failure ~= ^(?!verify-arztagent journeys$)";
+        let fixed = "-check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys$)";
+        assert!(
+            !holds(old, &p),
+            "the qualified form defeats the bare-name exemption"
+        );
+        assert!(holds(fixed, &p), "the fixed regex exempts both forms");
+        assert!(holds("check-failure ~= ^@github-actions/", &p));
+        assert!(holds("check-success ~= ^@other-app/lint$", &p));
+        assert!(holds("check-success *= *other-app/lint", &p), "glob too");
+        assert!(
+            holds("check-success ~= ^lint$", &p),
+            "the bare name still matches"
+        );
+        // `=` and `!=` compare bare names only; the qualified value pins the app.
+        assert!(!holds("check-success = @github-actions/lint", &p));
+        assert!(holds("check-success = @other-app/lint", &p));
+        assert!(holds("check-success = lint", &p));
+        assert!(!holds("check-success != @other-app/lint", &p));
+        assert!(holds(
+            "check-failure != @other-app/verify-arztagent journeys",
+            &p
+        ));
+        // Counting stays per run, not per form.
+        assert!(holds("#check-failure = 1", &p));
+        // The same check from another app is not exempt by the fixed regex.
+        let mut other = journeys.clone();
+        other.app = Some("other-app".into());
+        p.checks = vec![other];
+        assert!(!holds(fixed, &p));
+        // A run without a known app has only its bare name.
+        let mut bare = journeys;
+        bare.app = None;
+        p.checks = vec![bare];
+        assert!(holds(old, &p));
     }
 
     /// Critic 1abc, conditions-checks: the newest run per app, per workflow and event, and

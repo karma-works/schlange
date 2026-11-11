@@ -36,6 +36,7 @@ source.
 - `failure`: failure, cancelled, timed_out, action_required (built in the simulation).
 - `newest-run`: built. One run counts per kind (check run or commit status), name and GitHub App on the head commit; check runs and statuses are ordered apart (their ids are never compared). When one check spans several workflow files or events, the newest run of each counts and a run that has not passed is kept even if another one passed later. The docs read checks that way only when the base branch requires them; the engine does not know which checks are required and reads every check that way (fail closed). The GitHub adapter fills in workflow and event from the head's workflow runs, so a re-run of the same workflow/event supersedes while another workflow or event counts as its own check (`github-integration` `check-identity`).
 - `app-prefix`: built. `@<app-slug>/<name>` matches only that app's runs on every `check-*` attribute; the bare name matches any app; `config validate` rejects a value starting with `@` of another shape.
+- `regex-app-forms`: built. A regex (`~=`) or glob (`*=`) on a `check-*` attribute matches each current run under its bare name and, when its app is known, also as `@<app-slug>/<name>`; it holds when either form matches. So `-check-failure ~= ^(?!journeys$)` does not exempt a failing `journeys` run from GitHub Actions (its form `@github-actions/journeys` matches the lookahead); `^(?!(?:@github-actions/)?journeys$)` does, and still not a failing `@other-app/journeys`. `=`, `!=` and `#` keep reading bare names (and the app-pinned `@app/name` value). Source: observed on Mergify in Arztagent on 2026-11-10 (karma-works/arzt-agent#1666: the queue condition stayed unmet while the only failing run was `verify-arztagent journeys`; Mergify's summary writes checks as `@github-actions/<name>`). Unit test `check_regex_sees_bare_and_app_qualified_names` (`crates/schlange-core/src/eval.rs`), scenario `scenarios/p1-check-regex-app.yaml`. Needs a sandbox: not yet recorded on `queue-lab`; whether commit statuses (no app) also get a qualified form is unobserved, and Schlange gives them only the bare name.
 - `stale`: built. Only runs on the current head count (`PullRequest::current_checks`).
 
 ## How to get to it (user POV)
@@ -49,6 +50,7 @@ Preconditions:
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
 - **Tests.** `cargo test -p schlange-core` table test of all conclusions × attributes.
+- **Scenario.** Run `target/release/schlange sim run scenarios/p1-check-regex-app.yaml`. Exit `0`; `#2` merges, `#1` (bare-name exemption) and `#3` (failing run from another app) stay open.
 - **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#7` (`ci-ok` failure) and `#10` (cancelled check) are not queued; `#1` enters only after its last required check completes.
 
 ## Gotchas
