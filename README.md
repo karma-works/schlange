@@ -141,9 +141,10 @@ The problem catalogue ([docs/research/merge-queue-probleme.md](docs/research/mer
 MQ-01…MQ-53) lists known merge queue failure modes; [docs/mq-coverage.md](docs/mq-coverage.md)
 maps each to its tests.
 
-Agents verify with two skills: [`verify-schlange`](.agents/skills/verify-schlange/SKILL.md)
-(build, doctor, drive, evidence) and [`sandbox-e2e`](.agents/skills/sandbox-e2e/SKILL.md)
-(end-to-end on real GitHub).
+Agents use three project skills: [`schlange-architecture`](.agents/skills/schlange-architecture/SKILL.md)
+(architectural decisions, crate boundaries, and the roadmap to replace Mergify on Arztagent),
+[`verify-schlange`](.agents/skills/verify-schlange/SKILL.md) (build, doctor, drive, evidence),
+and [`sandbox-e2e`](.agents/skills/sandbox-e2e/SKILL.md) (end-to-end on real GitHub).
 
 ## Implementation status
 
