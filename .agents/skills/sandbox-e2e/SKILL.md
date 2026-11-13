@@ -87,7 +87,9 @@ changes.
 
 ## 4. Run Schlange
 
-**Active, on `schlange-e2e`** (local; the workflow does not start `serve` yet):
+**Active, on `schlange-e2e`.** The workflow (`-f repo=schlange-e2e`) builds the release binary
+and runs `serve` in the runner without webhooks (it polls by reconciliation). Locally, for
+debugging with webhooks:
 
 ```bash
 cargo build --release -p schlange
@@ -105,7 +107,8 @@ $D run sandbox/scenarios/<scenario>.json --repo schlange-e2e --baseline sandbox/
 The fixture exempts only `mergify[bot]` from its PR gate, as Arztagent currently does. Schlange
 drafts take the fixture's heading check; its simplified gate does not run Arztagent's classifier.
 
-**Shadow, on `queue-lab`**, next to Mergify: the same `serve` with `--shadow` and
+**Shadow, on `queue-lab`**, next to Mergify: in the workflow with `-f shadow_mode=true` (its
+report is checked against the driver's recorded queue events); locally the same `serve` with `--shadow` and
 `--repo schlange-sandbox/queue-lab`, then `$D run … --repo queue-lab` and
 `target/release/schlange shadow report --repo schlange-sandbox/queue-lab --data-dir <dir>`.
 Mergify acts, Schlange only decides; the report lists where they differ. This is the rehearsal

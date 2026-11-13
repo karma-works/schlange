@@ -1,6 +1,6 @@
 ---
 name: verify-schlange
-description: "Prove that a Schlange change works: build the binary (and the scratch image), run `schlange doctor`, drive the mapped CLI paths and scenarios in the simulated forge (format of create-verification-skill), capture evidence, and hand the feature to the critic. Use before saying a feature works, before opening a PR, and whenever someone asks to verify, smoke-test or demo Schlange."
+description: "Prove that a Schlange change works: build the binary (and the scratch image), run `schlange doctor`, drive the mapped CLI paths and scenarios in the simulated forge, capture evidence, and hand the feature to the critic. Use before saying a feature works, before opening a PR, and whenever someone asks to verify, smoke-test or demo Schlange."
 ---
 
 # Verify Schlange
@@ -63,7 +63,9 @@ per claim and the commit. Summarise `proof.md` in the PR. Then ask the critic:
 Proof standards: drive the real CLI path on the release binary, not library calls or test
 helpers; capture the command and the resulting output and exit code, not only a summary; for
 scenarios keep the event log, which is the observable side effect of the simulated forge.
-There are no mocks beyond the simulated forge, which is the production boundary in phase 0.
+`$V` drives the simulated forge only. GitHub-side behaviour is proven against the fake GitHub
+(`cargo test -p schlange-github-fake`) and, where a feature file says it needs a sandbox, with
+the `sandbox-e2e` skill.
 
 ## 5. Cleanup
 
@@ -83,6 +85,5 @@ once.
 | `scripts/critic.sh` (repo) | `scripts/critic.sh <feature-id\|feature-map\|pr>`; verdict in `.critic/<id>.json` |
 | `tools/fetch-mergify-sources` (repo) | `tools/fetch-mergify-sources [--update\|--offline]` |
 
-Proved in a stand-in: phase 0 runs on the VPS with the simulated forge only. Not verified
-until a run on the real target: GitHub App permissions, webhooks, rulesets, the image under a
-real orchestrator (read-only root, volume `/data`).
+Not covered by `$V`: GitHub App permissions, webhooks and rulesets (fake GitHub tests, then
+`sandbox-e2e`), and the image under a real orchestrator (read-only root, volume `/data`).
