@@ -20,6 +20,7 @@ KONZEPT.md and docs/research/ predate that rule and are still in German.
 | `tools/inventory` | builds the feature inventory from the pinned Mergify sources |
 | `tools/fetch-mergify-sources`, `tools/mergify-sources.lock` | downloads and pins the sources |
 | `.agents/skills/verify-schlange/` | verification skill; `features/` is the feature map |
+| `.agents/skills/schlange-architecture/` | architecture skill: crate boundaries, invariant/threat-model rules, and the phased roadmap to finish replacing Mergify for Arztagent (linked in `.claude/skills/`) |
 | `scenarios/` | scenarios for `schlange sim run`; `scenarios/configs/` holds their configurations |
 | `docs/mq-coverage.md` | which MQ case has which test |
 | `.cargo/config.toml` | `LIBSQLITE3_FLAGS`: the bundled SQLite without FTS, R-tree, JSON, extension loading (binary and image size) |
