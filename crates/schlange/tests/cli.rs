@@ -138,6 +138,8 @@ fn doctor_validates_the_configuration_and_counts_partial_apart() {
         "--offline",
         "--config",
         &format!("{GOLDEN}/unsupported.yml"),
+        "--schema",
+        ".research/mergify/schema.json",
     ]);
     assert_eq!(code, 0, "{out}");
     let c = doctor_check(&out, "configuration");

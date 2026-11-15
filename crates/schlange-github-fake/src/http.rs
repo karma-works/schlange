@@ -510,6 +510,7 @@ pub(crate) fn required_permission(
         ["commits", _, "check-runs" | "check-suites"] | ["check-runs", ..] => {
             Some(("checks", level))
         }
+        ["actions", "runs"] if method == "GET" => Some(("actions", "read")),
         ["commits", _, "status"] => Some(("statuses", "read")),
         ["git", ..] | ["merges"] | ["compare", ..] | ["contents", ..] | ["commits", ..] => {
             Some(("contents", level))
@@ -1205,7 +1206,9 @@ fn repo_route(
                 let checks: Vec<Value> = st
                     .required_checks
                     .iter()
-                    .map(|c| json!({ "context": c }))
+                    .map(
+                        |c| json!({ "context": c.context(), "integration_id": c.integration_id() }),
+                    )
                     .collect();
                 items.push(json!({ "type": "required_status_checks", "ruleset_id": 77,
                                    "parameters": { "required_status_checks": checks,

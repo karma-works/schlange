@@ -3,3 +3,5 @@ target/
 evidence/
 .git/
 spikes/
+ops/secrets/
+ops/stack.env

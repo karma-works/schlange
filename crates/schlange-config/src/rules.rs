@@ -670,7 +670,7 @@ pub fn parse_duration(text: &str) -> Option<u64> {
             "d" | "day" | "days" => 86400,
             _ => return None,
         };
-        total += number.take()? * factor;
+        total = total.checked_add(number.take()?.checked_mul(factor)?)?;
         matched = true;
         rest = &rest[word_end..];
     }
@@ -692,6 +692,11 @@ mod tests {
         assert_eq!(parse_duration("soon"), None);
         assert_eq!(parse_duration("5"), Some(5));
         assert_eq!(parse_duration("5 parsecs"), None);
+        assert_eq!(parse_duration("18446744073709551615 days"), None);
+        assert_eq!(
+            parse_duration("18446744073709551615 seconds 1 second"),
+            None
+        );
     }
 
     #[test]

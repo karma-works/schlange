@@ -8,11 +8,19 @@ use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, Tester};
 
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
+// The source fixture is unchanged. Informational Journeys needs this explicit derivative
+// because regex matching also sees @github-actions/<name> (observed in PR #24).
+const INFORMATIONAL_JOURNEYS: &str =
+    include_str!("../../../scenarios/configs/arztagent-journeys-informational.yml");
 const DEPENDABOT: &str = "dependabot[bot]";
 const BOT: &str = "arztagent-bot";
 
 fn start() -> Running {
-    Tester::new(ARZTAGENT)
+    start_with(ARZTAGENT)
+}
+
+fn start_with(config: &str) -> Running {
+    Tester::new(config)
         // Checks are reported by hand so that each test decides which ones exist.
         .ci(CiRule::fails_on("ci-ok", CiOn::Queue, "BREAKS_FULL_SUITE"))
         .fake(|c| {
@@ -173,12 +181,25 @@ fn a_partial_batch_waits_exactly_two_minutes() {
     t.shutdown();
 }
 
-/// Arztagent #1851: `-check-failure ~= ^(?!verify-arztagent journeys$)`. A red Journeys check
-/// neither keeps a pull request out of the queue nor removes it from it; any other red check
-/// keeps it out, also next to a red Journeys check.
+/// With an exemption that explicitly covers GitHub Actions-qualified names, a red Journeys
+/// check neither blocks entry nor dequeues; unrelated red checks still block entry.
 #[test]
-fn a_red_journeys_check_neither_holds_nor_dequeues_a_pull_request() {
-    let t = start();
+fn an_explicit_app_qualified_journeys_exemption_keeps_the_check_informational() {
+    let without_comments = |text: &str| {
+        text.lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        without_comments(INFORMATIONAL_JOURNEYS),
+        without_comments(&ARZTAGENT.replace(
+            "^(?!verify-arztagent journeys$)",
+            "^(?!(?:@github-actions/)?verify-arztagent journeys$)"
+        )),
+        "the test derivative must differ only in the Journeys regex"
+    );
+    let t = start_with(INFORMATIONAL_JOURNEYS);
     let journeys = t.open_pr(BOT).file("a.py", "a\n").create();
     let red_later = t.open_pr(BOT).file("b.py", "b\n").create();
     let scanners = t.open_pr(BOT).file("c.py", "c\n").create();
@@ -212,6 +233,32 @@ fn a_red_journeys_check_neither_holds_nor_dequeues_a_pull_request() {
     for n in [scanners, both] {
         assert!(!queued(&t, n));
     }
+    t.assert_invariants();
+    t.shutdown();
+}
+
+/// The actual source snapshot exempts only the bare check name. A GitHub Actions run also
+/// matches as @github-actions/<name>, so its failure blocks entry and dequeues an existing PR.
+#[test]
+fn the_actual_bare_journeys_exemption_still_blocks_an_app_qualified_failure() {
+    let t = start();
+    let red_first = t.open_pr(BOT).file("first.py", "a\n").create();
+    let red_later = t.open_pr(BOT).file("later.py", "b\n").create();
+    t.pr(red_first).check("verify-arztagent journeys").fail();
+    for pr in [red_first, red_later] {
+        green(&t, pr, true);
+    }
+    t.pr(red_later).wait_queued();
+    t.settle();
+    assert!(
+        !queued(&t, red_first),
+        "the real regex does not exempt the qualified form"
+    );
+    t.pr(red_later).check("verify-arztagent journeys").fail();
+    t.wait_until("qualified failure dequeued", |t| !queued(t, red_later));
+    assert_eq!(t.dequeue_code(red_later).as_deref(), Some("PR_DEQUEUED"));
+    assert!(!t.gh.pr(red_first).unwrap().merged);
+    assert!(!t.gh.pr(red_later).unwrap().merged);
     t.assert_invariants();
     t.shutdown();
 }

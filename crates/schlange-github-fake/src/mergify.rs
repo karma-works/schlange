@@ -30,6 +30,14 @@ pub const MERGIFY_APP: &str = "mergify";
 pub const MERGIFY_QUEUE_CHECK: &str = "Queue: merge queue (other)";
 
 impl FakeGithub {
+    /// A check published by the other app; a summary or rule evaluation is not queue entry.
+    pub fn mergify_check(&self, n: u64, name: &str, conclusion: Option<&str>) {
+        self.with(|s| {
+            let head = s.prs[&n].head_sha.clone();
+            s.add_run(&head, name, conclusion.map(str::to_string), MERGIFY_APP);
+        });
+    }
+
     /// The other queue takes pull request `n` into its queue (its check run appears).
     pub fn mergify_queue(&self, n: u64) {
         self.with(|s| {
@@ -77,7 +85,15 @@ impl FakeGithub {
                 d,
                 crate::FakePr {
                     number: d,
-                    title: format!("other queue: {}", list.join(", ")),
+                    title: format!(
+                        "{} ({})",
+                        if prs.len() == 1 {
+                            s.prs[&prs[0]].title.clone()
+                        } else {
+                            "other queue".into()
+                        },
+                        list.join(", ")
+                    ),
                     body: format!("Embarked pull requests:\n{}\n", list.join("\n")),
                     user: MERGIFY_LOGIN.into(),
                     head_ref: branch,
@@ -109,8 +125,10 @@ impl FakeGithub {
             let numbers: Vec<u64> = d
                 .body
                 .lines()
-                .filter_map(|l| l.trim().strip_prefix('#'))
-                .filter_map(|n| n.parse().ok())
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                .filter_map(|l| l.strip_prefix('#'))
+                .filter_map(|l| l.split(':').next()?.parse().ok())
                 .collect();
             let mut out = Vec::new();
             for n in numbers {
