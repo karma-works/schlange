@@ -1,10 +1,11 @@
-# Arztagent's batches: batch_size 5, batch_max_wait_time 5 minutes (queue-batch, MQ-26).
+# Batches of five with a five-minute wait (queue-batch, MQ-26; Arztagent's values until its
+# #1851, now three and two minutes: `e2e_arztagent` in schlange-github-fake covers those).
 # Three pull requests are queued at +0:05 (KI-Review takes 5 minutes): the batch is not full,
 # so it starts when the wait ends, at +0:10, with three. Later five pull requests are queued at
 # the same moment: that batch is full and starts at once, without waiting.
 name: p1-batch-five
 description: A batch below the size waits batch_max_wait_time; a full batch starts at once.
-config: ../crates/schlange-config/tests/golden/arztagent.yml
+config: configs/batch-five.yml
 
 ci:
   - check: Risk class and data protection

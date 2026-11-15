@@ -5,6 +5,21 @@ existing configuration, with comparable operating assumptions and safeguards. It
 require a stronger atomicity guarantee than GitHub exposes. This qualifies the GitHub adapter's
 acceptance contract; it does not relax the core, simulated-forge or localgit invariant checks.
 
+## Journeys regex compatibility
+
+The Arztagent source snapshot retains `-check-failure ~= ^(?!verify-arztagent journeys$)`.
+Regex matching considers both the bare check name and `@<app>/<name>` (observed in PR #24).
+A failing GitHub Actions Journeys run therefore blocks entry or dequeues an existing pull
+request: its qualified name still matches that negative lookahead. Preserving this behavior is
+parity with the observed matcher, although it differs from the comment's informational intent.
+
+The test-only derivative `scenarios/configs/arztagent-journeys-informational.yml` uses
+`^(?!(?:@github-actions/)?verify-arztagent journeys$)` to exempt both forms. Its fake-GitHub test
+checks that this regex is the only configuration difference from the unmodified source
+snapshot; another test explicitly checks the actual source's blocking behavior. The simulation
+also identifies CI as GitHub Actions instead of using unattributed runs. Any production change
+to Arztagent's configuration belongs in the human-authored constitution pull request.
+
 ## Base changes before a merge
 
 The GitHub pull-request merge API can bind a merge to an expected PR head, but has no expected

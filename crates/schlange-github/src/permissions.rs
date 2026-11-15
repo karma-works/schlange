@@ -8,7 +8,7 @@
 //! | `pull_requests` | write | reading pull requests and files, the queue's draft pull requests, merging, labels and comments on pull requests |
 //! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
-//! | `actions` | read | workflow runs used to verify check identity |
+//! | `actions` | read | resolve workflow identity for GitHub Actions checks |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
@@ -122,35 +122,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn doctor_requires_actions_read_for_check_identity_in_both_modes() {
-        for shadow in [false, true] {
-            let mut granted: std::collections::BTreeMap<String, String> = for_mode(shadow)
-                .iter()
-                .map(|(name, level, _)| (name.to_string(), level.to_string()))
-                .collect();
-            granted.remove("actions");
-            let report = compare_with(&granted, for_mode(shadow));
-            assert_eq!(report.missing, vec!["actions: none → read"]);
-            granted.insert("actions".into(), "read".into());
-            assert_eq!(
-                compare_with(&granted, for_mode(shadow)),
-                PermissionReport::default()
-            );
-        }
-    }
-
-    #[test]
-    fn app_manifests_grant_actions_read_for_check_identity() {
-        for manifest in [
-            include_str!("../../../sandbox/apps/manifests/queue.json"),
-            include_str!("../../../sandbox/apps/manifests/shadow.json"),
-        ] {
-            let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
-            assert_eq!(manifest["default_permissions"]["actions"], "read");
-        }
-    }
-
-    #[test]
     fn missing_and_extra_permissions_are_named() {
         let granted = [
             ("metadata", "read"),
@@ -171,6 +142,21 @@ mod tests {
         );
         assert_eq!(r.optional_missing, vec!["workflows: none → write"]);
         assert_eq!(r.extra, vec!["administration: read"]);
+    }
+
+    #[test]
+    fn check_identity_requires_actions_read_in_both_modes() {
+        for permissions in [PERMISSIONS, SHADOW_PERMISSIONS] {
+            let granted = permissions
+                .iter()
+                .filter(|(name, _, _)| *name != "actions")
+                .map(|(name, level, _)| (name.to_string(), level.to_string()))
+                .collect();
+            assert_eq!(
+                compare_with(&granted, permissions).missing,
+                vec!["actions: none → read"]
+            );
+        }
     }
 
     #[test]

@@ -9,10 +9,6 @@ inventory:
   - "config:queue_rules.allow_inplace_checks"
   - "default:queue_rules.queue_branch_prefix"
   - "default:queue_rules.allow_inplace_checks"
-  - "config:merge_queue.batch_pull_request"
-  - "default:merge_queue.batch_pull_request"
-unsupported:
-  - "config:merge_queue.batch_pull_request"
 problems:
   - "MQ-18"
   - "MQ-36"
@@ -36,7 +32,6 @@ one pull request at a time in serial mode without retries and with single-step C
 - `draft-pr`: built in the simulated forge (one draft per car); the exact title and body Mergify writes are not reproduced.
 - `in-place`: built. Computed, not configured: only when `max_parallel_checks` is 1, mode `serial`, batch size 1 (the max of a range), `max_checks_retries` 0 and `merge_conditions` empty or equal to `queue_conditions`, and the pull request is up to date with its base; then no queue branch and no draft. A pull request behind its base is tested through a draft instead of being updated in place (deviation, see `p1-in-place.yaml`).
 - `allow-inplace-checks`: the deprecated option is accepted and ignored, as the documentation says the value is computed; not flagged by `config validate`.
-- `batch-pull-request`: missing (listed as `unsupported`). The schema marks `batch_pull_request` as experimental, with a default of `true`, but does not describe its behavior. Explicit `true` and `false` settings are flagged. The implicit default is accepted for compatibility; its parity has not been verified.
 - `cleanup`: built. Queue branch and draft disappear after landing, failure, dequeue, reset and foreign push; I3 checks it after every step.
 
 ## How to get to it (user POV)
@@ -50,10 +45,11 @@ Preconditions:
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
 - **In place.** Run `target/release/schlange sim run scenarios/p1-in-place.yaml`. Log has `car 2: check #1 in place` (no queue branch for #1) and, for #2 (behind main), a car `on mergify/merge-queue/…`; both land. Exit 0.
-- **Drafts for batches.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml` (Arztagent's configuration: batches of five, two-step CI). Every car runs on a `mergify/merge-queue/…` branch with a draft; `(checks #1 #2 #3)` and `(checks #4 #5 #6 #7 #8)`. Exit 0.
+- **Drafts for batches.** Run `target/release/schlange sim run scenarios/p1-batch-five.yaml` (two-step CI, batches of five). Every car runs on a `mergify/merge-queue/…` branch with a draft; `(checks #1 #2 #3)` and `(checks #4 #5 #6 #7 #8)`. Exit 0.
 - **Cleanup.** In both runs the invariant report shows `I3 checked`: after every simulated step the queue branches (prefix plus ten hex characters) and open drafts on the forge are exactly those of the engine's cars.
 
 ## Gotchas
 
 - `pr-gate.yml` exempts only `mergify[bot]`. Schlange drafts contain the required Datenschutz heading, but the real classifier still runs on the combined diff and needs sandbox verification; explicitly recognizing the Schlange bot remains a switchover option.
 - Never clean up user branches, only the strict name pattern (MQ-36).
+- `batch_pull_request` is no longer a configuration option. The schema dropped the experimental `merge_queue.batch_pull_request` in November 2026; the flag now lives in Mergify's merge queue settings API (organization, repository and branch level, owned by `queue-status-api`), which Schlange does not build. A configuration that still sets it is invalid (`unknown key`). Whether Mergify's behaviour without the option changed has not been verified.

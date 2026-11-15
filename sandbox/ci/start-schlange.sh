@@ -29,7 +29,6 @@ PORT="${SCHLANGE_PORT:-8080}"
 RECONCILE="${RECONCILE:-10}"
 
 [ -x "$BIN" ] || { echo "::error::no schlange binary at $BIN"; exit 1; }
-[ -s ".research/mergify/schema.json" ] || { echo "::error::no Mergify schema (tools/fetch-mergify-sources)"; exit 1; }
 
 app_id="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$CONFIG/apps/queue.json")"
 mkdir -p "$TMP/schlange-data"
@@ -45,7 +44,6 @@ nohup "$BIN" serve "${mode_args[@]}" \
   --webhook-secret-file "$CONFIG/apps/queue.webhook-secret" \
   --repo "$REPO" \
   --data-dir "$TMP/schlange-data" \
-  --schema .research/mergify/schema.json \
   --listen "127.0.0.1:$PORT" \
   --reconcile-every "$RECONCILE" \
   --no-lease \

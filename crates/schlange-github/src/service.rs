@@ -127,6 +127,8 @@ impl PauseHook {
 pub enum CrashPoint {
     /// Right after the merge calls of a landing returned, before the reply reaches the engine.
     AfterLand,
+    /// After durable admission of an edited comment, before its worker hints are used.
+    BeforeInboxEdit,
 }
 
 #[derive(Clone)]
@@ -1669,6 +1671,15 @@ impl Worker {
             let mut deliveries: Vec<String> = Vec::new();
             let mut take = |m: Msg, hints: &mut BTreeSet<Hint>, this: &mut Self| match m {
                 Msg::Webhook(p, delivery) => {
+                    if this.crash == Some(CrashPoint::BeforeInboxEdit)
+                        && delivery.is_some()
+                        && p.hints
+                            .iter()
+                            .any(|hint| matches!(hint, Hint::Comment(c) if c.edited))
+                    {
+                        this.die("injected crash before processing an inbox edit".into());
+                        return;
+                    }
                     if let Some(id) = delivery {
                         // A polled inbox row can also be waiting in the channel. It is one
                         // delivery, with one acknowledgement, even in the same worker round.
@@ -1720,6 +1731,10 @@ impl Worker {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => stop = true,
+            }
+            if self.dead {
+                self.publish();
+                return;
             }
             if stop || self.shared.stop.load(Ordering::SeqCst) {
                 return;
@@ -2008,6 +2023,14 @@ impl Worker {
                     self.reconciliations += 1;
                     return;
                 }
+                // Refresh protection before releasing the hold or replaying a recovered
+                // landing. A ruleset webhook must never land using the previous rules.
+                if !self.required_checks() {
+                    self.next_reconcile = now + self.every.min(60);
+                    self.last_reconcile = Some(now);
+                    self.reconciliations += 1;
+                    return;
+                }
                 let released = !held_bases.is_empty();
                 if released {
                     // Clears the hold only (no decision); the queue is re-evaluated against
@@ -2023,10 +2046,6 @@ impl Worker {
                 } else if released {
                     self.feed(Event::Tick);
                 }
-                if self.dead || !self.leading {
-                    return;
-                }
-                self.required_checks();
                 if self.dead || !self.leading {
                     return;
                 }
@@ -2280,20 +2299,57 @@ impl Worker {
 
     /// Reads the checks the rulesets require on the default branch and on every base with a
     /// queue (`branch_protection_injection_mode`), and tells the engine when they changed. The
-    /// queue's own check is never taken over (it must not gate itself, W-05). A read that fails
-    /// changes nothing.
-    fn required_checks(&mut self) {
-        let mut bases: BTreeSet<String> = self.state.trains.keys().cloned().collect();
-        if let Ok(d) = self.forge.default_branch(Priority::Normal) {
-            bases.insert(d);
+    /// queue's own check is never taken over (it must not gate itself, W-05), except a context
+    /// pinned to another app. A failed read preserves the durable hold until a complete read.
+    fn required_checks(&mut self) -> bool {
+        let mut complete = true;
+        let own_app_id = self
+            .forge
+            .api
+            .client
+            .config()
+            .app_id
+            .parse::<u64>()
+            .ok()
+            .or_else(|| self.forge.api.client.app().ok().map(|app| app.id));
+        let mut bases: BTreeSet<String> = self
+            .state
+            .trains
+            .iter()
+            .filter(|(_, train)| !train.cars.is_empty())
+            .map(|(base, _)| base.clone())
+            .collect();
+        bases.extend(
+            self.state
+                .pull_requests
+                .values()
+                .filter(|p| !p.closed && !p.merged)
+                .map(|p| p.base.clone()),
+        );
+        bases.extend(self.state.queued.values().map(|entry| entry.base.clone()));
+        match self.forge.default_branch(Priority::Normal) {
+            Ok(d) => {
+                bases.insert(d);
+            }
+            Err(e) => {
+                complete = false;
+                self.forge
+                    .note(format!("default branch not read for required checks: {e}"));
+            }
         }
         for base in bases {
             match self.forge.api.branch_rules(&base, Priority::Normal) {
                 Ok(rules) => {
-                    let mut checks: Vec<String> = rules
+                    let mut checks: Vec<schlange_core::model::RequiredCheck> = rules
                         .iter()
                         .flat_map(|r| r.required_checks())
-                        .filter(|c| *c != self.forge.opts.check_name)
+                        .filter(|c| {
+                            c.context() != self.forge.opts.check_name
+                                || c.integration_id().is_some_and(|id| {
+                                    // A same-name check pinned to another app is not ours.
+                                    Some(id) != own_app_id
+                                })
+                        })
                         .collect();
                     checks.sort();
                     checks.dedup();
@@ -2309,17 +2365,25 @@ impl Worker {
                             if checks.is_empty() {
                                 "none".into()
                             } else {
-                                checks.join(", ")
+                                checks
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             }
                         ));
                         self.feed(Event::RequiredChecks { base, checks });
                     }
                 }
-                Err(e) => self.forge.note(format!(
-                    "required checks of {base} not read (provisional): {e}"
-                )),
+                Err(e) => {
+                    complete = false;
+                    self.forge.note(format!(
+                        "required checks of {base} not read (provisional): {e}"
+                    ));
+                }
             }
         }
+        complete
     }
 
     /// Applies an operator's control through the engine; answers with the resulting object.

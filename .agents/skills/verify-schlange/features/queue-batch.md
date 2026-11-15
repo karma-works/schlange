@@ -20,7 +20,7 @@ source: "https://docs.mergify.com/merge-queue/batches"
 # Batches (`batch_size`, `batch_max_wait_time`)
 
 Several pull requests are tested together in one queue pull request. A batch starts once it is
-full or the wait time has passed. Arztagent: up to 5 pull requests, wait at most 5 minutes.
+full or the wait time has passed. Arztagent: up to 3 pull requests, wait at most 2 minutes.
 Without settings, the batch size is 1 and the wait time 30 seconds.
 
 ## Sub-features

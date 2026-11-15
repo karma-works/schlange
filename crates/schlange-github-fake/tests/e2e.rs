@@ -41,10 +41,10 @@ fn arztagent_one_pull_request_through_the_draft_to_a_squash_landing() {
         t.pr(pr).check(check).succeed();
     }
     t.pr(pr).wait_queued();
-    // batch_size 5, batch_max_wait_time 5 minutes: nothing is built before the wait ends.
+    // batch_size 3, batch_max_wait_time 2 minutes: nothing is built before the wait ends.
     t.settle();
     assert!(t.gh.open_queue_drafts().is_empty());
-    t.advance("5m");
+    t.advance("2m");
     let draft = t.queue_pr();
     let d = draft.get();
     assert!(d.draft, "the queue pull request is a draft");

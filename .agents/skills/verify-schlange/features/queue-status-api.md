@@ -7,23 +7,39 @@ status: partial
 inventory:
   - "api:GET /repos/{owner}/{repository}/merge-queue/status"
   - "api:GET /repos/{owner}/{repository}/merge-queue/branches"
-  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}"
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue-impact"
   - "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/dequeue"
-  - "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/queue"
   - "api:GET /repos/{owner}/{repository}/queues"
   - "api:GET /repos/{owner}/{repository}/queues/branches"
   - "api:GET /repos/{owner}/{repository}/queues/configuration"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
+  - "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/queue"
+  - "api:GET /orgs/{owner}/merge-queue/settings"
+  - "api:PUT /orgs/{owner}/merge-queue/settings"
+  - "api:DELETE /orgs/{owner}/merge-queue/settings"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/settings"
+  - "api:PUT /repos/{owner}/{repository}/merge-queue/settings"
+  - "api:DELETE /repos/{owner}/{repository}/merge-queue/settings"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}"
+  - "api:PUT /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}"
+  - "api:DELETE /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}"
+  - "api:GET /repos/{owner}/{repository}/branches/{branch}/merge-queue/settings"
   - "cli:mergify queue status"
   - "cli:mergify queue show"
+  - "cli:mergify queue add"
+  - "cli:mergify queue remove"
 unsupported:
   - "api:GET /repos/{owner}/{repository}/merge-queue/branches"
-  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
   - "api:GET /repos/{owner}/{repository}/merge-queue/pull/*"
   - "api:POST /repos/{owner}/{repository}/merge-queue/pull/*"
   - "api:GET /repos/{owner}/{repository}/queues*"
+  - "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls"
+  - "api:*merge-queue/settings*"
   - "cli:mergify queue show"
+  - "cli:mergify queue add"
+  - "cli:mergify queue remove"
 problems:
   - "MQ-43"
   - "W-13"
@@ -33,13 +49,16 @@ source: "https://docs.mergify.com/api-usage"
 
 # Queue status through API and CLI
 
-Read the state of the queue, of single pull requests and the effect of a dequeue; enqueue or
-dequeue a pull request through the API.
+Read the state of the queue, of single pull requests and the effect of a dequeue; dequeue a pull
+request through the API.
 
 ## Sub-features
 
 - `status`: built. `schlange_core::status::queue_status` gives the documented shape in our own words: `mode`, `batches` (id = car id, name = queue branch, `parent_ids`, `status.code` mapped onto the documented codes: `preparing`, `running`, `waiting_for_merge`, `waiting_for_previous_batches`, `frozen`, `failed`, `bisecting`, `waiting_for_requeue`, `started_at`, `scopes`, `queue_rule_name`, `checks_summary`, `pull_requests`, `queue_pull_request_number`), `waiting_pull_requests` (number, title, `queued_at`, `priority_alias`, `priority_rule_name`, `scopes`, `all_scopes`, `is_frozen`), `pause`; plus `freezes`, `halted` and a `held` text per pull request. `schlange serve` serves it at `GET /repos/{owner}/{repo}/merge-queue/status` behind the admin token (401 without, 404 without a configured token); `schlange queue status [--json]` prints it.
-- `pull-request`, `dequeue-impact`, `dequeue`, `queue`, `unqueued-pulls`, `configuration`, `branches`: missing.
+- `pull-request`, `dequeue-impact`, `dequeue`, `configuration`, `branches`: missing.
+- `queue`, `unqueued`: missing (queueing a pull request through the API, and listing the open pull requests that are not queued; both added to the API in November 2026).
+- `settings`: missing. Merge queue settings stored at Mergify per organization, repository and branch (branch names or patterns), with the effective value and the level it comes from; added in November 2026. Today they carry one flag, `batch_pull_request`, which left the configuration file at the same time (`queue-draft-pr`). Schlange reads its settings only from the configuration file.
+- `cli-add-remove`: missing (`mergify queue add` and `mergify queue remove`; Schlange's CLI has `queue status`, `pause` and `unpause`).
 - `estimates`: missing (`estimated_merge_at` and the like are not reported).
 
 ## How to get to it (user POV)

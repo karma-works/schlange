@@ -30,7 +30,7 @@ Scenario format (JSON), steps in order:
   {"wait": "quiet", "seconds": 300, "timeout": 2400}   no activity on the PRs
   {"assert_unqueued": "a"}                            open and never entered the queue
   {"dispatch_workflow": "name.yml", "pr": "a", "ref": "pr"|"main", "inputs": {"pr": "{pr}"}}
-  {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "after_checkpoint": true}
+  {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "app": "github-actions", "after_checkpoint": true}
   {"assert_check_pair": "a", "name": "ci-ok", "distinct_suites": true}
 Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
@@ -463,6 +463,7 @@ class Run:
             head = pr["head"]["sha"]
             checks = client.paged(f"{self.r}/commits/{head}/check-runs?filter=all")
             matches = [c for c in checks if c.get("name") == name and c.get("head_sha") == head and c.get("id", 0) > floor
+                       and ("app" not in s or (c.get("app") or {}).get("slug") == s["app"])
                        and c.get("status") == "completed" and c.get("conclusion") == s["conclusion"]]
             for check in sorted(matches, key=lambda c: c["id"], reverse=True):
                 run_id = None

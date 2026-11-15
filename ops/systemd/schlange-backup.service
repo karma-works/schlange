@@ -1,0 +1,14 @@
+[Unit]
+Description=Online Schlange SQLite backup
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5m
+ExecStart=/usr/bin/python3 /etc/schlange/backup.py /var/lib/schlange/data/schlange.db /var/backups/schlange
+User=root
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/schlange/data /var/backups/schlange

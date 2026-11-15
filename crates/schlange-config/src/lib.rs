@@ -18,6 +18,7 @@ pub mod features;
 pub mod glob;
 pub mod queue_extras;
 pub mod rules;
+pub mod runtime;
 pub mod schema;
 pub mod semantics;
 pub mod support;

@@ -530,6 +530,24 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run.step_assert_prepared_base({'assert_prepared_base': 'a'})
 
+    def test_wait_check_rejects_matching_name_from_another_app(self):
+        run = object.__new__(driver.Run)
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.prs = {'a': {'number': 42}}
+        run.checkpoints = []
+        run.save_state = unittest.mock.Mock()
+        client = unittest.mock.Mock()
+        client.call.return_value = {'head': {'sha': 'abc'}}
+        client.paged.return_value = [{'id': 6, 'name': 'qualified-probe', 'head_sha': 'abc',
+                                     'status': 'completed', 'conclusion': 'success',
+                                     'app': {'slug': 'other-app'}}]
+        run.actors = {'human': client}
+        with patch.object(driver.time, 'time', side_effect=[0, 0, 5]), patch.object(driver.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'timeout'):
+                run.step_wait_check({'wait_check': 'a', 'name': 'qualified-probe', 'app': 'github-actions',
+                                     'conclusion': 'success', 'timeout': 1})
+        self.assertEqual(run.checkpoints, [])
+
     def test_wait_check_records_id_and_rejects_old_result(self):
         run = object.__new__(driver.Run)
         run.prs = {'a': {'number': 42}}

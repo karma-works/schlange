@@ -122,7 +122,7 @@ pub fn github_checks_for(
             out.push(if shadow {
                 check("ruleset-exception", "SKIP", "shadow mode never lands")
             } else {
-                ruleset_check(client, repos, inst.id, app.id)
+                ruleset_check(client, repos, inst.id, app.id, config)
             });
             out.push(config_check(client, repos, inst.id, config));
             out.push(match client.rate_limit(inst.id) {
@@ -226,7 +226,13 @@ fn config_check(
     check("configuration", status, all.join("; "))
 }
 
-fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id: u64) -> Check {
+fn ruleset_check(
+    client: &Client,
+    repos: &[RepoName],
+    installation: u64,
+    app_id: u64,
+    config: Option<&ConfigCheck>,
+) -> Check {
     let mut problems = Vec::new();
     let mut always = Vec::new();
     let mut unknown = Vec::new();
@@ -238,6 +244,26 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
             installation,
         };
         let prio = crate::client::Priority::Normal;
+        let default = match api.repository(prio) {
+            Ok(r) => r.default_branch,
+            Err(e) => {
+                unknown.push(format!(
+                    "{}: cannot determine default branch: {e}",
+                    repo.full()
+                ));
+                continue;
+            }
+        };
+        let bases = match queue_bases(&api, config, &default) {
+            Ok(bases) => bases,
+            Err(e) => {
+                unknown.push(format!(
+                    "{}: cannot determine queue base branches: {e}",
+                    repo.full()
+                ));
+                continue;
+            }
+        };
         let list = match api.rulesets(prio) {
             Ok(l) => l,
             Err(e) => {
@@ -256,7 +282,12 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
                     continue;
                 }
             };
-            if full.enforcement != "active" {
+            if full.enforcement != "active"
+                || full.target.as_deref().is_some_and(|t| t != "branch")
+                || !bases
+                    .iter()
+                    .any(|base| ruleset_matches(&full, base, &default))
+            {
                 continue;
             }
             seen += 1;
@@ -276,8 +307,7 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
                     };
                     if app("exempt") {
                     } else if app("always") {
-                        // `always` lets the app bypass, but the pinned merge-queue ruleset
-                        // guidance recommends `exempt`; parts of the rules can stay blocked.
+                        // `always` can leave queue operations blocked; fail deployment.
                         always.push(format!("{} ruleset `{}`", repo.full(), full.name));
                     } else {
                         problems.push(format!("{} ruleset `{}`", repo.full(), full.name));
@@ -298,9 +328,9 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
     } else if !always.is_empty() {
         check(
             "ruleset-exception",
-            "WARN",
+            "FAIL",
             format!(
-                "the app bypasses with mode `always` in {}; the merge-queue guidance recommends `exempt`, because `always` can leave parts of the ruleset blocked. {BYPASS_NOTE}",
+                "the app bypasses with mode `always` in {}; use `exempt`, because `always` can leave parts of the ruleset blocked. Run `bash scripts/schlange-setup.sh setup`. {BYPASS_NOTE}",
                 always.join(", ")
             ),
         )
@@ -315,6 +345,113 @@ fn ruleset_check(client: &Client, repos: &[RepoName], installation: u64, app_id:
             ),
         )
     }
+}
+
+/// Queue conditions constrain the possible base branches independently of mutable PR
+/// attributes. Unknown atoms stay unknown through `not` and `or`, rather than pretending a
+/// made-up pull request satisfies a condition about reviews, labels or checks.
+fn base_condition(
+    condition: &schlange_config::conditions::Condition,
+    pr: &schlange_core::model::PullRequest,
+) -> Option<bool> {
+    use schlange_config::conditions::Condition;
+    match condition {
+        Condition::Atom(atom) if atom.attribute == "base" => {
+            schlange_core::eval::eval_atom(atom, pr, &Default::default()).ok()
+        }
+        Condition::Atom(_) => None,
+        Condition::Always => Some(true),
+        Condition::Not(c) => base_condition(c, pr).map(|value| !value),
+        Condition::And(cs) => {
+            let values: Vec<_> = cs.iter().map(|c| base_condition(c, pr)).collect();
+            if values.contains(&Some(false)) {
+                Some(false)
+            } else if values.contains(&None) {
+                None
+            } else {
+                Some(true)
+            }
+        }
+        Condition::Or(cs) => {
+            let values: Vec<_> = cs.iter().map(|c| base_condition(c, pr)).collect();
+            if values.contains(&Some(true)) {
+                Some(true)
+            } else if values.contains(&None) {
+                None
+            } else {
+                Some(false)
+            }
+        }
+    }
+}
+
+fn queue_bases(
+    api: &crate::api::RepoApi,
+    config: Option<&ConfigCheck>,
+    default: &str,
+) -> Result<Vec<String>, Error> {
+    let prio = crate::client::Priority::Normal;
+    let loaded = config.and_then(|config| {
+        let crate::config::Found::One(path, text) =
+            crate::config::read_from_default_branch(api, prio).ok()?
+        else {
+            return None;
+        };
+        let extended = crate::config::extended_text(api, &text, prio);
+        config
+            .check_extended(&path, &text, Some(&api.repo.full()), |_| {
+                extended.unwrap_or_else(|| Err("extended configuration unavailable".into()))
+            })
+            .ok()
+    });
+    let Some(loaded) = loaded.filter(|l| !l.rules.queue_rules.is_empty()) else {
+        return Ok(vec![default.to_string()]);
+    };
+    let mut branches = vec![default.to_string()];
+    for git_ref in api.matching_branches("", prio)? {
+        if let Some(branch) = git_ref.ref_name.strip_prefix("refs/heads/") {
+            branches.push(branch.to_string());
+        }
+    }
+    branches.sort();
+    branches.dedup();
+    branches.retain(|base| {
+        let pr = schlange_core::model::PullRequest::new(0, "", base, "", "");
+        loaded.rules.queue_rules.iter().any(|queue| {
+            queue
+                .queue_conditions
+                .iter()
+                .all(|condition| base_condition(condition, &pr) != Some(false))
+        })
+    });
+    Ok(branches)
+}
+
+fn ruleset_matches(ruleset: &crate::api::Ruleset, branch: &str, default: &str) -> bool {
+    let Some(selectors) = ruleset.conditions.as_ref().and_then(|c| c.get("ref_name")) else {
+        // Older API responses or an unreadable condition must not silently exempt a ruleset.
+        return true;
+    };
+    let matches = |pattern: &serde_json::Value| {
+        let pattern = pattern.as_str()?;
+        match pattern {
+            "~ALL" => Some(true),
+            "~DEFAULT_BRANCH" => Some(branch == default),
+            pattern => schlange_config::glob::glob_to_regex(pattern)
+                .ok()
+                .and_then(|regex| fancy_regex::Regex::new(&regex).ok())
+                .and_then(|regex| regex.is_match(&format!("refs/heads/{branch}")).ok()),
+        }
+    };
+    let included = selectors
+        .get("include")
+        .and_then(|v| v.as_array())
+        .is_none_or(|patterns| patterns.iter().any(|p| matches(p).unwrap_or(true)));
+    let excluded = selectors
+        .get("exclude")
+        .and_then(|v| v.as_array())
+        .is_some_and(|patterns| patterns.iter().any(|p| matches(p).unwrap_or(false)));
+    included && !excluded
 }
 
 /// The bypass requirement and its risk, in one line for the doctor's output.
@@ -361,5 +498,50 @@ fn webhook_check(client: &Client, max_age: u64) -> Check {
             }
         }
         Err(e) => check("webhooks", "WARN", format!("GET /app/hook/deliveries: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schlange_config::conditions::{Condition, parse_atom};
+
+    #[test]
+    fn base_scope_preserves_unknown_atoms_under_boolean_combinators() {
+        let pr = schlange_core::model::PullRequest::new(1, "author", "main", "feature", "head");
+        let base = Condition::Atom(parse_atom("base = main").unwrap());
+        let other = Condition::Atom(parse_atom("base = release").unwrap());
+        let mutable = Condition::Atom(parse_atom("label = ready").unwrap());
+        assert_eq!(base_condition(&base, &pr), Some(true));
+        assert_eq!(base_condition(&other, &pr), Some(false));
+        assert_eq!(
+            base_condition(&Condition::Not(Box::new(mutable.clone())), &pr),
+            None
+        );
+        assert_eq!(
+            base_condition(&Condition::And(vec![other.clone(), mutable.clone()]), &pr),
+            Some(false)
+        );
+        assert_eq!(
+            base_condition(&Condition::Or(vec![other, mutable]), &pr),
+            None
+        );
+        assert_eq!(
+            base_condition(&Condition::Not(Box::new(base)), &pr),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn ruleset_excludes_override_recursive_ref_globs() {
+        let ruleset: crate::api::Ruleset = serde_json::from_value(serde_json::json!({
+            "id": 1, "name": "release", "conditions": {"ref_name": {
+                "include": ["refs/heads/release/**/*"], "exclude": ["refs/heads/release/private/**"]
+            }}
+        }))
+        .unwrap();
+        assert!(ruleset_matches(&ruleset, "release/public/1", "main"));
+        assert!(!ruleset_matches(&ruleset, "release/private/1", "main"));
+        assert!(!ruleset_matches(&ruleset, "main", "main"));
     }
 }

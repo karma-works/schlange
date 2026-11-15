@@ -204,6 +204,8 @@ pub struct PullFile {
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppRef {
     #[serde(default)]
+    pub id: Option<u64>,
+    #[serde(default)]
     pub slug: Option<String>,
 }
 
@@ -375,6 +377,10 @@ pub struct Ruleset {
     pub enforcement: String,
     #[serde(default)]
     pub bypass_actors: Option<Vec<BypassActor>>,
+    /// Branch selectors (`ref_name.include` minus `ref_name.exclude`). Missing selectors
+    /// are treated conservatively by doctor, since an unreadable scope is not an exclusion.
+    #[serde(default)]
+    pub conditions: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -390,7 +396,7 @@ pub struct BranchRule {
 
 impl BranchRule {
     /// The check contexts a `required_status_checks` rule requires.
-    pub fn required_checks(&self) -> Vec<String> {
+    pub fn required_checks(&self) -> Vec<schlange_core::model::RequiredCheck> {
         if self.kind != "required_status_checks" {
             return vec![];
         }
@@ -399,7 +405,16 @@ impl BranchRule {
             .and_then(|p| p["required_status_checks"].as_array())
             .map(|list| {
                 list.iter()
-                    .filter_map(|c| c["context"].as_str().map(str::to_string))
+                    .filter_map(|c| {
+                        let context = c["context"].as_str()?.to_string();
+                        Some(match c["integration_id"].as_u64().filter(|id| *id > 0) {
+                            Some(integration_id) => schlange_core::model::RequiredCheck::Pinned {
+                                context,
+                                integration_id,
+                            },
+                            None => context.into(),
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default()
