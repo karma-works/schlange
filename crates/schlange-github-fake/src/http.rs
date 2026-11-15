@@ -512,6 +512,7 @@ pub(crate) fn required_permission(
         }
         ["actions", "runs"] if method == "GET" => Some(("actions", "read")),
         ["commits", _, "status"] => Some(("statuses", "read")),
+        ["actions", "runs", ..] => Some(("actions", "read")),
         ["git", ..] | ["merges"] | ["compare", ..] | ["contents", ..] | ["commits", ..] => {
             Some(("contents", level))
         }
