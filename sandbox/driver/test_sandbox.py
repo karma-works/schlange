@@ -12,6 +12,21 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_reference_outcome_records_only_bounded_merger_identity(self):
+        trace = {'run': {'repo': 'queue-lab', 'run_id': 's99-test'},
+                 'prs': {'a': {'number': 1, 'state': 'closed', 'merged': True, 'merged_by': 'mergify[bot]'},
+                         'b': {'number': 2, 'state': 'closed', 'merged': True, 'merged_by': 'someone-else'},
+                         'c': {'number': 3, 'state': 'closed', 'merged': True, 'merged_by': None}},
+                 'mergify_events': [], 'queue_prs': [], 'main': []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'trace.json').write_text(json.dumps(trace))
+            outcome = driver.write_outcome(path)
+            self.assertIs(outcome['prs']['a']['merged_by_mergify'], True)
+            self.assertIs(outcome['prs']['b']['merged_by_mergify'], False)
+            self.assertIsNone(outcome['prs']['c']['merged_by_mergify'])
+            self.assertNotIn('someone-else', (path / 'outcome.json').read_text())
+
     def test_isolated_repo_is_explicitly_allowed_but_other_repo_is_not(self):
         with patch.object(driver.sys, 'argv', ['sandbox.py', 'wait-idle', '--repo', 'schlange-e2e-isolated']), \
              patch.object(driver, 'wait_idle') as wait:
@@ -388,7 +403,27 @@ class CheckpointTests(unittest.TestCase):
                     driver.cmd_run(args)
             self.assertEqual(caught.exception.code, 1)
 
+    def test_recording_error_still_cleans_only_this_scenario(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / 'scenario.json'
+            scenario.write_text(json.dumps({'id': 'S99', 'title': 'test', 'steps': []}))
+            args = unittest.mock.Mock(scenario=str(scenario), no_wait=True, org='schlange-sandbox',
+                                      repo='queue-lab', keep=False, baseline=None)
+            with patch.object(driver, 'RUNS', Path(directory)), patch.object(driver, 'Run'), \
+                 patch.object(driver, 'record', side_effect=RuntimeError('invalid log')), \
+                 patch.object(driver, 'cleanup') as cleanup:
+                with self.assertRaisesRegex(RuntimeError, 'invalid log'):
+                    driver.cmd_run(args)
+            cleanup.assert_called_once()
+            org, repo, prefix = cleanup.call_args.args
+            self.assertEqual((org, repo), ('schlange-sandbox', 'queue-lab'))
+            self.assertTrue(prefix.startswith('sbx/s99-queue-lab-'))
+
     def test_incomplete_event_log_fails_closed(self):
+        class EmptyClient:
+            def call(self, *_):
+                return {'events': []}
+        self.assertEqual(driver.fetch_events(EmptyClient(), 'url', strict=True), [])
         class Client:
             def call(self, *_):
                 return {'next_cursor': 'more'}
@@ -399,6 +434,26 @@ class CheckpointTests(unittest.TestCase):
                 return {'events': [{}]}
         with self.assertRaises(RuntimeError):
             driver.fetch_events(MalformedClient(), 'url', strict=True)
+        class MissingLeavePullRequest:
+            def call(self, *_):
+                return {'events': [{'type': 'action.queue.leave'}]}
+        with self.assertRaises(RuntimeError):
+            driver.fetch_events(MissingLeavePullRequest(), 'url', strict=True)
+
+    def test_recording_rejects_malformed_reference_event_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'run.json').write_text(json.dumps({'org': 'schlange-sandbox', 'repo': 'queue-lab',
+                                                        'started': '2026-01-01T00:00:00Z', 'prs': {}}))
+            human = unittest.mock.Mock()
+            human.paged.return_value = []
+            events = unittest.mock.Mock()
+            events.call.return_value = {}
+            with patch.object(driver, 'human_client', return_value=human), \
+                 patch.object(driver, 'mergify_client', return_value=events):
+                with self.assertRaises(RuntimeError):
+                    driver.record(path)
+            self.assertFalse((path / 'trace.json').exists())
 
     def test_rejects_queued_or_closed_pull_request(self):
         run = object.__new__(driver.Run)
@@ -474,6 +529,24 @@ class CheckpointTests(unittest.TestCase):
         client.call.return_value['base']['sha'] = 'old-base'
         with self.assertRaises(RuntimeError):
             run.step_assert_prepared_base({'assert_prepared_base': 'a'})
+
+    def test_wait_check_rejects_matching_name_from_another_app(self):
+        run = object.__new__(driver.Run)
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.prs = {'a': {'number': 42}}
+        run.checkpoints = []
+        run.save_state = unittest.mock.Mock()
+        client = unittest.mock.Mock()
+        client.call.return_value = {'head': {'sha': 'abc'}}
+        client.paged.return_value = [{'id': 6, 'name': 'qualified-probe', 'head_sha': 'abc',
+                                     'status': 'completed', 'conclusion': 'success',
+                                     'app': {'slug': 'other-app'}}]
+        run.actors = {'human': client}
+        with patch.object(driver.time, 'time', side_effect=[0, 0, 5]), patch.object(driver.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'timeout'):
+                run.step_wait_check({'wait_check': 'a', 'name': 'qualified-probe', 'app': 'github-actions',
+                                     'conclusion': 'success', 'timeout': 1})
+        self.assertEqual(run.checkpoints, [])
 
     def test_wait_check_records_id_and_rejects_old_result(self):
         run = object.__new__(driver.Run)

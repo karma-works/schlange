@@ -26,9 +26,9 @@
 //! sandbox, KONZEPT.md section 12): Mergify's draft pull requests (author
 //! [`ShadowConfig::mergify_login`], head on the queue prefix) list the pull requests they embark
 //! as `#n` in their description; pull requests merged by that login landed through Mergify;
-//! Mergify's check run on a pull request (app [`ShadowConfig::mergify_app`]) means it is queued,
-//! and a dequeue code (`queue-dequeue-reason`) in a concluded run's title or summary is the
-//! reason it left.
+//! Confirmed queue-draft membership means queued; generic summary and rule-evaluation
+//! checks do not. A known literal dequeue code (`queue-dequeue-reason`) in a concluded
+//! run's title or summary is the reason it left. Unknown formats remain unobserved.
 //!
 //! **The report** ([`report`]) compares per pull request: queued, landed, landing order (rank
 //! among the pull requests both landed), the batch it landed in, and the dequeue code.
@@ -59,6 +59,8 @@ pub struct ShadowConfig {
     pub mergify_login: String,
     /// Mergify's app slug (its check runs).
     pub mergify_app: String,
+    /// Prefix of the other queue's draft branches.
+    pub mergify_queue_prefix: String,
     /// Panic on an attempted write instead of refusing it (tests).
     pub panic_on_write: bool,
 }
@@ -68,6 +70,7 @@ impl Default for ShadowConfig {
         ShadowConfig {
             mergify_login: "mergify[bot]".into(),
             mergify_app: "mergify".into(),
+            mergify_queue_prefix: "mergify/merge-queue/".into(),
             panic_on_write: false,
         }
     }
@@ -113,32 +116,68 @@ fn virtual_sha(kind: &str, car: u64) -> String {
     s[s.len() - 40..].to_string()
 }
 
-/// Pull request numbers a description or title names as `#n`.
+/// Members of the explicit embarkment section, in order. Never scan prose or PR titles:
+/// they can refer to unrelated issues, and sections about PRs ahead are not this batch.
+/// This format is exercised by our scripted queue; additional real-world formats require
+/// sandbox evidence before being accepted here.
 pub fn embarked(body: &str, own: u64) -> Vec<u64> {
     let mut out = Vec::new();
-    let b = body.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'#' && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) {
-            let start = i + 1;
-            let mut j = start;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > start
-                && (j == b.len() || !b[j].is_ascii_alphanumeric())
-                && let Ok(n) = body[start..j].parse::<u64>()
-                && n != own
-                && !out.contains(&n)
-            {
-                out.push(n);
-            }
-            i = j.max(i + 1);
-        } else {
-            i += 1;
+    let Some((_, entries)) = body.split_once("Embarked pull requests:\n") else {
+        return out;
+    };
+    for line in entries.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            break;
+        }
+        let line = line.strip_prefix("- ").unwrap_or(line);
+        let Some(rest) = line.strip_prefix('#') else {
+            break;
+        };
+        let len = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let (number, tail) = rest.split_at(len);
+        if !tail.is_empty() && !tail.starts_with(':') {
+            continue;
+        }
+        if let Ok(n) = number.parse::<u64>()
+            && n != 0
+            && n != own
+            && !out.contains(&n)
+        {
+            out.push(n);
         }
     }
     out
+}
+
+/// The title's final parenthesized PR-number list is structural membership, unlike
+/// incidental references in the member title before it (e.g. `Fix #12 (#50)`).
+/// A title without that shape falls back to the dedicated body section.
+fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
+    if let Some(end) = title.trim_end().strip_suffix(')')
+        && let Some((_, members)) = end.rsplit_once('(')
+    {
+        let parsed: Option<Vec<u64>> = members
+            .split(',')
+            .map(|part| {
+                let digits = part.trim().strip_prefix('#')?;
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                digits.parse::<u64>().ok().filter(|n| *n != 0 && *n != own)
+            })
+            .collect();
+        if let Some(members) = parsed {
+            let mut unique = Vec::new();
+            for n in members {
+                if !unique.contains(&n) {
+                    unique.push(n);
+                }
+            }
+            return unique;
+        }
+    }
+    embarked(body, own)
 }
 
 impl Shadow {
@@ -499,11 +538,13 @@ impl Shadow {
     }
 
     /// A pull request read from GitHub: a Mergify draft (what it embarks), or a pull request
-    /// with Mergify's queue check.
+    /// with an explicit queue-draft membership list.
     fn note_other(&mut self, p: &PullRequest, now: Time) {
         if p.author == self.cfg.mergify_login {
-            let text = format!("{}\n{}", p.title, p.body);
-            let prs = embarked(&text, p.number);
+            if !p.head_ref.starts_with(&self.cfg.mergify_queue_prefix) {
+                return;
+            }
+            let prs = draft_members(&p.title, &p.body, p.number);
             if prs.is_empty() {
                 return;
             }
@@ -532,23 +573,10 @@ impl Shadow {
                     false,
                 );
             }
-            return;
         }
-        if p.closed || p.merged {
-            return;
-        }
-        if p.checks.iter().any(|c| {
-            c.head_sha == p.head_sha && c.app.as_deref() == Some(self.cfg.mergify_app.as_str())
-        }) {
-            self.fact(
-                MERGIFY,
-                p.number,
-                "queued",
-                now,
-                json!({ "check": true }),
-                true,
-            );
-        }
+        // Summary and rule-evaluation check runs are published for unqueued PRs too.
+        // Until sandbox evidence identifies an unambiguous queue check, draft membership
+        // is the only positive queue signal; never guess from an app slug or check title.
     }
 
     /// Reads what Mergify did since the last round: merges (who merged, when), drafts that
@@ -565,8 +593,10 @@ impl Shadow {
         };
         for p in &recent {
             if p.user.login == self.cfg.mergify_login {
-                let text = format!("{}\n{}", p.title, p.body.clone().unwrap_or_default());
-                let prs = embarked(&text, p.number);
+                if !p.head.ref_name.starts_with(&self.cfg.mergify_queue_prefix) {
+                    continue;
+                }
+                let prs = draft_members(&p.title, p.body.as_deref().unwrap_or_default(), p.number);
                 if !prs.is_empty() {
                     self.drafts.insert(
                         p.number,
@@ -641,24 +671,23 @@ impl Shadow {
             }
         }
         // Dequeue codes: Mergify's concluded check runs on pull requests it queued.
-        let open: Vec<(u64, String)> = state
+        // Closed PRs may have left State already. The recent-pulls read supplies their
+        // head so its dequeue reason remains observable after the worker processes the close.
+        let mut candidates: BTreeMap<u64, String> = state
             .pull_requests
             .values()
-            .filter(|p| !p.closed && !p.merged && !Self::is_virtual(p.number))
-            .filter(|p| {
-                self.has(MERGIFY, p.number, "queued") && !self.has(MERGIFY, p.number, "landed")
-            })
-            .filter(|p| {
-                p.checks.iter().any(|c| {
-                    c.head_sha == p.head_sha
-                        && c.app.as_deref() == Some(self.cfg.mergify_app.as_str())
-                        && c.conclusion.is_some()
-                        && !self.seen_runs.contains(&c.seq)
-                })
-            })
+            .filter(|p| !p.merged && !Self::is_virtual(p.number))
             .map(|p| (p.number, p.head_sha.clone()))
             .collect();
-        for (n, head) in open {
+        for p in &recent {
+            if p.merged_at.is_none() {
+                candidates.insert(p.number, p.head.sha.clone());
+            }
+        }
+        for (n, head) in candidates {
+            if !self.has(MERGIFY, n, "queued") || self.has(MERGIFY, n, "landed") {
+                continue;
+            }
             let runs = match forge.api.check_runs(&head, Priority::Normal) {
                 Ok(r) => r,
                 Err(_) => continue,
@@ -668,7 +697,12 @@ impl Shadow {
                 r.app.as_ref().and_then(|a| a.slug.as_deref()) == Some(app.as_str())
                     && r.status == "completed"
             }) {
-                self.seen_runs.insert(r.id);
+                // Use GitHub IDs at both the membership check and insertion, not the
+                // engine's check ordering field. Do not overwrite the observation time on
+                // every reconciliation of the same concluded run.
+                if !self.seen_runs.insert(r.id) {
+                    continue;
+                }
                 let text = r
                     .output
                     .as_ref()
@@ -680,10 +714,17 @@ impl Shadow {
                         )
                     })
                     .unwrap_or_default();
-                if let Some(code) = schlange_core::reasons::ALL.iter().find(|c| {
-                    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-                        .any(|w| w == **c)
-                }) {
+                if let Some(code) = schlange_core::reasons::ALL
+                    .iter()
+                    .copied()
+                    // Preserve literal observer evidence even where the engine has not
+                    // adopted the code. Never normalize it to manufacture agreement.
+                    .chain(std::iter::once("PR_CLOSED"))
+                    .find(|c| {
+                        text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                            .any(|w| w == *c)
+                    })
+                {
                     self.fact(
                         MERGIFY,
                         n,
@@ -1016,12 +1057,68 @@ mod tests {
     }
 
     #[test]
-    fn embarked_numbers() {
+    fn embarked_numbers_are_structured_entries_not_title_mentions() {
         assert_eq!(
-            embarked("queue: #3, #12\n#3 again (#4)", 99),
-            vec![3, 12, 4]
+            embarked(
+                "Embarked pull requests:\n#50: Fix regression from #12 (#50)\n#51\n",
+                99
+            ),
+            vec![50, 51]
         );
-        assert_eq!(embarked("issue#5 a#b #x #7a #8", 8), Vec::<u64>::new());
+        assert_eq!(embarked("Fix #12 (#50)\nSee #51", 99), Vec::<u64>::new());
+        assert_eq!(
+            embarked(
+                "Embarked pull requests:\n#50\n#50 again\n#99\n\nPull requests ahead:\n#12",
+                99
+            ),
+            vec![50]
+        );
+    }
+
+    #[test]
+    fn only_the_terminal_title_member_list_is_authoritative() {
+        let body = "Embarked pull requests:\n#42\n";
+        assert_eq!(draft_members("Fix #412 (#500)", body, 999), vec![500]);
+        assert_eq!(
+            draft_members("Fix #412 (#500, #501)", body, 999),
+            vec![500, 501]
+        );
+        assert_eq!(draft_members("Fix #412 (#500, #500)", body, 999), vec![500]);
+        assert_eq!(draft_members("Fix #412 (see #500)", body, 999), vec![42]);
+        assert!(draft_members("Fix #412 (#500) continued", "", 999).is_empty());
+        assert!(draft_members("Fix #412", "", 999).is_empty());
+    }
+
+    #[test]
+    fn generic_mergify_checks_do_not_mean_queued_and_nonqueue_bot_prs_are_ignored() {
+        use schlange_core::model::{CheckRun, Conclusion};
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        let mut p = PullRequest::new(50, "author", "main", "feature", "head");
+        for (name, conclusion) in [
+            ("Summary", Conclusion::Success),
+            ("Rule: ready (queue)", Conclusion::Neutral),
+            ("Rule: ready (queue)", Conclusion::Failure),
+        ] {
+            p.checks = vec![CheckRun {
+                name: name.into(),
+                app: Some("mergify".into()),
+                head_sha: p.head_sha.clone(),
+                conclusion: Some(conclusion),
+                ..Default::default()
+            }];
+            s.note_other(&p, 1);
+        }
+        assert!(s.facts().is_empty());
+        p.number = 99;
+        p.author = "mergify[bot]".into();
+        p.body = "Embarked pull requests:\n#12".into();
+        s.note_other(&p, 2);
+        assert!(s.facts().is_empty());
+        p.head_ref = "mergify/merge-queue/a".into();
+        p.body = "Embarked pull requests:\n#50: Fixes #12".into();
+        s.note_other(&p, 3);
+        assert!(s.has(MERGIFY, 50, "queued"));
+        assert!(!s.has(MERGIFY, 12, "queued"));
     }
 
     #[test]

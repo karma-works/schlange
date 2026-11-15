@@ -103,6 +103,20 @@ pub fn check(config: &Value, spans: &Spans, findings: &mut Vec<Finding>) {
     merge_method_rules(config, spans, findings);
 
     for (base, rule) in rules {
+        if let Some(range) = rule.get("batch_size").and_then(Value::as_object)
+            && let (Some(min), Some(max)) = (
+                range.get("min").and_then(Value::as_u64),
+                range.get("max").and_then(Value::as_u64),
+            )
+            && min > max
+        {
+            push(
+                findings,
+                spans,
+                format!("{base}/batch_size"),
+                "batch_size min must not exceed max".into(),
+            );
+        }
         for key in DURATIONS {
             let Some(Value::String(text)) = rule.get(*key) else {
                 continue;

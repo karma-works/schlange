@@ -155,7 +155,7 @@ pub struct Setup {
     /// More branches at the initial commit.
     pub branches: Vec<String>,
     /// Checks the protection of the base branch requires (`branch_protection_injection_mode`).
-    pub required_checks: Vec<String>,
+    pub required_checks: Vec<schlange_core::model::RequiredCheck>,
 }
 
 #[derive(Debug, Clone, Serialize)]

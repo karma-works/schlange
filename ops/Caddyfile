@@ -1,0 +1,44 @@
+{
+    admin off
+    persist_config off
+    email {$ACME_EMAIL}
+    http_port 8080
+    https_port 8443
+    servers {
+        timeouts {
+            read_header 5s
+            read_body 15s
+            write 30s
+            idle 60s
+        }
+    }
+}
+
+{$SCHLANGE_HOST} {
+    @webhook {
+        method POST
+        path /webhook
+    }
+    handle @webhook {
+        request_body {
+            max_size 2MB
+        }
+        reverse_proxy schlange:8080 {
+            # A live follower must never be the webhook target. Do not retry POSTs here:
+            # operators explicitly redeliver rejected deliveries using the same delivery ID.
+            health_uri /readyz
+            health_interval 2s
+            health_timeout 2s
+            health_status 200
+            fail_duration 5s
+            unhealthy_status 503
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 20s
+            }
+        }
+    }
+    handle {
+        respond 404
+    }
+}
