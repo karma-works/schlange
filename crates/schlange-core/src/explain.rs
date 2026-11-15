@@ -261,6 +261,9 @@ pub fn atom_text(a: &Atom) -> String {
         s.push(' ');
         s.push_str(v);
     }
+    if let Some(id) = a.integration_id {
+        s.push_str(&format!(" (integration {id})"));
+    }
     s
 }
 
@@ -312,11 +315,24 @@ fn check_value(atom: &Atom, pr: &PullRequest) -> Option<String> {
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default(),
         };
-        format!("{}: {state}", r.name)
+        match atom.integration_id {
+            Some(_) => format!(
+                "{} (integration {}): {state}",
+                r.name,
+                r.app_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            ),
+            None => format!("{}: {state}", r.name),
+        }
     };
     let selected: Vec<String> = runs
         .iter()
         .filter(|r| selects(r.conclusion))
+        .filter(|r| {
+            atom.integration_id
+                .is_none_or(|id| !r.status && r.app_id == Some(id))
+        })
         .map(show)
         .collect();
     if atom.length {

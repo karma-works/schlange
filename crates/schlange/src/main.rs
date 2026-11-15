@@ -119,7 +119,7 @@ enum Command {
     Doctor {
         #[arg(long)]
         json: bool,
-        /// Mergify JSON schema (default: $SCHLANGE_SCHEMA or .research/mergify/schema.json).
+        /// Optional upstream JSON schema (also $SCHLANGE_SCHEMA); defaults to the embedded runtime validator.
         #[arg(long)]
         schema: Option<PathBuf>,
         /// Skip the checks that call GitHub (the container health check uses this).
@@ -153,8 +153,8 @@ enum Command {
         /// Data directory: the SQLite database (journal, snapshots, webhook dedup, audit).
         #[arg(long, env = "SCHLANGE_DATA_DIR", default_value = "/data")]
         data_dir: PathBuf,
-        /// Mergify JSON schema for validating the configuration (default: $SCHLANGE_SCHEMA or
-        /// .research/mergify/schema.json). `serve` does not start without it.
+        /// Optional upstream JSON schema for runtime validation (also $SCHLANGE_SCHEMA).
+        /// Without it, use Schlange's embedded clean-room validator.
         #[arg(long)]
         schema: Option<PathBuf>,
         /// File holding the admin token for `GET /status` (or SCHLANGE_ADMIN_TOKEN). Without
@@ -671,24 +671,15 @@ fn doctor(
         }),
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    checks.push(match schema::locate(schema_path, &cwd) {
-        None => Check {
-            name: "schema",
-            status: "WARN",
-            detail: "no Mergify schema found; `config validate` needs --schema (not embedded until its licence is cleared)".into(),
+    let validator = schlange_github::config::ConfigCheck::locate(schema_path, &cwd);
+    checks.push(match &validator {
+        Ok(check) => Check {
+            name: "schema", status: "OK",
+            detail: if check.is_embedded() {
+                "embedded clean-room runtime validator; config validate still requires the pinned upstream schema".into()
+            } else { check.schema.path.display().to_string() },
         },
-        Some(p) => match Schema::load(&p) {
-            Ok(_) => Check {
-                name: "schema",
-                status: "OK",
-                detail: p.display().to_string(),
-            },
-            Err(e) => Check {
-                name: "schema",
-                status: "FAIL",
-                detail: e.to_string(),
-            },
-        },
+        Err(error) => Check { name: "schema", status: "FAIL", detail: error.clone() },
     });
     const GITHUB_CHECKS: [&str; 6] = [
         "github-app",
@@ -698,7 +689,7 @@ fn doctor(
         "webhooks",
         "rate-limit",
     ];
-    let config_check = schlange_github::config::ConfigCheck::locate(schema_path, &cwd).ok();
+    let config_check = validator.ok();
     let local = local_config_check(config, &cwd, config_check.as_ref());
     if offline || !github.configured() {
         let why = if offline {
@@ -892,6 +883,7 @@ fn serve(a: ServeArgs) -> ExitCode {
         shadow: a.shadow.then(|| schlange_github::shadow::ShadowConfig {
             mergify_login: a.mergify_login.clone(),
             mergify_app: a.mergify_app.clone(),
+            mergify_queue_prefix: "mergify/merge-queue/".into(),
             panic_on_write: false,
         }),
         lease: (!a.no_lease && !a.shadow).then(|| schlange_github::lease::LeaseConfig {

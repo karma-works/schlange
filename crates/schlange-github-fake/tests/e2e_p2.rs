@@ -252,3 +252,134 @@ fn an_accepted_edit_that_breaks_the_full_suite_never_lands() {
     assert!(!merged);
     assert_eq!(edit, None);
 }
+
+#[test]
+fn protection_webhooks_reload_pinned_checks_without_waiting_for_the_period() {
+    let t = ci(Tester::new(&config("squash", 1))).start();
+    for event in ["repository_ruleset", "branch_protection_rule"] {
+        t.gh.change_required_checks(
+            vec![
+                serde_json::from_value(serde_json::json!({
+                    "context": event, "integration_id": 15368
+                }))
+                .unwrap(),
+            ],
+            event,
+        );
+        t.wait_until("pinned rules read from webhook", |t| {
+            t.status().is_some_and(|s| {
+                s.state["required_checks"]["main"]
+                    == serde_json::json!([
+                        {"context": event, "integration_id": 15368}
+                    ])
+            })
+        });
+    }
+    let pr = t.open_pr(BOT).file("a.txt", "a\n").create();
+    // A successful context from another app is not enough for queue entry.
+    t.gh.report_check_as(pr, "branch_protection_rule", Some("success"), "other-ci");
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&pr));
+    t.gh.report_check(pr, "branch_protection_rule", Some("success"));
+    t.pr(pr).wait_queued();
+    t.shutdown();
+}
+
+#[test]
+fn tightened_protection_is_loaded_before_a_green_snapshot_can_land() {
+    let t = Tester::new(&config("squash", 1)).start();
+    let pr = t.open_pr(BOT).file("a.txt", "a\n").create();
+    t.pr(pr).check("quick").succeed();
+    t.pr(pr).wait_queued();
+    t.advance("2m");
+    let draft = t.queue_pr().get();
+    // Lose the check webhook, so only the protection webhook's full snapshot sees the
+    // now-green car. That snapshot must not land before reading the new required check.
+    t.settle();
+    t.gh.set_hook_faults(schlange_github_fake::HookFaults {
+        drop: 1.0,
+        ..Default::default()
+    });
+    t.gh.report_check(draft.number, "full", Some("success"));
+    t.gh.set_required_checks(&["newly-required"]);
+    t.service.as_ref().expect("serve").reconcile_now();
+    t.wait_until("tightened protection read", |t| {
+        t.status().is_some_and(|s| {
+            s.state["required_checks"]["main"] == serde_json::json!(["newly-required"])
+        })
+    });
+    t.settle();
+    assert!(
+        !t.gh.pr(pr).unwrap().merged,
+        "fresh protection must hold the green car"
+    );
+    t.shutdown();
+}
+
+#[test]
+fn a_foreign_app_pin_is_required_even_when_its_context_matches_the_queue_check() {
+    let t = ci(Tester::new(&config("squash", 1))).start();
+    let context = "Schlange merge queue";
+    t.gh.change_required_checks(
+        vec![
+            serde_json::from_value(serde_json::json!({
+                "context": context, "integration_id": 15368
+            }))
+            .unwrap(),
+        ],
+        "repository_ruleset",
+    );
+    t.wait_until("foreign same-name pin retained", |t| {
+        t.status().is_some_and(|s| {
+            s.state["required_checks"]["main"]
+                == serde_json::json!([
+                    {"context": context, "integration_id": 15368}
+                ])
+        })
+    });
+    let pr = t.open_pr(BOT).file("a.txt", "a\n").create();
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&pr));
+    t.gh.report_check(pr, context, Some("success"));
+    t.pr(pr).wait_queued();
+    t.shutdown();
+}
+
+#[test]
+fn an_unavailable_protection_read_holds_a_green_car_until_a_complete_read() {
+    use schlange_github_fake::{FaultKind, FaultRule, HookFaults};
+    let t = Tester::new(&config("squash", 1)).start();
+    let pr = t.open_pr(BOT).file("a.txt", "a\n").create();
+    t.pr(pr).check("quick").succeed();
+    t.pr(pr).wait_queued();
+    t.advance("2m");
+    let draft = t.queue_pr().get();
+    t.settle();
+    t.gh.set_hook_faults(HookFaults {
+        drop: 1.0,
+        ..Default::default()
+    });
+    t.gh.report_check(draft.number, "full", Some("success"));
+    t.gh.add_fault(FaultRule::new(
+        "GET",
+        "/rules/branches/",
+        FaultKind::Status(403),
+        100,
+    ));
+    t.service.as_ref().expect("serve").reconcile_now();
+    t.wait_until("protection read failed closed", |t| {
+        t.status().is_some_and(|s| {
+            s.state["check_identity_unavailable"]
+                .as_array()
+                .is_some_and(|bases| bases.iter().any(|b| b == "main"))
+                && s.log_tail
+                    .iter()
+                    .any(|l| l.contains("required checks of main not read"))
+        })
+    });
+    assert!(!t.gh.pr(pr).unwrap().merged);
+    t.gh.clear_faults();
+    t.service.as_ref().expect("serve").reconcile_now();
+    t.pr(pr).wait_merged();
+    t.shutdown();
+}

@@ -1,0 +1,22 @@
+# A same-name success from another integration never replaces the pinned check.
+name: p2-required-checks-app-pin
+description: Required checks retain their integration ID at queue entry and landing.
+config: configs/two-step.yml
+required_checks:
+  - { context: lint, integration_id: 42 }
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: lint, app: trusted-ci, app_id: 42, duration: 2m, runs_on: both, fail_when_contains: UNLINTED }
+  - { check: lint, app: other-ci, app_id: 7, duration: 3m, runs_on: both }
+  - { check: full, duration: 4m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, files: { a.txt: "a\n" } }
+  - { number: 2, author: bot, files: { b.txt: "UNLINTED\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: open }
+expect_log:
+  - "enqueue #1 into `default`"

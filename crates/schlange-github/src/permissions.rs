@@ -8,6 +8,7 @@
 //! | `pull_requests` | write | reading pull requests and files, the queue's draft pull requests, merging, labels and comments on pull requests |
 //! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
+//! | `actions` | read | resolve workflow identity for GitHub Actions checks |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
@@ -17,7 +18,7 @@
 //! as a warning.
 //!
 //! **Shadow mode** ([`SHADOW_PERMISSIONS`]) needs only read access: `metadata`, `contents`,
-//! `issues`, `pull_requests`, `checks` and `statuses`, all `read`. A shadow app with nothing more cannot
+//! `issues`, `pull_requests`, `checks`, `actions` and `statuses`, all `read`. A shadow app with nothing more cannot
 //! write to GitHub whatever the code does; `schlange doctor --shadow` warns about any write
 //! permission, and `serve --shadow` asks for read-only installation tokens.
 
@@ -28,6 +29,7 @@ pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("pull_requests", "write", true),
     ("issues", "read", true),
     ("checks", "write", true),
+    ("actions", "read", true),
     ("statuses", "read", true),
     ("workflows", "write", false),
 ];
@@ -39,6 +41,7 @@ pub const SHADOW_PERMISSIONS: &[(&str, &str, bool)] = &[
     ("pull_requests", "read", true),
     ("issues", "read", true),
     ("checks", "read", true),
+    ("actions", "read", true),
     ("statuses", "read", true),
 ];
 
@@ -125,6 +128,7 @@ mod tests {
             ("contents", "read"),
             ("pull_requests", "write"),
             ("checks", "write"),
+            ("actions", "read"),
             ("statuses", "read"),
             ("administration", "read"),
         ]
@@ -138,6 +142,21 @@ mod tests {
         );
         assert_eq!(r.optional_missing, vec!["workflows: none → write"]);
         assert_eq!(r.extra, vec!["administration: read"]);
+    }
+
+    #[test]
+    fn check_identity_requires_actions_read_in_both_modes() {
+        for permissions in [PERMISSIONS, SHADOW_PERMISSIONS] {
+            let granted = permissions
+                .iter()
+                .filter(|(name, _, _)| *name != "actions")
+                .map(|(name, level, _)| (name.to_string(), level.to_string()))
+                .collect();
+            assert_eq!(
+                compare_with(&granted, permissions).missing,
+                vec!["actions: none → read"]
+            );
+        }
     }
 
     #[test]

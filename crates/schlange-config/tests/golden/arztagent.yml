@@ -3,29 +3,44 @@
 #
 # Ablauf: Ein fertiger PR (kein Entwurf) mit grüner Schnellprüfung, Risiko/Datenschutz und
 # KI-Review kommt in die Queue. Mergify testet ihn im Queue-PR (mergify/merge-queue/*) zusammen
-# mit dem aktuellen main und bis zu vier anderen PRs einmal voll (ci.yml, ci-ok) und merged dann.
+# mit dem aktuellen main und bis zu zwei anderen PRs einmal voll (ci.yml, ci-ok) und merged dann.
 # Verfassungsänderungen reiht ein Mensch mit dem Kommentar "@mergifyio queue" ein.
 
 queue_rules:
   - name: default
     merge_method: squash
-    batch_size: 5
-    batch_max_wait_time: 5 minutes
+    # Meist ist ein PR allein im Bündel (27.10.–10.11.2026: 83 % der gemergten Queue-PRs);
+    # Bündel aus fünf waren zu 64 % rot. Kurz warten, klein bündeln.
+    batch_size: 3
+    batch_max_wait_time: 2 minutes
     # Einreihen: Prüfungen auf dem PR selbst.
     queue_conditions:
       - base = main
       - -draft
       - -label = halt
-      - "#check-failure = 0"
+      # Kein roter Check außer den Journeys (journeys.yml, Job "verify-arztagent journeys"):
+      # Sie sind informativ und für das Mergen nicht erforderlich; jeder andere rote Check hält
+      # den PR an.
+      - "-check-failure ~= ^(?!verify-arztagent journeys$)"
       - check-success = ci-ok
       - check-success = Risk class and data protection
       # Dependabot bekommt im KI-Review keine Secrets; Major-Updates reiht ein Mensch ein.
       - or:
           - check-success = KI-Review
           - author = dependabot[bot]
-    # Mergen: volle Suite auf dem Queue-PR.
+    # Mergen: volle Suite auf dem Queue-PR. Ein rotes Paket meldet ci.yml sofort als
+    # ci-failed-<Paket>; dann ist die Bedingung endgültig falsch und Mergify nimmt den Queue-PR
+    # heraus, ohne auf den langsamsten Job und ci-ok zu warten. Explizite Namen mit "=", weil
+    # nur genannte Checks als endgültig rot zählen (auch in Schlange).
     merge_conditions:
       - check-success = ci-ok
+      - -check-failure = ci-failed-backend
+      - -check-failure = ci-failed-cli
+      - -check-failure = ci-failed-connector
+      - -check-failure = ci-failed-doctolib
+      - -check-failure = ci-failed-governance
+      - -check-failure = ci-failed-typescript
+      - -check-failure = ci-failed-voice
 
 pull_request_rules:
   - name: Agenten- und Menschen-PRs automatisch einreihen

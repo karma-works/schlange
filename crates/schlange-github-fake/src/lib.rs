@@ -408,7 +408,7 @@ pub(crate) struct St {
     pub old_names: Vec<String>,
     pub rulesets: Vec<Value>,
     /// Checks a ruleset on the default branch requires (`GET /rules/branches/…`).
-    pub required_checks: Vec<String>,
+    pub required_checks: Vec<schlange_core::model::RequiredCheck>,
     pub collaborators: BTreeMap<String, String>,
     pub violations: Vec<String>,
     /// How many files `GET /pulls/{n}/files` lists at most (GitHub: 3000).
@@ -849,7 +849,7 @@ impl St {
             .collect();
         json!({
             "id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status,
-            "conclusion": r.conclusion, "app": { "slug": r.app_slug },
+            "conclusion": r.conclusion, "app": { "slug": r.app_slug, "id": if r.app_slug == "github-actions" { 15368 } else { 900 } },
             "check_suite": { "id": r.suite_id },
             "output": { "title": r.output_title },
             "pull_requests": prs,
@@ -1261,7 +1261,31 @@ impl FakeGithub {
 
     /// A ruleset on the default branch that requires these checks.
     pub fn set_required_checks(&self, checks: &[&str]) {
-        self.with(|s| s.required_checks = checks.iter().map(|c| c.to_string()).collect());
+        self.with(|s| s.required_checks = checks.iter().map(|c| (*c).into()).collect());
+    }
+
+    /// Changes required contexts and emits the corresponding protection webhook.
+    pub fn change_required_checks(
+        &self,
+        checks: Vec<schlange_core::model::RequiredCheck>,
+        event: &str,
+    ) {
+        assert!(matches!(
+            event,
+            "repository_ruleset" | "branch_protection_rule"
+        ));
+        self.with(|s| {
+            s.required_checks = checks;
+            s.emit(event, json!({ "action": "edited" }));
+        });
+    }
+
+    /// Reports a run by a specific app (GitHub Actions has ID 15368 in this fake).
+    pub fn report_check_as(&self, n: u64, name: &str, conclusion: Option<&str>, app: &str) -> u64 {
+        self.with(|s| {
+            let sha = s.prs.get(&n).expect("pr").head_sha.clone();
+            s.add_run(&sha, name, conclusion.map(str::to_string), app)
+        })
     }
 
     pub fn add_ruleset(&self, ruleset: Value) {

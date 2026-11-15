@@ -217,22 +217,72 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   `schlange-e2e` and `schlange-e2e-isolated`, whether Schlange behaves like Mergify (`sandbox.py compare`).
 - **Schedule:** Sundays, all scenarios on `queue-lab` (about 3–4 hours; free in a public
   repo).
-- **Result:** table in the job summary. As an artifact (14 days) only `outcome.json`,
-  `run.json` and `scenario.json`; `trace.json` and `summary.json` contain Mergify texts and
+- **Result:** table in the job summary. Artifacts retained for 90 days contain only `outcome.json`,
+  `run.json`, `scenario.json` and structured shadow evidence; `trace.json` and `summary.json` contain Mergify texts and
   stay in the runner. For the full recording, run the scenario locally.
 - **Security:** the workflow starts only through `workflow_dispatch` (write access needed) and
   `schedule`, never through PRs from forks. The secrets work only in `schlange-sandbox`.
 - **`schlange-e2e` in the runner:** the job builds the release binary and starts
   `sandbox/ci/start-schlange.sh`: `schlange serve` with the queue app against
   `schlange-sandbox/schlange-e2e`, no webhooks (no forwarder runs next to the app key): reconciliation polls every 10 s. A wait that times out fails the run on this repo
-  (`SANDBOX_FAIL_ON_TIMEOUT`). The job log gets only problem lines of the serve log (it mentions
-  pull request titles).
+  (`SANDBOX_FAIL_ON_TIMEOUT`). The job log gets only counts of problem lines; the full serve
+  log can mention pull request titles and stays private in the runner. Startup waits on
+  `/readyz` before scenarios begin.
 - **Mergify must not be installed on `schlange-e2e`.** If the Mergify app is installed on all
   repositories of the organisation, it posts the check run `Rule: … (queue)` with the conclusion
   `action_required` ("Merge Queue needs to be activated"). `#check-failure = 0` counts it as a
   failure (as it does for Mergify itself), so nothing is queued and every `schlange-e2e`
   scenario times out. Fix by hand: Mergify installation, "Only select repositories",
   `queue-lab` only.
+
+### Shadow rehearsal and new reference scenarios
+
+Issue #29 requires fresh reference runs for S14–S18, and S19 adds a fully app-qualified
+check-regex probe. Before recording them, refresh the selected fixture only while idle:
+
+```bash
+gh workflow run sandbox.yml --ref <review-branch> -f repo=queue-lab -f update_fixture=true \
+  -f scenarios="s14-check-workflow-collision s15-review-manual-retry s16-preexisting-base-conflict s17-ready-not-queued-base-moves s18-dequeue-requeue-observation s19-app-qualified-check-regex"
+```
+
+Fixture refresh requires the sandbox human token to be an organisation owner with readable
+organisation membership (`Members: read`). An unreadable membership is now reported separately
+from a verified non-owner. S14, S15 and S19 also need the documented workflow-dispatch permission.
+The queue and shadow app installations need `actions: read` for check identity verification.
+
+S19 opts into an additional queue condition using the `sbx-qualified-regex` label. Its regular
+checks pass while `qualified-probe` is absent and the PR stays unqueued. A dispatched workflow
+then publishes `qualified-probe` on the same head under GitHub Actions. The anchored regex
+`^@github-actions/qualified-probe$` cannot match its bare name. The driver verifies the app slug,
+head and workflow hint, and then waits for merge. Other scenarios do not use the opt-in label.
+The custom run link is only a hint, as in S15; it is not a proof of job provenance.
+
+Review `run.json` for `timed_out: false` and the completed checkpoints before accepting an
+`outcome.json` baseline. Do not promote timed-out runs or manufacture a baseline from the
+scenario's expected outcome. S13/S16/S17 reason parity and S11/S18 requeue behaviour remain
+unproven until those recordings are reviewed.
+
+With reviewed baselines committed, run the same scenarios on `schlange-e2e-isolated` after its
+idle fixture refresh, then rehearse shadow mode on the reference sandbox:
+
+```bash
+gh workflow run sandbox.yml --ref <review-branch> -f repo=queue-lab -f shadow_mode=true \
+  -f scenarios="s01-single-pr s03-red-batch s05-halt-label s08-constitution-and-commands s09-red-checks"
+```
+
+Shadow mode is accepted only for `queue-lab` and cannot be combined with fixture reset,
+inspection or isolated setup in the same invocation. It uses a read-only installation token
+and the shadow write gate; production acceptance must instead use the dedicated read-only app.
+The workflow independently records Mergify events and checks every selected PR's queue entry,
+merge, batch, order and dequeue reason against the shadow report. Empty, pending, inconclusive,
+unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
+`report.json` and `verification.json`, without upstream prose or private serve logs.
+
+The current shadow report stores first queue/landing facts and the latest dequeue fact, not
+a complete entry/leave history. The independent verifier deliberately rejects S18-style
+multiple queue entries and a landing after a previous dequeue. Such a run is useful diagnostic
+evidence, but cannot be claimed as a passing history comparison until the report supports it.
+No new reviewed baselines or live shadow acceptance are established by these tooling changes.
 
 ## Results of the first full comparison (2026-10-28)
 

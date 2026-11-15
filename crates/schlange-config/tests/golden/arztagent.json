@@ -262,13 +262,6 @@
       "supported": true
     },
     {
-      "id": "default:merge_queue.batch_pull_request",
-      "feature": "queue-draft-pr",
-      "priority": "P1",
-      "status": "partial",
-      "supported": true
-    },
-    {
       "id": "default:merge_queue.dequeued_label",
       "feature": "queue-labels-comments",
       "priority": "P1",

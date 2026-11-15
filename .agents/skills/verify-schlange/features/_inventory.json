@@ -16,15 +16,15 @@
   ],
   "counts": {
     "action": 18,
-    "api": 79,
+    "api": 94,
     "attr": 76,
-    "cli": 42,
+    "cli": 44,
     "cmd": 8,
-    "config": 297,
-    "default": 157,
-    "enum": 164
+    "config": 294,
+    "default": 154,
+    "enum": 175
   },
-  "total": 841,
+  "total": 863,
   "entries": [
     {
       "id": "action:assign",
@@ -123,7 +123,22 @@
       "tag": "integrations"
     },
     {
+      "id": "api:DELETE /orgs/{owner}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/pause",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
       "kind": "api",
       "tag": "merge_queue"
     },
@@ -163,6 +178,11 @@
     },
     {
       "id": "api:GET /ci/{owner}/repositories/{repository}/search/tests",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/test-selection/failure-first",
       "kind": "api",
       "tag": "test_insights"
     },
@@ -217,6 +237,11 @@
       "tag": "test_insights"
     },
     {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/traces-status",
+      "kind": "api",
+      "tag": "ci_insights"
+    },
+    {
       "id": "api:GET /ci/{owner}/runners/stats/{stat}",
       "kind": "api",
       "tag": "ci_insights"
@@ -230,6 +255,16 @@
       "id": "api:GET /integrations/{owner}/configuration/slack",
       "kind": "api",
       "tag": "integrations"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/branches/{branch}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/logs",
@@ -262,7 +297,27 @@
       "tag": "merge_queue"
     },
     {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:GET /repos/{owner}/{repository}/merge-queue/status",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/merge-queue/unqueued-pulls",
       "kind": "api",
       "tag": "merge_queue"
     },
@@ -445,6 +500,11 @@
       "tag": "merge_queue"
     },
     {
+      "id": "api:POST /repos/{owner}/{repository}/merge-queue/pull/{pr_number}/queue",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:POST /repos/{owner}/{repository}/pulls/{number}/scopes",
       "kind": "api",
       "tag": "pull_requests",
@@ -487,6 +547,11 @@
       "tag": "integrations"
     },
     {
+      "id": "api:PUT /orgs/{owner}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:PUT /products/{owner}/{repository}",
       "kind": "api",
       "tag": "products"
@@ -502,9 +567,20 @@
       "tag": "merge_queue"
     },
     {
+      "id": "api:PUT /repos/{owner}/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:PUT /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:PUT /repos/{owner}/{repository}/pulls/{number}/scopes",
       "kind": "api",
-      "tag": "pull_requests"
+      "tag": "pull_requests",
+      "deprecated": true
     },
     {
       "id": "api:PUT /repos/{owner}/{repository}/queue/pause",
@@ -1538,7 +1614,15 @@
       "kind": "cli"
     },
     {
+      "id": "cli:mergify queue add",
+      "kind": "cli"
+    },
+    {
       "id": "cli:mergify queue pause",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify queue remove",
       "kind": "cli"
     },
     {
@@ -1773,6 +1857,11 @@
       "kind": "config",
       "type": "array<object>",
       "experimental": true
+    },
+    {
+      "id": "config:conflict_resolvers.auto",
+      "kind": "config",
+      "type": "boolean"
     },
     {
       "id": "config:conflict_resolvers.directories",
@@ -2428,12 +2517,6 @@
       "type": "object"
     },
     {
-      "id": "config:merge_queue.batch_pull_request",
-      "kind": "config",
-      "type": "boolean",
-      "experimental": true
-    },
-    {
       "id": "config:merge_queue.checking_label",
       "kind": "config",
       "type": "string?"
@@ -2465,22 +2548,6 @@
     },
     {
       "id": "config:merge_queue.reset_on_external_merge",
-      "kind": "config",
-      "type": "string"
-    },
-    {
-      "id": "config:merge_queue.resolve_conflicts",
-      "kind": "config",
-      "type": "object",
-      "experimental": true
-    },
-    {
-      "id": "config:merge_queue.resolve_conflicts.comment",
-      "kind": "config",
-      "type": "boolean"
-    },
-    {
-      "id": "config:merge_queue.resolve_conflicts.pull_requests",
       "kind": "config",
       "type": "string"
     },
@@ -3663,11 +3730,6 @@
       "value": "check-runs"
     },
     {
-      "id": "default:merge_queue.batch_pull_request",
-      "kind": "default",
-      "value": true
-    },
-    {
       "id": "default:merge_queue.checking_label",
       "kind": "default",
       "value": null
@@ -3701,16 +3763,6 @@
       "id": "default:merge_queue.reset_on_external_merge",
       "kind": "default",
       "value": "always"
-    },
-    {
-      "id": "default:merge_queue.resolve_conflicts.comment",
-      "kind": "default",
-      "value": true
-    },
-    {
-      "id": "default:merge_queue.resolve_conflicts.pull_requests",
-      "kind": "default",
-      "value": "none"
     },
     {
       "id": "default:merge_queue.skip_intermediate_results",
@@ -4165,6 +4217,18 @@
       "kind": "enum"
     },
     {
+      "id": "enum:language:astro",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:csharp",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:css",
+      "kind": "enum"
+    },
+    {
       "id": "enum:language:dockerfile",
       "kind": "enum"
     },
@@ -4186,6 +4250,14 @@
     },
     {
       "id": "enum:language:javascript",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:kotlin",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:markdown",
       "kind": "enum"
     },
     {
@@ -4297,6 +4369,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:package-manager:maven",
+      "kind": "enum"
+    },
+    {
       "id": "enum:package-manager:mix",
       "kind": "enum"
     },
@@ -4306,6 +4382,10 @@
     },
     {
       "id": "enum:package-manager:npm",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:nuget",
       "kind": "enum"
     },
     {
@@ -4338,18 +4418,6 @@
     },
     {
       "id": "enum:priority:medium",
-      "kind": "enum"
-    },
-    {
-      "id": "enum:pull_requests:all",
-      "kind": "enum"
-    },
-    {
-      "id": "enum:pull_requests:none",
-      "kind": "enum"
-    },
-    {
-      "id": "enum:pull_requests:queueable",
       "kind": "enum"
     },
     {
@@ -4565,7 +4633,19 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:astro",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:cargo",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:csharp",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:css",
       "kind": "enum"
     },
     {
@@ -4597,6 +4677,14 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:kotlin",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:markdown",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:mix",
       "kind": "enum"
     },
@@ -4606,6 +4694,10 @@
     },
     {
       "id": "enum:strategy:npm",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:nuget",
       "kind": "enum"
     },
     {
@@ -4658,6 +4750,10 @@
     },
     {
       "id": "enum:strategy:terraform",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:text",
       "kind": "enum"
     },
     {

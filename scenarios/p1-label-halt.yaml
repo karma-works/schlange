@@ -23,7 +23,7 @@ pull_requests:
 events:
   - { at: 0s, open: 1 }
   - { at: 0s, open: 2 }
-  - { at: 11m, label: { pr: 1, name: halt } }
+  - { at: 8m, label: { pr: 1, name: halt } }
   - { at: 1h, unlabel: { pr: 1, name: halt } }
   - { at: 90m, push: { pr: 1, files: { backend/a.py: "a = 2\n" } } }
 

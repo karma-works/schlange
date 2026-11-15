@@ -2,7 +2,7 @@
 # Covers: pull_request_rules with action `queue`, queue_conditions, check semantics,
 # the constitution regex with lookahead, Dependabot update types, label `halt`, drafts.
 # Since phase 1a the queue is real: queued pull requests are tested on a draft pull request
-# (batch of up to 5, 5 minutes wait) and land as squash commits.
+# (batch of up to 3, 2 minutes wait) and land as squash commits.
 name: p0-queue-conditions
 description: Pull requests open, CI reports, queue_conditions decide enqueue and dequeue.
 config: ../crates/schlange-config/tests/golden/arztagent.yml
