@@ -13,8 +13,6 @@
 //!   condition as a tree with its result: an `and`, `or` or `not` shows which of its
 //!   sub-conditions failed, an atom shows the attribute's value the engine saw;
 //! - the last dequeue reason (code and text) and the code of the last time its checks ended.
-//!
-//! [`Explanation::short`] is the one-line form the status comment carries.
 
 use serde::Serialize;
 
@@ -919,18 +917,6 @@ impl Explanation {
         let mut s = out.join("\n");
         s.push('\n');
         s
-    }
-
-    /// One line for the status comment: where it stands and what it waits for.
-    pub fn short(&self) -> String {
-        let s = &self.summary;
-        const MAX: usize = 300;
-        if s.chars().count() > MAX {
-            let cut: String = s.chars().take(MAX).collect();
-            format!("{cut}…")
-        } else {
-            s.clone()
-        }
     }
 }
 

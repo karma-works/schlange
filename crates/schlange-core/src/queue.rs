@@ -2496,11 +2496,7 @@ fn share<T: Ord>(a: &std::collections::BTreeSet<T>, b: &std::collections::BTreeS
 /// scopes in common with the batch, then the share of changed directories, then queue order.
 /// The window (batch size plus `max_parallel_checks`) and the measures are our reading of the
 /// docs, which name neither exactly. The batch keeps queue order.
-pub fn group_by_similarity(state: &State, order: &[u64], size: usize, window: usize) -> Vec<u64> {
-    group_with_scopes(state, &Rules::default(), order, size, window)
-}
-
-/// [`group_by_similarity`] with the configuration's scopes.
+/// The scopes come from the configuration (`rules`).
 pub fn group_with_scopes(
     state: &State,
     rules: &Rules,

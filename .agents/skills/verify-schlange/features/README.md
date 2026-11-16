@@ -105,7 +105,7 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Built-in protection: configuration changed](merge-protections-builtin.md) | partial | yes |
 | P1 | [Find and load the configuration file](config-file.md) | partial | yes |
 | P1 | [Validate a configuration](config-validation.md) | partial | yes |
-| P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | missing | yes |
+| P1 | [GitHub integration (app, webhooks, reconciliation)](github-integration.md) | partial | yes |
 | P1 | [Workflow rules (`pull_request_rules`)](pull-request-rules.md) | partial | yes |
 | P1 | [Batches (`batch_size`, `batch_max_wait_time`)](queue-batch.md) | partial | yes |
 | P1 | [Bisection of red batches](queue-bisection.md) | partial | yes |
@@ -124,40 +124,40 @@ element lacks the key) and no `defaults` section sets the option instead; `merge
 | P1 | [Two-step CI (`queue_conditions` and `merge_conditions`)](queue-two-step.md) | partial | yes |
 | P2 | [MCP server](S-MCP.md) | missing |  |
 | P2 | [`schlange config simulate`](S-SIMULATE.md) | partial |  |
-| P2 | [Action `assign`](action-assign.md) | missing |  |
-| P2 | [Action `backport`](action-backport.md) | missing |  |
-| P2 | [Action `close`](action-close.md) | missing |  |
-| P2 | [Action `comment`](action-comment.md) | missing |  |
-| P2 | [Action `copy`](action-copy.md) | missing |  |
-| P2 | [Action `delete_head_branch` (deprecated)](action-delete-head-branch.md) | missing |  |
-| P2 | [Action `dismiss_reviews`](action-dismiss-reviews.md) | missing |  |
-| P2 | [Action `edit`](action-edit.md) | missing |  |
-| P2 | [Action `github_actions` (deprecated)](action-github-actions.md) | missing |  |
-| P2 | [Action `label`](action-label.md) | missing |  |
-| P2 | [Action `merge`](action-merge.md) | missing |  |
-| P2 | [Action `post_check`](action-post-check.md) | missing |  |
-| P2 | [Action `rebase`](action-rebase.md) | missing |  |
-| P2 | [Action `request_reviews`](action-request-reviews.md) | missing |  |
-| P2 | [Action `review`](action-review.md) | missing |  |
-| P2 | [Action `squash`](action-squash.md) | missing |  |
-| P2 | [Action `update`](action-update.md) | missing |  |
+| P2 | [Action `assign`](action-assign.md) | partial |  |
+| P2 | [Action `backport`](action-backport.md) | partial |  |
+| P2 | [Action `close`](action-close.md) | partial |  |
+| P2 | [Action `comment`](action-comment.md) | partial |  |
+| P2 | [Action `copy`](action-copy.md) | partial |  |
+| P2 | [Action `delete_head_branch` (deprecated)](action-delete-head-branch.md) | partial |  |
+| P2 | [Action `dismiss_reviews`](action-dismiss-reviews.md) | partial |  |
+| P2 | [Action `edit`](action-edit.md) | partial |  |
+| P2 | [Action `github_actions` (deprecated)](action-github-actions.md) | partial |  |
+| P2 | [Action `label`](action-label.md) | partial |  |
+| P2 | [Action `merge`](action-merge.md) | partial |  |
+| P2 | [Action `post_check`](action-post-check.md) | partial |  |
+| P2 | [Action `rebase`](action-rebase.md) | partial |  |
+| P2 | [Action `request_reviews`](action-request-reviews.md) | partial |  |
+| P2 | [Action `review`](action-review.md) | partial |  |
+| P2 | [Action `squash`](action-squash.md) | partial |  |
+| P2 | [Action `update`](action-update.md) | partial |  |
 | P2 | [CI helpers for queue runs](ci-helpers.md) | missing |  |
-| P2 | [Commands `backport`, `copy`, `rebase`, `squash`, `update`](commands-other.md) | missing |  |
+| P2 | [Commands `backport`, `copy`, `rebase`, `squash`, `update`](commands-other.md) | partial |  |
 | P2 | [Deployment attributes](conditions-deployments.md) | missing |  |
 | P2 | [Further file and line attributes](conditions-files-other.md) | missing |  |
 | P2 | [Further pull request metadata](conditions-pr-metadata.md) | partial |  |
 | P2 | [Queue attributes](conditions-queue.md) | partial |  |
 | P2 | [Review attributes](conditions-reviews.md) | missing |  |
 | P2 | [Time and schedule](conditions-time.md) | missing |  |
-| P2 | [Shared defaults (`defaults`)](config-defaults.md) | missing |  |
-| P2 | [Inherit a configuration (`extends`)](config-extends.md) | missing |  |
-| P2 | [Shared anchors (`shared`)](config-shared.md) | missing |  |
+| P2 | [Shared defaults (`defaults`)](config-defaults.md) | partial |  |
+| P2 | [Inherit a configuration (`extends`)](config-extends.md) | partial |  |
+| P2 | [Shared anchors (`shared`)](config-shared.md) | partial |  |
 | P2 | [Configuration simulator](config-simulator.md) | partial |  |
 | P2 | [Conflict resolvers (experimental)](conflict-resolvers.md) | missing |  |
 | P2 | [Event log](events.md) | partial |  |
 | P2 | [Merge protections and auto-merge](merge-protections.md) | partial |  |
 | P2 | [Built-in protection `Merge-After`](merge-after.md) | partial |  |
-| P2 | [Direct merge without queue CI](direct-merge.md) | missing |  |
+| P2 | [Direct merge without queue CI](direct-merge.md) | partial |  |
 | P2 | [Scheduled freeze](queue-freeze.md) | partial |  |
 | P2 | [Other merge methods](queue-merge-methods-other.md) | partial |  |
 | P2 | [Queue modes `parallel` and `isolated`](queue-modes.md) | partial |  |

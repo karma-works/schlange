@@ -421,6 +421,20 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
         message,
     };
     let spec: ScenarioSpec = serde_yaml_ng::from_str(text).map_err(|e| fmt(e.to_string()))?;
+    // `StepSpec` flattens its action, so serde takes the first key naming an action and
+    // ignores the rest: an event with a misplaced or second key would run silently.
+    let raw: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(text).map_err(|e| fmt(e.to_string()))?;
+    if let Some(events) = raw.get("events").and_then(|e| e.as_sequence()) {
+        for (i, event) in events.iter().enumerate() {
+            let keys = event.as_mapping().map_or(0, |m| m.len());
+            if keys != 2 {
+                return Err(fmt(format!(
+                    "events[{i}]: expected `at` and exactly one action, found {keys} keys"
+                )));
+            }
+        }
+    }
     let config_path = path.parent().unwrap_or(Path::new(".")).join(&spec.config);
     let config_text =
         std::fs::read_to_string(&config_path).map_err(|source| ScenarioError::Io {
@@ -469,7 +483,14 @@ pub fn parse(text: &str, path: &Path) -> Result<Scenario, ScenarioError> {
     }
 
     let mut prs = Vec::new();
+    let mut numbers = std::collections::BTreeSet::new();
     for p in &spec.pull_requests {
+        if !numbers.insert(p.number) {
+            return Err(fmt(format!(
+                "#{}: defined twice in `pull_requests`",
+                p.number
+            )));
+        }
         for name in p.checks.keys() {
             if !scripts.iter().any(|s| &s.check == name) {
                 return Err(fmt(format!("#{}: check `{name}` is not in `ci`", p.number)));

@@ -1090,7 +1090,6 @@ fn two_processes_on_one_data_directory_never_both_lead() {
     }
     assert!(status(&b).unwrap().queued.contains(&pr));
     b.shutdown();
-    let _ = temp_dir;
     t.shutdown();
 }
 

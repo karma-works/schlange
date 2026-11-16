@@ -319,10 +319,6 @@ impl GithubForge {
         self.log.push_back(text);
     }
 
-    pub fn pending_count(&self) -> usize {
-        self.pending.len() + self.delayed.len()
-    }
-
     pub fn cosmetic_count(&self) -> usize {
         self.cosmetics.len()
     }

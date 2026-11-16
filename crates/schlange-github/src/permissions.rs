@@ -13,7 +13,7 @@
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
 //! Webhook events: `pull_request`, `check_run`, `check_suite`, `status`, `issue_comment`,
-//! `push`; `branch_protection_rule` and `repository_ruleset` when GitHub offers them with these
+//! `pull_request_review`, `push`; `branch_protection_rule` and `repository_ruleset` when GitHub offers them with these
 //! permissions. Everything else is not requested; `schlange doctor` reports extra permissions
 //! as a warning.
 //!

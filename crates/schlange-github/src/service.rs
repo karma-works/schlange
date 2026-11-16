@@ -484,8 +484,6 @@ pub struct Service {
     pub leases: Vec<Arc<Lease>>,
 }
 
-/// The token scope for one installation: these repositories, and of Schlange's permissions
-/// the ones the installation grants (asking for more fails).
 /// The permissions to ask for in installation tokens: those of the mode's list the
 /// installation grants (a read-only shadow app gets read-only tokens that still read everything).
 fn token_permissions(granted: &BTreeMap<String, String>, shadow: bool) -> BTreeMap<String, String> {
@@ -661,7 +659,7 @@ impl Service {
                 shadow,
                 lease: lease.clone(),
                 leading: lease.is_none(),
-                shadow_published: std::cell::Cell::new(usize::MAX),
+                shadow_published: std::cell::Cell::new(u64::MAX),
                 pause_before_land: cfg.pause_before_land.clone(),
                 clock: clock.clone(),
                 state,
@@ -1410,8 +1408,8 @@ struct Worker {
     lease: Option<Arc<Lease>>,
     /// Whether this worker may act (always without a lease).
     leading: bool,
-    /// The number of shadow facts last published.
-    shadow_published: std::cell::Cell<usize>,
+    /// The shadow facts' version last published (`Shadow::version`).
+    shadow_published: std::cell::Cell<u64>,
     pause_before_land: Option<Arc<PauseHook>>,
     clock: Arc<dyn Clock>,
     state: State,
@@ -2289,6 +2287,10 @@ impl Worker {
                 if let (Some(seq), Some(j)) = (seq, &mut self.journal)
                     && let Err(e) = j.done(seq)
                 {
+                    if e.to_string().contains(LEASE_LOST) {
+                        self.step_down("the journal belongs to the process that took the lease");
+                        return;
+                    }
                     self.die(format!("journal failed: {e}"));
                     return;
                 }
@@ -2524,9 +2526,9 @@ impl Worker {
             writes_refused: self.forge.api.client.stats().writes_refused,
         };
         if let Some(sh) = &self.shadow
-            && sh.facts().len() != self.shadow_published.get()
+            && sh.version() != self.shadow_published.get()
         {
-            self.shadow_published.set(sh.facts().len());
+            self.shadow_published.set(sh.version());
             self.shared
                 .shadow
                 .lock()

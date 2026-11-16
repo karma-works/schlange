@@ -94,8 +94,8 @@ pub fn parse_rfc3339(s: &str) -> Option<u64> {
     let offset: i64 = match rest {
         "Z" | "z" => 0,
         _ if rest.len() == 6 && (rest.starts_with('+') || rest.starts_with('-')) => {
-            let oh: i64 = rest[1..3].parse().ok()?;
-            let om: i64 = rest[4..6].parse().ok()?;
+            let oh: i64 = rest.get(1..3)?.parse().ok()?;
+            let om: i64 = rest.get(4..6)?.parse().ok()?;
             let o = oh * 3600 + om * 60;
             if rest.starts_with('-') { -o } else { o }
         }
@@ -138,6 +138,8 @@ mod tests {
         );
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
         assert_eq!(parse_rfc3339("not a date"), None);
+        assert_eq!(parse_rfc3339("2026-10-27T18:00:00+a\u{e9}:0"), None);
+        assert_eq!(parse_rfc3339("2026-10-27T18:00:00+0\u{e9}:0"), None);
         assert_eq!(parse_rfc3339("2026-13-01T00:00:00Z"), None);
         for t in [0, 951_782_400, 1_709_164_800, 4_102_444_800] {
             assert_eq!(parse_rfc3339(&format_rfc3339(t)), Some(t));

@@ -168,7 +168,7 @@ fn config_check(
         return check(
             "configuration",
             "FAIL",
-            "no Mergify schema found (--schema, SCHLANGE_SCHEMA): `serve` does not start without it",
+            "the configured Mergify schema (--schema, SCHLANGE_SCHEMA) could not be loaded",
         );
     };
     let mut fails = Vec::new();

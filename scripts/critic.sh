@@ -8,13 +8,13 @@
 # The critic works in its own worktree under /tmp/schlange-critic-<id> on the current commit,
 # with fresh context, and must not change code. Its verdict (scripts/critic.schema.json) is
 # copied to .critic/<id>.json in this repository; the worktree is removed afterwards.
-# Env: SCHLANGE_RESEARCH (default ~/Projects/schlange-research/mergify), CODEX_MODEL (optional).
+# Env: SCHLANGE_RESEARCH (default .research/mergify in this repository), CODEX_MODEL (optional).
 set -euo pipefail
 export CARGO_NET_OFFLINE=true
 
 root="$(git rev-parse --show-toplevel)"
 id="${1:?usage: scripts/critic.sh <feature-id|feature-map|pr>}"
-research="${SCHLANGE_RESEARCH:-$HOME/Projects/schlange-research/mergify}"
+research="${SCHLANGE_RESEARCH:-$root/.research/mergify}"
 features=".agents/skills/verify-schlange/features"
 work="/tmp/schlange-critic-$id"
 commit="$(git -C "$root" rev-parse HEAD)"

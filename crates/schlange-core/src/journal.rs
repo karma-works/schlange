@@ -15,8 +15,8 @@
 //! of what may have been done, and the host can report them.
 //!
 //! `MemoryJournal` keeps everything as JSON text in memory, which proves the state round-trips
-//! through serialisation. A SQLite journal (one table for checkpoints, one for intents, WAL
-//! mode) implements the same trait later.
+//! through serialisation. `serve` uses the SQLite journal in
+//! `schlange_github::store::SqliteJournal` (one table for checkpoints, one for intents, WAL mode).
 
 use std::collections::BTreeMap;
 

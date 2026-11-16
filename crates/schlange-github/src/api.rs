@@ -538,7 +538,6 @@ impl RepoApi {
         self.list("/pulls?state=open", prio, None)
     }
 
-    /// Open pull requests with this head branch (in this repository).
     /// The most recently updated pull requests, open and closed: one page of 100 (the shadow
     /// observer's view of what the other queue did).
     pub fn recent_pulls(&self, prio: Priority) -> Result<Vec<Pull>, Error> {
@@ -548,6 +547,7 @@ impl RepoApi {
         )
     }
 
+    /// Open pull requests with this head branch (in this repository).
     pub fn pulls_with_head(&self, branch: &str, prio: Priority) -> Result<Vec<Pull>, Error> {
         let head = format!("{}:{branch}", self.repo.owner);
         self.list(
@@ -642,7 +642,7 @@ impl RepoApi {
     /// `path` and `event` tell a re-run of the same workflow from another workflow or event.
     pub fn workflow_runs(&self, sha: &str, prio: Priority) -> Result<Vec<WorkflowRunJson>, Error> {
         self.list(
-            &format!("/actions/runs?head_sha={}&per_page=100", enc_path(sha)),
+            &format!("/actions/runs?head_sha={}", enc_path(sha)),
             prio,
             Some("workflow_runs"),
         )

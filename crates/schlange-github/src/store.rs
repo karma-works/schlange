@@ -503,25 +503,6 @@ impl Store {
         })
     }
 
-    /// Whether a fact of this kind exists.
-    pub fn shadow_has(
-        &self,
-        repo: &str,
-        side: &str,
-        pr: u64,
-        kind: &str,
-    ) -> rusqlite::Result<bool> {
-        self.with(|c| {
-            c.query_row(
-                "SELECT 1 FROM shadow WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4",
-                params![repo, side, pr as i64, kind],
-                |_| Ok(()),
-            )
-            .optional()
-            .map(|r| r.is_some())
-        })
-    }
-
     /// Every shadow fact of a repository, in the order they were first written.
     pub fn shadow_facts(&self, repo: &str) -> rusqlite::Result<Vec<ShadowFact>> {
         self.with(|c| {

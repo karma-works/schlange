@@ -578,8 +578,8 @@ fn local_config_check(
                     name: "configuration",
                     status: "WARN",
                     detail: format!(
-                        "{shown} is valid without the Mergify schema (stages 1, 3, 4); no schema \
-                         found for the full check"
+                        "{shown} is valid without the Mergify schema (stages 1, 3, 4); the configured \
+                         schema could not be loaded for the full check"
                     ),
                 }
             } else {

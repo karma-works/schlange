@@ -313,8 +313,9 @@ fn a_restart_resends_edge_requests_in_doubt_with_the_same_marker() {
 #[test]
 fn a_lost_answer_is_sent_again_after_the_timeout_a_bounded_number_of_times() {
     let mut d = Driver::new(WIP);
-    let out = d.read(vec![pr(1, "WIP")]);
-    assert!(out.iter().any(|x| matches!(x, Decision::WakeAt { .. })) || true);
+    // The first send schedules no `WakeAt` (only later steps do, in `resend_overdue`), so this
+    // test drives the timeout with explicit ticks.
+    d.read(vec![pr(1, "WIP")]);
     let mut resent = 0;
     for _ in 0..10 {
         d.now += schlange_core::actions::ACTION_TIMEOUT;
@@ -467,7 +468,7 @@ fn merge_honours_the_pause_and_is_never_resent() {
     let token = refresh_token(&out).expect("unpaused");
     let out = fresh(&mut d, automerge(1), token);
     let a = acts(&out);
-    let [(id, Op::Merge { .. })] = &a[..] else {
+    let [(_, Op::Merge { .. })] = &a[..] else {
         panic!("{out:?}")
     };
     // The merge call fails (perhaps after merging): it is not sent again as is.
@@ -476,7 +477,6 @@ fn merge_honours_the_pause_and_is_never_resent() {
         .find(|x| matches!(x, Decision::Act { .. }))
         .cloned()
         .unwrap();
-    let _ = id;
     let out = d.feed(Event::Failed {
         decision,
         error: "502".into(),

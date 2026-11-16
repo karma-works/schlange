@@ -62,7 +62,7 @@ Preconditions:
 - **Defaults.** Any scenario, e.g. `target/release/schlange sim run scenarios/p1-label-halt.yaml`: `labels #N +queued`, `status comment #N: …`, `labels #N +dequeued -queued`.
 - **Options.** `target/release/schlange sim run scenarios/p1-labels-status.yaml` (`checking_label`, a renamed `dequeued_label`, `status_comments: outcomes`).
 - **Checkboxes.** `target/release/schlange sim run scenarios/p1-checkbox.yaml`.
-- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands ticking_the_checkboxes_queues_and_requeues cosmetics_wait_for_the_budget_and_never_delay_landing`.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands -- ticking_the_checkboxes_queues_and_requeues cosmetics_wait_for_the_budget_and_never_delay_landing`.
 
 ## Gotchas
 

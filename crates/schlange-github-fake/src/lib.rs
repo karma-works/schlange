@@ -1695,19 +1695,6 @@ impl FakeGithub {
         });
     }
 
-    /// Another repository of the owner with these files (for `extends`).
-    pub fn set_other_repo(&self, name: &str, files: &[(&str, &str)]) {
-        self.with(|s| {
-            s.other_repos.insert(
-                name.into(),
-                files
-                    .iter()
-                    .map(|(p, c)| (p.to_string(), c.to_string()))
-                    .collect(),
-            );
-        });
-    }
-
     /// Workflow dispatches: workflow and request body.
     pub fn dispatches(&self) -> Vec<(String, Value)> {
         self.with(|s| s.dispatches.clone())
@@ -1746,6 +1733,11 @@ impl FakeGithub {
             h.retain(|c| *c != s.initial);
             h
         })
+    }
+
+    /// Who merged pull request `n` (the login GitHub reports as `merged_by`).
+    pub fn merged_by(&self, n: u64) -> Option<String> {
+        self.with(|s| s.merged_info.get(&n).map(|(by, _)| by.clone()))
     }
 
     pub fn squashes(&self) -> Vec<Squash> {

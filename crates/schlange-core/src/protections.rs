@@ -31,7 +31,7 @@ pub const MAX_DEPENDENCIES: usize = 50;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hold {
     /// `depends-on`, `merge-after`, `configuration-changed`, `queue-command`,
-    /// `manually-dequeued`.
+    /// `manually-dequeued`, `dequeued-waits-for-new-head`, `check-identity-unavailable`.
     pub kind: String,
     pub text: String,
     /// It can never pass as the pull request is now (a failure, not a wait).

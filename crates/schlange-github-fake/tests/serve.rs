@@ -209,7 +209,6 @@ fn a_crash_mid_landing_recovers_the_queue_and_never_lands_twice() {
             .any(|d| d.contains("\"enqueue\"") && d.contains(&format!("\"number\":{b},"))),
         "#b was not enqueued again after the restart: {log:?}"
     );
-    let _ = since_b;
     // The audit has one row per landing (the one before the crash too).
     let store = t.service.as_ref().unwrap().store.clone().unwrap();
     let audit = store.audits(&t.gh.config().full_name()).unwrap();

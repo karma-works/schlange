@@ -205,6 +205,12 @@ impl Shadow {
         &self.facts
     }
 
+    /// Changes with every fact written, also one replaced in place or past the cap (the
+    /// number of facts does not).
+    pub fn version(&self) -> u64 {
+        self.seq
+    }
+
     pub fn is_virtual(n: u64) -> bool {
         n >= VIRTUAL_DRAFTS
     }

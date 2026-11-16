@@ -1012,6 +1012,9 @@ fn check_expectation<G: GitStore>(sim: &Simulation<G>, e: &Expectation) -> Expec
             ok = false;
             notes.push(format!("behind base: {}", p.behind_base));
         }
+    } else {
+        ok = false;
+        notes.push(format!("no pull request #{}", e.pr));
     }
     if !notes.is_empty() {
         actual = format!("{actual}; {}", notes.join("; "));

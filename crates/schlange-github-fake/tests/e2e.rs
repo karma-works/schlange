@@ -178,13 +178,11 @@ fn a_red_batch_is_bisected_and_the_culprit_leaves_the_queue() {
         t.status().is_some_and(|s| s.queued.is_empty())
     });
     assert!(!t.gh.pr(bad).unwrap().merged);
-    let q = t.pr(bad).queue_check();
     t.wait_until("culprit's queue check says why", |t| {
         t.pr(bad)
             .queue_check()
             .is_some_and(|c| c.output_title.contains("CHECKS_FAILED"))
     });
-    let _ = q;
     assert!(!t.base_tree().contains_key("backend/b.py"));
     // More than one draft: the batch, then the split tests.
     let drafts =

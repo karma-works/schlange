@@ -45,7 +45,7 @@ Preconditions:
 - Release binary built (`.agents/skills/verify-schlange/scripts/verify.sh launch`) and `schlange doctor` without FAIL.
 
 - **Scenario.** `target/release/schlange sim run scenarios/p1-config-changed.yaml` → #2 (which drops `-label = halt` and carries `halt`) waits until the label goes (MQ-52); after it lands, `config  the configuration on the default branch changed; using it` and #3 (labelled `halt`) is queued (MQ-19).
-- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands a_changed_configuration_is_checked_and_applies_only_once_merged two_configuration_files_are_an_error_and_the_last_good_one_stays`.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands -- a_changed_configuration_is_checked_and_applies_only_once_merged two_configuration_files_are_an_error_and_the_last_good_one_stays`.
 - **Unit tests.** `cargo test -p schlange-config config_file`.
 
 ## Gotchas

@@ -112,6 +112,9 @@ pub fn parse_timestamp(text: &str) -> Result<i64, TimeError> {
             (c, Some(0))
         } else if let Some(i) = t.rfind(['+', '-']) {
             let o = &t[i + 1..];
+            if !o.is_ascii() {
+                return Err(TimeError::Invalid);
+            }
             let sign = if &t[i..=i] == "-" { -1 } else { 1 };
             let (h, mi) = match o.len() {
                 5 if &o[2..3] == ":" => (num(&o[..2])?, num(&o[3..])?),
@@ -246,5 +249,17 @@ mod tests {
         assert_eq!(parse_relative("ago", 600), None);
         assert_eq!(parse_relative("3 weeks ago", 600), None);
         assert_eq!(parse_condition_time("1970-01-02", 0), Some(86_400));
+    }
+
+    #[test]
+    fn a_non_ascii_offset_is_invalid_not_a_panic() {
+        assert_eq!(
+            parse_timestamp("2030-01-01T09:00+1\u{e9}45"),
+            Err(TimeError::Invalid)
+        );
+        assert_eq!(
+            parse_timestamp("2030-01-01T09:00+\u{e9}:5"),
+            Err(TimeError::Invalid)
+        );
     }
 }

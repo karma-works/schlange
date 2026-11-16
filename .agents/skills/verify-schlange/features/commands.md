@@ -86,7 +86,7 @@ Preconditions:
   `not a command`, `now targets queue `urgent``.
 - **Arztagent's flow.** `target/release/schlange sim run scenarios/p1-arztagent-constitution.yaml`.
 - **Engine.** `cargo test -p schlange-core --test commands`.
-- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands queue_dequeue_refresh_and_unsupported_commands a_lost_command_webhook_is_recovered_by_reconciliation arztagent_constitution_pull_request_waits_for_a_listed_human`.
+- **Fake GitHub.** `cargo test -p schlange-github-fake --test e2e_commands -- queue_dequeue_refresh_squash_and_restrictions a_lost_command_webhook_is_recovered_by_reconciliation arztagent_constitution_pull_request_waits_for_a_listed_human`.
 - **Attacks.** `cargo test -p schlange-github-fake --test security` (edited comments over webhook,
   reconciliation and a restart; a forged bot author; pushes racing a command; commands behind
   many comments) and `SCHLANGE_GH_ATTACK_CASES=50 cargo test -p schlange-github-fake --test

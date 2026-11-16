@@ -127,8 +127,8 @@ decisions against the fake GitHub), then review the diff.
 | `--webhook-secret-file` | `SCHLANGE_WEBHOOK_SECRET_FILE` or `SCHLANGE_WEBHOOK_SECRET` | – | at least 16 bytes; `--webhook-secret` on the command line works but warns (visible in `ps`) |
 | `--data-dir` | `SCHLANGE_DATA_DIR` | `/data` | `schlange.db` (SQLite, WAL): journal, snapshots, `auto` history, webhook dedup, audit |
 | `--schema` | `SCHLANGE_SCHEMA` | embedded runtime contract | Optional upstream schema for `serve` and `doctor`; `config validate` still discovers/requires `.research/mergify/schema.json` |
-| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN` | off | bearer token for `GET /status` and the queue API; without it both answer 404 |
-| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
+| `--admin-token-file` | `SCHLANGE_ADMIN_TOKEN_FILE` (or the token itself in `SCHLANGE_ADMIN_TOKEN`) | off | bearer token for `GET /status` and the queue API; without it both answer 404 |
+| `--listen` | `SCHLANGE_LISTEN` | `0.0.0.0:8080` | `POST /webhook`, `GET /healthz`, `GET /readyz`, `GET /status`, the queue API under `/repos/{owner}/{repo}/` (`merge-queue/status`, `merge-queue/pause`, `scheduled_freeze`) |
 | `--api-url` | `SCHLANGE_GITHUB_API_URL` | `https://api.github.com` | must be `https://` |
 | `--insecure-test-api` | `SCHLANGE_INSECURE_TEST_API` | off | allows `http://` API URLs; tests against the fake GitHub only |
 | `--shadow` | `SCHLANGE_SHADOW` | off | decide, never write; compare with Mergify (`--mergify-login`, `--mergify-app`); `schlange shadow report`. A read-only app is enough (`schlange doctor --shadow`); setup in another repository: [docs/shadow-mode.md](docs/shadow-mode.md) |

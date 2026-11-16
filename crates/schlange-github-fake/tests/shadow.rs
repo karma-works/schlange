@@ -111,7 +111,7 @@ fn the_e2e_flows_in_shadow_send_no_write_request() {
     t.pr(bad).wait_queued();
     t.advance("5m");
     t.settle();
-    let d = t.gh.mergify_embark(&[bad]);
+    t.gh.mergify_embark(&[bad]);
     t.settle();
     t.gh.mergify_dequeue(bad, "CHECKS_FAILED");
     t.advance("3m");
@@ -135,7 +135,6 @@ fn the_e2e_flows_in_shadow_send_no_write_request() {
     assert_eq!(code, 200);
     t.advance("10m");
     reconcile(&t);
-    let _ = d;
     assert_no_writes(&t);
     // The engine decided all along: it would have landed a, b, c, e.
     let r = report(&t);
@@ -255,8 +254,16 @@ fn the_report_agrees_with_the_other_queue_and_names_each_difference() {
     assert_eq!(r["agreements"], 2);
     assert_eq!(r["disagreements"], 2);
     // Mergify merged as itself; Schlange's engine counted a and b as its own landings.
-    assert_eq!(t.gh.prs().iter().filter(|p| p.merged).count(), 3);
-    let _ = MERGIFY_LOGIN;
+    let merged: Vec<u64> =
+        t.gh.prs()
+            .iter()
+            .filter(|p| p.merged)
+            .map(|p| p.number)
+            .collect();
+    assert_eq!(merged.len(), 3);
+    for n in merged {
+        assert_eq!(t.gh.merged_by(n).as_deref(), Some(MERGIFY_LOGIN), "#{n}");
+    }
     t.shutdown();
 }
 

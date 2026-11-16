@@ -134,7 +134,7 @@ impl DequeueReason {
 }
 
 /// Codes after which the `queue` action does not queue the same head again: the pull request
-/// has to change first (or be queued by command, which is not built yet).
+/// has to change first (or be queued by a `queue` command).
 pub fn blocks_requeue(code: Option<&str>) -> bool {
     matches!(
         code,

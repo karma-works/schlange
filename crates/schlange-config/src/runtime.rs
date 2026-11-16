@@ -100,7 +100,7 @@ pub fn schema() -> Result<Schema, SchemaError> {
             "delete_head_branch":nullable(object(json!({"force":flag()}),&[])),
             "post_check":nullable(object(json!({"title":text(),"summary":text(),"success_conditions":conditions(),"neutral_conditions":conditions()}),&[])),
             "update":nullable(empty.clone()),"rebase":nullable(empty),
-            "squash":nullable(object(json!({"commit_message":choice(&["all-commits","title+body"])}),&[])),
+            "squash":nullable(object(json!({"commit_message":choice(&["all-commits","first-commit","title+body"])}),&[])),
             "backport":nullable(copy.clone()),"copy":nullable(copy),
             "merge":nullable(object(json!({"method":choice(&["squash","merge","rebase","fast-forward","merge-batch"])}),&[])),
             "github_actions":nullable(object(json!({"workflow":object(json!({"dispatch":list(dispatch)}),&[])}),&[]))
