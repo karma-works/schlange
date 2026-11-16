@@ -1,17 +1,17 @@
 # SHA-256 of the pinned Mergify sources (tools/fetch-mergify-sources --update).
 # Format: <sha256>  <file>  <url>
-f6f924c812112063e81b42f087200935e317e66f64942e001545fea2effba1cb  schema.json  https://docs.mergify.com/mergify-configuration-schema.json
+60e9cb17018986fa85b84fab0d4b9be5e63a3196ea55210c32680de99719f342  schema.json  https://docs.mergify.com/mergify-configuration-schema.json
 abcefbe52c4c0cb86ea0a297688077035b4482cf202ed821bd52b55ff6e41e93  openapi.json  https://docs.mergify.com/openapi.json
 35024192c511d7d97125b7d595eb404ef9da9b271835808c783a14f7604aaba5  commands.md  https://docs.mergify.com/commands.md
-af286c173c5628d4dd9ce9c316a298a58496054fce98fbd542ab2fca4efc17aa  commands_queue.md  https://docs.mergify.com/commands/queue.md
+d885963c009429609c9da97c129fa89da9c0470e2e2dab16faec0265b00efc0c  commands_queue.md  https://docs.mergify.com/commands/queue.md
 aa6ce4ab7307fe1987dc36fd3f9705dfea333f5f201aa57dd0d83870c1bf1f21  commands_dequeue.md  https://docs.mergify.com/commands/dequeue.md
 354ab92b59f1da7e9c29d85b1d255213e505fc35818aac11b84f27640a0891ce  commands_restrictions.md  https://docs.mergify.com/commands/restrictions.md
-fccd0b6ca52856972134da4d188df8483dc75af05a5731e79615aa047730397d  cli.html  https://docs.mergify.com/cli
-b33ec0f0fba987721ee9ffa7258c4f427d7da2cb380ff206ee973f37efa44ccd  cli_auth.html  https://docs.mergify.com/cli/auth
-4384c143a358b9eef18c3bdc76ee9ea6aab101f9dcf1d9414a341ca4563f3b53  cli_ci.html  https://docs.mergify.com/cli/ci
-863b17552c6d66cfd566f10b0111bd8ff8b8b3bf7522964c4ff0a3ea04be13a6  cli_config.html  https://docs.mergify.com/cli/config
-12af3fcbcf59a4030629f867e0ed3486937c61a55a7a32f9748dee4ab801f26c  cli_events.html  https://docs.mergify.com/cli/events
-e75b8cbcef44e88b1696596a600e218466344b763b7108a50b3d86ae49f2cf01  cli_freeze.html  https://docs.mergify.com/cli/freeze
-94fd915c4ce256f4b7961dc296145c12ecf033afe872d857c757189c8ac32b69  cli_queue.html  https://docs.mergify.com/cli/queue
-f92fd08966b63269f85cf4fde45795a6bd86612c7be63f1224d8a1a35ba40b1a  cli_stack.html  https://docs.mergify.com/cli/stack
-079b4ad79a01d4898d458369c1c12dfb5aba533dffcd19704de4a338a7b8b30c  cli_tests.html  https://docs.mergify.com/cli/tests
+db808e1c90ca7bdc3aadc9197c805419ad5334d11657aca4d3d369ec9a93c919  cli.html  https://docs.mergify.com/cli
+bfffc42497ac52dff9a8dfa84373dd145fb91aeafa36e589873b0d301e1cb06f  cli_auth.html  https://docs.mergify.com/cli/auth
+649090d4a70d36cac69cdd2a616faa2f74bb0a7167ea1195d4434d65008523f6  cli_ci.html  https://docs.mergify.com/cli/ci
+edab8e90bab55de45422614999af05fdde06faf6bc8b785a7c993726c6ec0fb5  cli_config.html  https://docs.mergify.com/cli/config
+7666ebb6298bf4197d7d89f045858cc3a089fdb2f7ebe88b5b13f7f987aed338  cli_events.html  https://docs.mergify.com/cli/events
+288d369a73442377650675a30e6c8d1781dde94ea7988e882f67bcb2bd5136e7  cli_freeze.html  https://docs.mergify.com/cli/freeze
+a27fd2a81cbc479c5f47a50d8829bb49a2c0ad3fa31491e2ffab6948d0e731e5  cli_queue.html  https://docs.mergify.com/cli/queue
+23b1ab16844c1e3d50fc3662332cbae965a860f9e49018fe16f276954b0f87b9  cli_stack.html  https://docs.mergify.com/cli/stack
+77b9bcfe0052acce8ac59d4587f29bf1ddf8947a92d2d1788fffa3b69913eee1  cli_tests.html  https://docs.mergify.com/cli/tests

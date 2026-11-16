@@ -78,6 +78,9 @@ jobs:
 
   mergify-drift:
     name: Mergify schema diff
+    # Weekly (and on demand) only: upstream drift is not caused by a pull request and must not
+    # turn unrelated ones red.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

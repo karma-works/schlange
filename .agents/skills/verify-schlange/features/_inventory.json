@@ -22,9 +22,9 @@
     "cmd": 8,
     "config": 294,
     "default": 154,
-    "enum": 175
+    "enum": 178
   },
-  "total": 863,
+  "total": 866,
   "entries": [
     {
       "id": "action:assign",
@@ -4369,6 +4369,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:package-manager:gradle",
+      "kind": "enum"
+    },
+    {
       "id": "enum:package-manager:maven",
       "kind": "enum"
     },
@@ -4661,6 +4665,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:gradle",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:haskell",
       "kind": "enum"
     },
@@ -4678,6 +4686,10 @@
     },
     {
       "id": "enum:strategy:kotlin",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:manual",
       "kind": "enum"
     },
     {

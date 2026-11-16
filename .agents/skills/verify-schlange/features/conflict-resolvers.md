@@ -27,6 +27,7 @@ dequeueing the pull request.
 - `package-manager`: missing.
 - `language`: missing.
 - `auto`: missing (`auto: true` with optional `directories`, added to the schema in November 2026).
+- Schema update of 16 November 2026: the strategies `gradle` and `manual` and the package manager `gradle` were added; missing like the rest of this section.
 
 ## How to get to it (user POV)
 
