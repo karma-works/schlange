@@ -112,10 +112,11 @@ pub fn github_checks_for(
                     r.extra.join(", ")
                 ));
             }
-            if !r.optional_missing.is_empty() {
+            for line in &r.optional_missing {
+                let name = line.split(':').next().unwrap_or("");
                 detail.push_str(&format!(
-                    "; optional, missing: {} (pull requests changing workflows cannot be queued)",
-                    r.optional_missing.join(", ")
+                    "; optional, missing: {line} ({})",
+                    permissions::optional_reason(name)
                 ));
             }
             out.push(check("app-permissions", status, detail));

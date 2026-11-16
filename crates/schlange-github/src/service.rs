@@ -486,22 +486,22 @@ pub struct Service {
 
 /// The permissions to ask for in installation tokens: those of the mode's list the
 /// installation grants (a read-only shadow app gets read-only tokens that still read everything).
+///
+/// A permission listed at two levels (required `actions: read`, optional `actions: write`) is
+/// asked for at the highest listed level the installation grants.
 fn token_permissions(granted: &BTreeMap<String, String>, shadow: bool) -> BTreeMap<String, String> {
-    let rank = |l: &str| match l {
-        "admin" => 3,
-        "write" => 2,
-        "read" => 1,
-        _ => 0,
-    };
-    crate::permissions::for_mode(shadow)
-        .iter()
-        .filter(|(name, level, _)| {
-            granted
-                .get(*name)
-                .is_some_and(|have| rank(have) >= rank(level))
-        })
-        .map(|(n, l, _)| (n.to_string(), l.to_string()))
-        .collect()
+    use crate::permissions::rank;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (name, level, _) in crate::permissions::for_mode(shadow) {
+        let grants = granted
+            .get(*name)
+            .is_some_and(|have| rank(have) >= rank(level));
+        let higher = out.get(*name).is_none_or(|l| rank(level) > rank(l));
+        if grants && higher {
+            out.insert(name.to_string(), level.to_string());
+        }
+    }
+    out
 }
 
 impl Service {
@@ -2781,6 +2781,11 @@ mod tests {
         assert!(!p.contains_key("administration"));
         assert!(!p.contains_key("workflows"));
         assert_eq!(p.get("contents").map(String::as_str), Some("write"));
+        // `actions: write` is optional (workflow dispatch): asked for when granted.
+        assert_eq!(p.get("actions").map(String::as_str), Some("write"));
+        let mut read_only_actions = granted.clone();
+        read_only_actions.insert("actions".into(), "read".into());
+        let p = token_permissions(&read_only_actions, false);
         assert_eq!(p.get("actions").map(String::as_str), Some("read"));
         // Shadow mode asks for read access only, even from an app that could write.
         let p = token_permissions(&granted, true);

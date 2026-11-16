@@ -187,9 +187,31 @@ fn a_draft_is_set_through_graphql_with_the_lease_on() {
     t.assert_invariants();
 }
 
+/// Without the optional `actions: write` GitHub refuses the dispatch; nothing else suffers.
+#[test]
+fn a_dispatch_without_actions_write_is_refused() {
+    let t = ci(Tester::new(CONFIG)).start();
+    let p = t
+        .open_pr("gina")
+        .file("g.rs", "g\n")
+        .label("preview")
+        .create();
+    t.settle();
+    t.advance("30m");
+    t.settle();
+    assert!(t.gh.dispatches().is_empty());
+    assert!(t.gh.pr(p).is_some_and(|p| p.open));
+    t.assert_invariants();
+}
+
 #[test]
 fn close_delete_update_dispatch_and_backport() {
-    let t = ci(Tester::new(CONFIG)).start();
+    // The dispatch needs the optional `actions: write`.
+    let t = ci(Tester::new(CONFIG))
+        .fake(|c| {
+            c.permissions.insert("actions".into(), "write".into());
+        })
+        .start();
     t.gh.create_branch("stable");
     t.permission("maintainer", "write");
     // close + delete_head_branch.

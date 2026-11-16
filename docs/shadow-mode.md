@@ -277,7 +277,8 @@ reason to restart the clock.
 Only after acceptance:
 
 1. Give the app the permissions of an acting queue (contents, pull requests and checks:
-   write; workflows: write if pull requests change `.github/workflows/`). GitHub asks an
+   write; workflows: write if pull requests change `.github/workflows/`; actions: write only
+   for the `github_actions` action, which dispatches workflows). GitHub asks an
    owner to approve.
 2. Add the app as a bypass actor of the rulesets on the default branch (Mergify asks for the
    same).

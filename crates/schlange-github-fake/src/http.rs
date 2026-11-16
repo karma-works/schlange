@@ -515,6 +515,8 @@ pub(crate) fn required_permission(
         ["commits", _, "check-runs" | "check-suites"] | ["check-runs", ..] => {
             Some(("checks", level))
         }
+        // Starting a workflow run.
+        ["actions", "workflows", _, "dispatches"] => Some(("actions", "write")),
         ["actions", "runs"] if method == "GET" => Some(("actions", "read")),
         ["commits", _, "status"] => Some(("statuses", "read")),
         ["actions", "runs", ..] => Some(("actions", "read")),

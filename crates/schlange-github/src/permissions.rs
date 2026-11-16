@@ -9,6 +9,7 @@
 //! | `issues` | read | GitHub sends `issue_comment` webhooks (the comment commands) only to apps with it |
 //! | `checks` | write | reading check runs; the queue's own check run |
 //! | `actions` | read | resolve workflow identity for GitHub Actions checks |
+//! | `actions` | write | *optional*: only for the `github_actions` action (workflow dispatch); GitHub refuses the dispatch otherwise |
 //! | `statuses` | read | commit statuses as conditions (`check-success` also matches statuses) |
 //! | `workflows` | write | *optional*: only when pull requests that change `.github/workflows/` go through the queue; GitHub refuses such merge commits otherwise |
 //!
@@ -22,7 +23,8 @@
 //! write to GitHub whatever the code does; `schlange doctor --shadow` warns about any write
 //! permission, and `serve --shadow` asks for read-only installation tokens.
 
-/// `(permission, level, required)`.
+/// `(permission, level, required)`. A permission may appear twice: required at one level,
+/// optional at a higher one (`actions`).
 pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("metadata", "read", true),
     ("contents", "write", true),
@@ -30,9 +32,36 @@ pub const PERMISSIONS: &[(&str, &str, bool)] = &[
     ("issues", "read", true),
     ("checks", "write", true),
     ("actions", "read", true),
+    ("actions", "write", false),
     ("statuses", "read", true),
     ("workflows", "write", false),
 ];
+
+/// What does not work without an optional permission (`schlange doctor`).
+pub fn optional_reason(name: &str) -> &'static str {
+    match name {
+        "actions" => "the `github_actions` action cannot dispatch workflows",
+        "workflows" => "pull requests changing workflows cannot be queued",
+        _ => "an optional feature is unavailable",
+    }
+}
+
+/// The highest level of `name` in `list`, or `None` if it is not listed.
+pub fn highest_level(list: &[(&str, &str, bool)], name: &str) -> Option<&'static str> {
+    list.iter()
+        .filter(|(n, ..)| *n == name)
+        .map(|(_, l, _)| *l)
+        .max_by_key(|l| rank(l))
+        .map(level_str)
+}
+
+fn level_str(l: &str) -> &'static str {
+    match l {
+        "admin" => "admin",
+        "write" => "write",
+        _ => "read",
+    }
+}
 
 /// The permissions of a shadow-mode app (S-SHADOW): read access to what Schlange reads.
 pub const SHADOW_PERMISSIONS: &[(&str, &str, bool)] = &[
@@ -64,7 +93,7 @@ pub const EVENTS: &[&str] = &[
     "push",
 ];
 
-fn rank(level: &str) -> u8 {
+pub fn rank(level: &str) -> u8 {
     match level {
         "admin" => 3,
         "write" => 2,
@@ -100,15 +129,19 @@ pub fn compare_with(
             let line = format!("{name}: {have} → {level}");
             if *required {
                 r.missing.push(line);
-            } else {
+            } else if !r
+                .missing
+                .iter()
+                .any(|m| m.starts_with(&format!("{name}: ")))
+            {
                 r.optional_missing.push(line);
             }
         }
     }
     for (name, have) in granted {
-        match list.iter().find(|(n, ..)| n == name) {
+        match highest_level(list, name) {
             None => r.extra.push(format!("{name}: {have}")),
-            Some((_, level, _)) if rank(have) > rank(level) => {
+            Some(level) if rank(have) > rank(level) => {
                 r.extra.push(format!("{name}: {have} (needs {level})"))
             }
             Some(_) => {}
@@ -120,6 +153,52 @@ pub fn compare_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn map(entries: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    fn required_with(actions: &str) -> std::collections::BTreeMap<String, String> {
+        map(&[
+            ("metadata", "read"),
+            ("contents", "write"),
+            ("pull_requests", "write"),
+            ("issues", "read"),
+            ("checks", "write"),
+            ("actions", actions),
+            ("statuses", "read"),
+        ])
+    }
+
+    #[test]
+    fn actions_read_is_required_and_actions_write_optional() {
+        let r = compare(&required_with("read"));
+        assert!(r.missing.is_empty(), "{r:?}");
+        assert!(r.extra.is_empty(), "{r:?}");
+        assert!(
+            r.optional_missing
+                .iter()
+                .any(|l| l == "actions: read → write"),
+            "{r:?}"
+        );
+        let r = compare(&required_with("write"));
+        assert!(r.missing.is_empty(), "{r:?}");
+        assert!(r.extra.is_empty(), "actions: write is not extra: {r:?}");
+        assert!(
+            !r.optional_missing.iter().any(|l| l.starts_with("actions")),
+            "{r:?}"
+        );
+        let r = compare(&required_with("none"));
+        assert!(
+            r.missing.iter().any(|l| l == "actions: none → read"),
+            "{r:?}"
+        );
+        assert!(optional_reason("actions").contains("dispatch"));
+        assert!(optional_reason("workflows").contains("workflows"));
+    }
 
     #[test]
     fn missing_and_extra_permissions_are_named() {
@@ -140,7 +219,10 @@ mod tests {
             r.missing,
             vec!["contents: read → write", "issues: none → read"]
         );
-        assert_eq!(r.optional_missing, vec!["workflows: none → write"]);
+        assert_eq!(
+            r.optional_missing,
+            vec!["actions: read → write", "workflows: none → write"]
+        );
         assert_eq!(r.extra, vec!["administration: read"]);
     }
 
@@ -186,6 +268,7 @@ mod tests {
         assert_eq!(
             r.extra,
             vec![
+                "actions: write (needs read)",
                 "checks: write (needs read)",
                 "contents: write (needs read)",
                 "pull_requests: write (needs read)",
