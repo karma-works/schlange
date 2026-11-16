@@ -27,7 +27,7 @@ Turns a pull request into a draft or back. Arztagent does not use the action.
 ## Sub-features
 
 - `run`: built. Level-triggered (docs: workflow, "How rules are evaluated"): runs on every evaluation and asks only for the difference to what the forge shows; an outstanding request is not repeated.
-- `options`: `draft` built (on GitHub through GraphQL `convertPullRequestToDraft` / `markPullRequestReadyForReview`); `bot_account` not built.
+- `options`: `draft` built (on GitHub through GraphQL `convertPullRequestToDraft` / `markPullRequestReadyForReview`, fenced by the lease of the pull request's repository: `cargo test -p schlange-github-fake --test e2e_actions a_draft_is_set_through_graphql_with_the_lease_on`, `--test client graphql`); `bot_account` not built.
 
 ## How to get to it (user POV)
 

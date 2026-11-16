@@ -36,7 +36,9 @@
 //! lets a write through only while this process holds the repository's lease and its fence on
 //! GitHub is still the one it wrote (MQ-32). A refused request is never sent
 //! ([`Error::Refused`]). The lease's own compare-and-swap goes through
-//! [`Client::send_unfenced`].
+//! [`Client::send_unfenced`]. A GraphQL write names no repository in its path; it goes through
+//! [`Client::send_fenced_as`], which asks the gate about the REST path of the pull request it
+//! changes, so that repository's lease fences it.
 //!
 //! **ETags.** `GET` responses with an ETag are cached; the next read sends `If-None-Match`
 //! and a 304 (which GitHub does not count against the rate limit) returns the cached body.
@@ -55,6 +57,17 @@ use crate::time::{parse_rfc3339, unix_now};
 pub trait WriteGate: Send + Sync {
     /// `Err(why)` refuses the request; it is not sent.
     fn permit(&self, method: &str, path: &str) -> Result<(), String>;
+}
+
+/// Which path a write asks the [`WriteGate`] about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fence<'a> {
+    /// Not at all: token requests and the lease's own fence ref.
+    Off,
+    /// The path the request is actually sent to (after redirects).
+    Destination,
+    /// This REST path, while the request goes where it was sent (GraphQL writes).
+    As(&'a str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -690,7 +703,7 @@ impl Client {
             Priority::Landing,
             Some(body.into_bytes()),
             true,
-            false,
+            Fence::Off,
             None,
         )?;
         let tok: Token = resp.json(&path)?;
@@ -883,7 +896,16 @@ impl Client {
     ) -> Result<Response, Error> {
         let body = body.map(|b| b.to_string().into_bytes());
         let idempotent = matches!(method, "GET" | "DELETE");
-        self.send_inner(method, path, auth, prio, body, idempotent, true, None)
+        self.send_inner(
+            method,
+            path,
+            auth,
+            prio,
+            body,
+            idempotent,
+            Fence::Destination,
+            None,
+        )
     }
 
     /// A fenced cosmetic write with one previously reserved budget token.
@@ -905,8 +927,35 @@ impl Client {
             Priority::Cosmetic,
             Some(body.to_string().into_bytes()),
             false,
-            true,
+            Fence::Destination,
             Some(permit),
+        )
+    }
+
+    /// As [`Client::send`] for a write whose path names no repository (GraphQL): the write gate
+    /// is asked about `fence_as`, the REST path of the resource the write changes, so the lease
+    /// of that resource's repository fences it like any REST write. The caller must have read
+    /// the resource from that path in the same operation (a GraphQL node id is opaque).
+    pub fn send_fenced_as(
+        &self,
+        method: &str,
+        path: &str,
+        fence_as: &str,
+        auth: Auth,
+        prio: Priority,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Response, Error> {
+        let body = body.map(|b| b.to_string().into_bytes());
+        let idempotent = matches!(method, "GET" | "DELETE");
+        self.send_inner(
+            method,
+            path,
+            auth,
+            prio,
+            body,
+            idempotent,
+            Fence::As(fence_as),
+            None,
         )
     }
 
@@ -922,7 +971,7 @@ impl Client {
     ) -> Result<Response, Error> {
         let body = body.map(|b| b.to_string().into_bytes());
         let idempotent = matches!(method, "GET" | "DELETE");
-        self.send_inner(method, path, auth, prio, body, idempotent, false, None)
+        self.send_inner(method, path, auth, prio, body, idempotent, Fence::Off, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -934,7 +983,7 @@ impl Client {
         prio: Priority,
         body: Option<Vec<u8>>,
         retry_errors: bool,
-        fenced: bool,
+        fence: Fence<'_>,
         mut permit: Option<&mut CosmeticPermit>,
     ) -> Result<Response, Error> {
         let mut url = self.url(path)?;
@@ -997,10 +1046,16 @@ impl Client {
             if let Some((etag, _)) = &cached {
                 headers.push(("if-none-match".into(), etag.clone()));
             }
-            if fenced && method != "GET" && method != "HEAD" {
+            if fence != Fence::Off && method != "GET" && method != "HEAD" {
                 let actual_path = url
                     .strip_prefix(self.base())
                     .ok_or_else(|| Error::Refused("write destination escaped API host".into()))?;
+                // A write fenced as another path is checked as that path only while it still
+                // goes where it was sent; after a redirect, its real destination is checked.
+                let actual_path = match fence {
+                    Fence::As(as_path) if actual_path == path => as_path,
+                    _ => actual_path,
+                };
                 let gate = self
                     .inner
                     .gate

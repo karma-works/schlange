@@ -460,10 +460,10 @@ fn graphql(st: &mut St, body: &Value) -> Reply {
             json!({ "errors": [{ "message": "Could not resolve to a node" }] }),
         );
     };
-    let draft = if query.contains("convertPullRequestToDraft") {
-        true
+    let (field, draft) = if query.contains("convertPullRequestToDraft") {
+        ("convertPullRequestToDraft", true)
     } else if query.contains("markPullRequestReadyForReview") {
-        false
+        ("markPullRequestReadyForReview", false)
     } else {
         return reply(
             200,
@@ -483,9 +483,14 @@ fn graphql(st: &mut St, body: &Value) -> Reply {
             json!({}),
         );
     }
+    let full_name = st.cfg.full_name();
     reply(
         200,
-        json!({ "data": { "pullRequest": { "isDraft": draft } } }),
+        json!({ "data": { field: { "pullRequest": {
+            "isDraft": draft,
+            "number": n,
+            "repository": { "nameWithOwner": full_name },
+        } } } }),
     )
 }
 

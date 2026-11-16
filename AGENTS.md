@@ -153,7 +153,9 @@ Security notes:
 - Shadow mode cannot write: the worker answers write decisions itself and the client's write
   gate refuses every request but a read (tests: panics). A process that lost its lease is
   refused the same way before any write is sent (the fence on GitHub moved); a remaining
-  window is one read and one write (bounded by the lease's time-to-live, `lease.rs`).
+  window is one read and one write (bounded by the lease's time-to-live, `lease.rs`). A
+  GraphQL write (the draft state) is fenced as the REST path of the pull request it changes, so
+  that repository's lease applies; GraphQL's answer must name the same pull request.
 - The admin API (`/repos/{owner}/{repo}/…`: queue status and controls, `pulls/{n}/explain`,
   `pulls/{n}/simulator`, `logs`, `audit`, `shadow/report`) needs the admin token; explanations
   and events show pull request data.

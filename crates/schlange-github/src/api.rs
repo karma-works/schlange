@@ -1212,34 +1212,58 @@ impl RepoApi {
         .map(|_| ())
     }
 
-    /// A GraphQL mutation on pull request `node` (draft state); `Err` with GraphQL's errors.
-    pub fn set_draft(&self, node: &str, draft: bool, prio: Priority) -> Result<(), Error> {
-        let query = if draft {
-            "mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+    /// The draft state of pull request `n` through GraphQL (REST cannot change it); `Err`
+    /// with GraphQL's errors. `node` must be the node id of pull request `n` read from this
+    /// repository in the same operation: the write is fenced as `/repos/{o}/{r}/pulls/{n}`
+    /// (the lease of this repository), and GraphQL's answer must name the same pull request,
+    /// otherwise the outcome is [`Error::Ambiguous`] (some pull request changed, not `n`).
+    pub fn set_draft(&self, n: u64, node: &str, draft: bool, prio: Priority) -> Result<(), Error> {
+        let mutation = if draft {
+            "convertPullRequestToDraft"
         } else {
-            "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+            "markPullRequestReadyForReview"
         };
-        let r = self.client.send(
+        let query = format!(
+            "mutation($id: ID!) {{ {mutation}(input: {{pullRequestId: $id}}) \
+             {{ pullRequest {{ isDraft number repository {{ nameWithOwner }} }} }} }}"
+        );
+        let r = self.client.send_fenced_as(
             "POST",
             "/graphql",
+            &self.p(&format!("/pulls/{n}")),
             auth_inst(self.installation),
             prio,
             Some(&json!({ "query": query, "variables": { "id": node } })),
         )?;
         let v: Value = r.json("/graphql")?;
-        match v
+        if let Some(e) = v
             .get("errors")
             .and_then(|e| e.as_array())
             .and_then(|e| e.first())
         {
-            Some(e) => Err(Error::Status {
+            return Err(Error::Status {
                 status: 422,
                 message: e["message"].as_str().unwrap_or("GraphQL error").to_string(),
                 method: "POST".into(),
                 path: "/graphql".into(),
-            }),
-            None => Ok(()),
+            });
         }
+        let pr = &v["data"][mutation]["pullRequest"];
+        let number = pr["number"].as_u64();
+        let repo = pr["repository"]["nameWithOwner"].as_str();
+        let full = self.repo.full();
+        if number != Some(n) || !repo.is_some_and(|r| r.eq_ignore_ascii_case(&full)) {
+            return Err(Error::Ambiguous {
+                method: "POST".into(),
+                path: "/graphql".into(),
+                detail: format!(
+                    "node {node} is not the pull request {full}#{n}: GraphQL changed {}#{}",
+                    repo.unwrap_or("?"),
+                    number.map_or("?".into(), |n| n.to_string())
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// A file of another repository of the same owner, on its default branch (`extends`).

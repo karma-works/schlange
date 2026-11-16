@@ -137,7 +137,7 @@ impl GithubForge {
                 if p.draft == *draft {
                     return Ok(skipped("the draft state is already so"));
                 }
-                self.api.set_draft(&p.node_id, *draft, prio)?;
+                self.api.set_draft(n, &p.node_id, *draft, prio)?;
                 done()
             }
             Op::DeleteBranch { branch, .. } => match self.api.delete_ref(branch, prio) {

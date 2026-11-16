@@ -90,8 +90,10 @@ pull_request_rules:
         report_mode: [check, comment]
 "#;
 
+/// With the lease on, as in production: every write of every action passes the fence.
 fn ci(t: Tester) -> Tester {
     t.ci(CiRule::fails_on("quick", CiOn::Both, "BROKEN"))
+        .lease("proc-1", 60)
 }
 
 fn count(t: &Running, n: u64, text: &str) -> usize {
@@ -166,6 +168,22 @@ fn people_labels_comments_reviews_and_checks() {
                 && t.gh.pr(k).is_some_and(|p| p.head_sha == run.head_sha)
         })
     });
+    t.assert_invariants();
+}
+
+/// Production runs with the lease on: GitHub changes the draft state only through GraphQL,
+/// whose path names no repository, and the write must still pass that repository's fence.
+#[test]
+fn a_draft_is_set_through_graphql_with_the_lease_on() {
+    let t = ci(Tester::new(CONFIG)).start();
+    let r = t.open_pr("carol").file("lib.rs", "BROKEN\n").create();
+    t.wait_until("draft", |t| t.gh.pr(r).is_some_and(|p| p.draft));
+    assert!(
+        t.gh.requests_with_query()
+            .iter()
+            .any(|q| q.starts_with("POST /graphql")),
+        "the draft went through GraphQL"
+    );
     t.assert_invariants();
 }
 

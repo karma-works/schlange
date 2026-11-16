@@ -251,6 +251,113 @@ fn redirected_write_is_fenced_against_actual_destination() {
     }
 }
 
+/// A write gate that records what it was asked and refuses when told to.
+struct RecordingGate {
+    refuse: bool,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl schlange_github::client::WriteGate for RecordingGate {
+    fn permit(&self, method: &str, path: &str) -> Result<(), String> {
+        self.asked.lock().unwrap().push(format!("{method} {path}"));
+        if self.refuse {
+            Err("lease lost".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn recording_gate(refuse: bool) -> Arc<RecordingGate> {
+    Arc::new(RecordingGate {
+        refuse,
+        asked: std::sync::Mutex::new(Vec::new()),
+    })
+}
+
+#[test]
+fn a_graphql_write_is_fenced_as_its_repository_s_pull_request() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let n = gh.open_pr("alice", "draft", &[("a".into(), "1".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    let gate = recording_gate(false);
+    c.set_write_gate(Some(gate.clone()));
+    let node = repo.pull(n, Priority::Normal).unwrap().node_id;
+    repo.set_draft(n, &node, true, Priority::Normal).unwrap();
+    assert!(gh.pr(n).unwrap().draft);
+    let full = gh.config().full_name();
+    assert_eq!(
+        *gate.asked.lock().unwrap(),
+        vec![format!("POST /repos/{full}/pulls/{n}")],
+        "the gate is asked about the pull request, not about /graphql"
+    );
+    gh.shutdown();
+}
+
+#[test]
+fn a_lost_lease_refuses_the_graphql_write_before_it_is_sent() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let n = gh.open_pr("alice", "draft", &[("a".into(), "1".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    let node = repo.pull(n, Priority::Normal).unwrap().node_id;
+    c.set_write_gate(Some(recording_gate(true)));
+    let before = gh.requests_with_query().len();
+    let e = repo
+        .set_draft(n, &node, true, Priority::Normal)
+        .unwrap_err();
+    assert!(e.to_string().contains("lease lost"), "{e}");
+    assert!(
+        !gh.requests_with_query()[before..]
+            .iter()
+            .any(|r| r.starts_with("POST /graphql"))
+    );
+    assert!(!gh.pr(n).unwrap().draft);
+    gh.shutdown();
+}
+
+#[test]
+fn a_redirected_graphql_write_is_fenced_against_its_real_destination() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let n = gh.open_pr("alice", "draft", &[("a".into(), "1".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    let node = repo.pull(n, Priority::Normal).unwrap().node_id;
+    gh.add_fault(FaultRule::new(
+        "POST",
+        "/graphql",
+        FaultKind::Redirect {
+            status: 307,
+            location: "/repos/karma-works/other-repo/pulls/1".into(),
+        },
+        1,
+    ));
+    let gate = recording_gate(false);
+    c.set_write_gate(Some(gate.clone()));
+    let _ = repo.set_draft(n, &node, true, Priority::Normal);
+    let asked = gate.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[1].contains("/other-repo/"), "{asked:?}");
+    gh.shutdown();
+}
+
+#[test]
+fn a_graphql_answer_for_another_pull_request_is_an_error() {
+    let gh = FakeGithub::start(FakeConfig::default());
+    let a = gh.open_pr("alice", "a", &[("a".into(), "1".into())], false, &[]);
+    let b = gh.open_pr("bob", "b", &[("b".into(), "1".into())], false, &[]);
+    let c = client(&gh, roomy());
+    let repo = api(&gh, &c);
+    let node_of_a = repo.pull(a, Priority::Normal).unwrap().node_id;
+    // A node that is not the pull request the write was fenced as.
+    let e = repo
+        .set_draft(b, &node_of_a, true, Priority::Normal)
+        .unwrap_err();
+    assert!(e.to_string().contains("not the pull request"), "{e}");
+    gh.shutdown();
+}
+
 #[test]
 fn write_rechecks_lease_after_budget_wait() {
     use schlange_github::client::WriteGate;
