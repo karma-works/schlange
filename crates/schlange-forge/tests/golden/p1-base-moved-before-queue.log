@@ -2,12 +2,3 @@
 +0:01:00  ci        #1 check `quick` completed on b46e01b: success
 +0:02:00  action    direct push to main: c917c3c
 +0:03:00  action    #1 ready for review
-+0:03:00  webhook   #1 ready_for_review
-+0:03:00  decision  enqueue #1 into `default` (rule `queue bot pull requests`)
-+0:03:00  decision  build car 2 on mergify/merge-queue/c0afd78982: base c917c3c + #1 (checks #1)
-+0:03:00  reply     car 2: #1 conflicts with the base branch
-+0:03:00  decision  labels #1 +queued
-+0:03:00  decision  status comment #1: **Merge queue** · queue `default` — Being checked.
-+0:03:00  decision  dequeue #1 from `default`: PR_DEQUEUED: the pull request does not merge onto the base branch
-+0:03:00  decision  labels #1 +dequeued -queued
-+0:03:00  decision  status comment #1: **Merge queue** · left the queue — Reason: PR_DEQUEUED: the pull request does not merge onto the base branch — - [ ] Put this pull request back into the queue

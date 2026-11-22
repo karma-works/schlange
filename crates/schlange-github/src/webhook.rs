@@ -208,6 +208,8 @@ struct PrJson {
     state: String,
     #[serde(default)]
     merged: bool,
+    #[serde(default)]
+    mergeable: Option<bool>,
     user: UserJson,
     head: Side,
     base: Side,
@@ -320,6 +322,7 @@ fn pull_request_of(p: &PrJson) -> PullRequest {
     pr.draft = p.draft;
     pr.closed = p.state == "closed";
     pr.merged = p.merged;
+    pr.conflict = p.mergeable.map(|mergeable| !mergeable);
     pr.labels = p.labels.iter().map(|l| l.name.clone()).collect();
     pr
 }

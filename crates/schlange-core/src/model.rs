@@ -128,6 +128,10 @@ pub struct PullRequest {
     /// The base branch tip when `behind_base` was computed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_tip: Option<String>,
+    /// Whether the forge knows that this head conflicts with the current base. `None` means
+    /// the forge has not computed mergeability yet; callers must not take it for no conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<bool>,
     /// Tree id of the head commit, when the forge reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_tree: Option<String>,
@@ -268,6 +272,7 @@ impl PullRequest {
             merged: false,
             behind_base: false,
             base_tip: None,
+            conflict: None,
             head_tree: None,
             merge_commit_sha: None,
             body: String::new(),
