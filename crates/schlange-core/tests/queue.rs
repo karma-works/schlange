@@ -215,7 +215,10 @@ fn pre_queue_base_move_context_is_bound_to_the_open_head_and_base() {
     pr.base_tip = Some("b1".into());
     dr.snapshot(vec![pr.clone()], &[("main", "b1")]);
     assert_eq!(
-        dr.state.base_moved_heads.get(&1).map(String::as_str),
+        dr.state
+            .base_moved_heads
+            .get(&1)
+            .map(|c| c.head_sha.as_str()),
         Some("h1")
     );
 
@@ -232,7 +235,10 @@ fn pre_queue_base_move_context_is_bound_to_the_open_head_and_base() {
     pr.base_tip = Some("b2".into());
     dr.snapshot(vec![pr.clone()], &[("main", "b2")]);
     assert_eq!(
-        dr.state.base_moved_heads.get(&1).map(String::as_str),
+        dr.state
+            .base_moved_heads
+            .get(&1)
+            .map(|c| c.head_sha.as_str()),
         Some("h2")
     );
     dr.feed(Event::Closed { number: 1 });
@@ -249,6 +255,24 @@ fn pre_queue_base_move_context_is_bound_to_the_open_head_and_base() {
     pr.base = "release".into();
     pr.base_tip = Some("r0".into());
     dr.snapshot(vec![pr], &[("release", "r0")]);
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+}
+
+#[test]
+fn a_stale_pre_queue_base_read_does_not_leave_move_context() {
+    let mut dr = Driver::new();
+    let mut pr = PullRequest::new(1, "a", "main", "pr-1", "h1");
+    pr.draft = true;
+    pr.base_tip = Some("b1".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b1")]);
+
+    // A lagging read briefly regresses to the older tip, then a fresh read returns to the
+    // originally observed tip. This is not a real move away from the observed base.
+    pr.base_tip = Some("b0".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b0")]);
+    assert!(dr.state.base_moved_heads.contains_key(&1));
+    pr.base_tip = Some("b1".into());
+    dr.snapshot(vec![pr], &[("main", "b1")]);
     assert!(!dr.state.base_moved_heads.contains_key(&1));
 }
 

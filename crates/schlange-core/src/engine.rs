@@ -474,6 +474,17 @@ pub struct Sample {
     pub secs: Time,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseMoveContext {
+    pub head_sha: String,
+    pub base: String,
+    /// The base tip when this head was first observed before the move.
+    pub original_tip: String,
+    /// The latest different tip observed for this head. Returning to `original_tip` clears the
+    /// context, which makes a regressed read followed by a fresh read harmless (MQ-33).
+    pub observed_tip: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
@@ -484,7 +495,7 @@ pub struct State {
     /// conflict (sandbox S13). Ready pull requests waiting on checks are deliberately excluded;
     /// S17 has not shown them entering the queue after the move.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub base_moved_heads: BTreeMap<u64, String>,
+    pub base_moved_heads: BTreeMap<u64, BaseMoveContext>,
     /// Branch heads as last read from the forge.
     pub branches: BTreeMap<String, String>,
     /// One queue per base branch.
@@ -734,7 +745,27 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                         && !p.closed
                         && !p.merged
                     {
-                        state.base_moved_heads.insert(p.number, p.head_sha.clone());
+                        let old_tip = old.base_tip.clone().expect("checked above");
+                        let observed_tip = p.base_tip.clone().expect("checked above");
+                        let original_tip = state
+                            .base_moved_heads
+                            .get(&p.number)
+                            .filter(|c| c.head_sha == p.head_sha && c.base == p.base)
+                            .map(|c| c.original_tip.clone())
+                            .unwrap_or(old_tip);
+                        if observed_tip == original_tip {
+                            state.base_moved_heads.remove(&p.number);
+                        } else {
+                            state.base_moved_heads.insert(
+                                p.number,
+                                BaseMoveContext {
+                                    head_sha: p.head_sha.clone(),
+                                    base: p.base.clone(),
+                                    original_tip,
+                                    observed_tip,
+                                },
+                            );
+                        }
                     } else if !same_head
                         || old.base != p.base
                         || old.closed
@@ -924,7 +955,7 @@ fn enqueue(
     let external_reset = state
         .base_moved_heads
         .get(&number)
-        .is_some_and(|h| h == head_sha);
+        .is_some_and(|c| c.head_sha == head_sha && c.base == base);
     state.queued.insert(
         number,
         QueueEntry {
