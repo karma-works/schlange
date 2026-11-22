@@ -1,0 +1,26 @@
+{
+  "scenario": "S18",
+  "repo": "queue-lab",
+  "prs": {
+    "a": {
+      "end": "merged",
+      "queued": true,
+      "enter_count": 2,
+      "dequeue_codes": [
+        "PR_MANUALLY_DEQUEUED"
+      ],
+      "merged_by_mergify": true
+    }
+  },
+  "landed": [
+    "a"
+  ],
+  "batches": [
+    {
+      "prs": [
+        "a"
+      ],
+      "ci_ok": "success"
+    }
+  ]
+}

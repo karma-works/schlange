@@ -14,6 +14,7 @@ inventory:
   - "api:POST /repos/{owner}/{repository}/pulls/{number}/scopes"
   - "api:PUT /repos/{owner}/{repository}/commits/{sha}/scopes"
   - "api:PUT /repos/{owner}/{repository}/pulls/{number}/scopes"
+  - "api:*/orgs/{owner}/repositories/{repository}/scopes/coverage*"
 unsupported:
   - "config:scopes.source.manual"
   - "config:scopes.capacities"

@@ -302,8 +302,10 @@ The custom run link is only a hint, as in S15; it is not a proof of job provenan
 
 Review `run.json` for `timed_out: false` and the completed checkpoints before accepting an
 `outcome.json` baseline. Do not promote timed-out runs or manufacture a baseline from the
-scenario's expected outcome. S13/S16/S17 reason parity and S11/S18 requeue behaviour remain
-unproven until those recordings are reviewed.
+scenario's expected outcome. Run 45009661581 supplied reviewed, non-timeout S16, S17 and S18
+recordings: S16/S17 never entered the queue, while S18 was manually dequeued, requeued by an
+allowed sender and merged. Its S11 attempt timed out and remains provisional. Active and shadow
+runs still have to prove compatibility.
 
 With reviewed baselines committed, run the same scenarios on `schlange-e2e-isolated` after its
 idle fixture refresh, then rehearse shadow mode on the reference sandbox:
@@ -339,10 +341,9 @@ All eleven scenarios ran on `queue-lab` (Mergify, run 40665292551) and on `schla
 - In `s05` (label `halt` removed) and `s07` (draft made ready), the reference pull requests
   stayed open during the recorded wait. Schlange now keeps those pull requests held at the
   same head; a new head or an allowed human queue command can release the hold.
-- The committed `s11` reference is provisional: its original run and timeout status cannot
-  be verified, so it does not establish Mergify's behavior after manual dequeue and requeue.
-  Compatibility runs reject it until a fresh reference is recorded. `s18` is prepared to
-  observe a queue entry and manual dequeue before the bounded requeue wait.
+- The committed `s11` reference remains provisional; run 45009661581 timed out there too.
+  Its non-timeout S18 recording instead established the bounded sequence: queue entry, manual
+  dequeue, allowed requeue and merge.
 - Current outcomes include `queued`, `enter_count` and `dequeue_codes`. Strict comparison
   requires those fields; scenarios that request strict batch comparison also compare recorded
   batch membership and the `ci-ok` conclusion.
