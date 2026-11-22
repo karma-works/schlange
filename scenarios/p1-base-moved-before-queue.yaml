@@ -1,0 +1,19 @@
+# Sandbox S13: a pull request is observed before an external base push makes its unchanged
+# head conflict. It enters the queue only afterwards and leaves with Mergify's generic
+# PR_DEQUEUED code, retaining the explicit base-conflict explanation and sticky same-head hold.
+name: p1-base-moved-before-queue
+description: A base move makes a draft pull request conflict before it enters the queue.
+config: configs/two-step.yml
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: full, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, draft: true, files: { shared.txt: "pull request\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 2m, push_base: { files: { shared.txt: "external push\n" } } }
+  - { at: 3m, ready: 1 }
+expect:
+  - { pr: 1, state: dequeued, reason: PR_DEQUEUED, held: dequeued-waits-for-new-head }
+expect_log:
+  - "PR_DEQUEUED: the pull request does not merge onto the base branch"

@@ -478,6 +478,13 @@ pub struct Sample {
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
     pub queued: BTreeMap<u64, QueueEntry>,
+    /// Draft pull request heads that were already observed when their base tip changed. If one
+    /// of these heads later becomes ready, enters the queue and no longer applies, Mergify
+    /// reports the generic `PR_DEQUEUED` code rather than the code for a pre-existing base
+    /// conflict (sandbox S13). Ready pull requests waiting on checks are deliberately excluded;
+    /// S17 has not shown them entering the queue after the move.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub base_moved_heads: BTreeMap<u64, String>,
     /// Branch heads as last read from the forge.
     pub branches: BTreeMap<String, String>,
     /// One queue per base branch.
@@ -705,6 +712,25 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                 if !p.merged && state.pull_requests.get(&p.number).is_some_and(|o| o.merged) {
                     continue;
                 }
+                if let Some(old) = state.pull_requests.get(&p.number) {
+                    let same_head = old.head_sha == p.head_sha;
+                    let base_tip_moved = same_head
+                        && old.base == p.base
+                        && old.base_tip.is_some()
+                        && p.base_tip.is_some()
+                        && old.base_tip != p.base_tip;
+                    if base_tip_moved
+                        && old.draft
+                        && !old.closed
+                        && !old.merged
+                        && !p.closed
+                        && !p.merged
+                    {
+                        state.base_moved_heads.insert(p.number, p.head_sha.clone());
+                    } else if !same_head || p.closed || p.merged {
+                        state.base_moved_heads.remove(&p.number);
+                    }
+                }
                 state.pull_requests.insert(p.number, p.clone());
             }
             for (b, sha) in branches {
@@ -881,6 +907,10 @@ fn enqueue(
     out: &mut Vec<Decision>,
 ) {
     let seq = state.next_id();
+    let external_reset = state
+        .base_moved_heads
+        .get(&number)
+        .is_some_and(|h| h == head_sha);
     state.queued.insert(
         number,
         QueueEntry {
@@ -892,7 +922,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
-            external_reset: false,
+            external_reset,
             by,
             priority: default_priority(),
             priority_rule: None,
