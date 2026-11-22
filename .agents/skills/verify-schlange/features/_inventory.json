@@ -16,15 +16,15 @@
   ],
   "counts": {
     "action": 18,
-    "api": 94,
+    "api": 132,
     "attr": 76,
-    "cli": 44,
+    "cli": 48,
     "cmd": 8,
-    "config": 294,
-    "default": 154,
-    "enum": 175
+    "config": 292,
+    "default": 152,
+    "enum": 187
   },
-  "total": 863,
+  "total": 913,
   "entries": [
     {
       "id": "action:assign",
@@ -102,6 +102,11 @@
       "kind": "action"
     },
     {
+      "id": "api:DELETE /ci/{owner}/oidc/trust-policies/{trust_policy_id}",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
       "id": "api:DELETE /ci/{owner}/repositories/{repository}/quarantines/{quarantine_id}",
       "kind": "api",
       "tag": "test_insights",
@@ -123,9 +128,37 @@
       "tag": "integrations"
     },
     {
-      "id": "api:DELETE /orgs/{owner}/merge-queue/settings",
+      "id": "api:DELETE /orgs/{owner}/merge-queue/policies/{policy_id}",
       "kind": "api",
       "tag": "merge_queue"
+    },
+    {
+      "id": "api:DELETE /orgs/{owner}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:DELETE /orgs/{owner}/repositories/{repository}/merge-queue/branch-patterns/{branch_pattern_name}/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:DELETE /orgs/{owner}/repositories/{repository}/merge-queue/policies/{policy_id}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:DELETE /orgs/{owner}/repositories/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:DELETE /orgs/{owner}/role-grants/{role_grant_id}",
+      "kind": "api",
+      "tag": "roles"
     },
     {
       "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/pause",
@@ -135,12 +168,14 @@
     {
       "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/settings",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:DELETE /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:DELETE /repos/{owner}/{repository}/queue/pause",
@@ -158,6 +193,31 @@
       "id": "api:GET /application",
       "kind": "api",
       "tag": "applications"
+    },
+    {
+      "id": "api:GET /ci/{owner}/oidc/exchanges",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
+      "id": "api:GET /ci/{owner}/oidc/exchanges/summary",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
+      "id": "api:GET /ci/{owner}/oidc/exchanges/{exchange_id}",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
+      "id": "api:GET /ci/{owner}/oidc/trust-policies",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
+      "id": "api:GET /ci/{owner}/oidc/trust-policies/{trust_policy_id}",
+      "kind": "api",
+      "tag": "ci_identity"
     },
     {
       "id": "api:GET /ci/{owner}/queue/stats/{stat}",
@@ -182,12 +242,22 @@
       "tag": "test_insights"
     },
     {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/test-selection/batches/{batch_id}/failure-first",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
       "id": "api:GET /ci/{owner}/repositories/{repository}/test-selection/failure-first",
       "kind": "api",
       "tag": "test_insights"
     },
     {
       "id": "api:GET /ci/{owner}/repositories/{repository}/test-states",
+      "kind": "api",
+      "tag": "test_insights"
+    },
+    {
+      "id": "api:GET /ci/{owner}/repositories/{repository}/test-states/count",
       "kind": "api",
       "tag": "test_insights"
     },
@@ -257,14 +327,74 @@
       "tag": "integrations"
     },
     {
-      "id": "api:GET /orgs/{owner}/merge-queue/settings",
+      "id": "api:GET /orgs/{owner}/merge-queue/policies",
       "kind": "api",
       "tag": "merge_queue"
     },
     {
-      "id": "api:GET /repos/{owner}/{repository}/branches/{branch}/merge-queue/settings",
+      "id": "api:GET /orgs/{owner}/merge-queue/policies/{policy_id}",
       "kind": "api",
       "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/branch-patterns",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/branch-patterns/{branch_pattern_name}/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/branches/{branch_name}/settings",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/policies",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/policies/{policy_id}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:GET /orgs/{owner}/repositories/{repository}/scopes/coverage",
+      "kind": "api",
+      "tag": "scopes"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/role-grants",
+      "kind": "api",
+      "tag": "roles"
+    },
+    {
+      "id": "api:GET /orgs/{owner}/role-grants/me",
+      "kind": "api",
+      "tag": "roles"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/branches/{branch}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/logs",
@@ -299,17 +429,20 @@
     {
       "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/merge-queue/status",
@@ -362,6 +495,11 @@
     },
     {
       "id": "api:GET /repos/{owner}/{repository}/stats/batch_size",
+      "kind": "api",
+      "tag": "statistics"
+    },
+    {
+      "id": "api:GET /repos/{owner}/{repository}/stats/bisection_failure_first",
       "kind": "api",
       "tag": "statistics"
     },
@@ -453,6 +591,16 @@
       "tag": "statistics"
     },
     {
+      "id": "api:GET /user",
+      "kind": "api",
+      "tag": "user"
+    },
+    {
+      "id": "api:PATCH /ci/{owner}/oidc/trust-policies/{trust_policy_id}",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
       "id": "api:PATCH /ci/{owner}/repositories/{repository}/quarantines/{quarantine_id}",
       "kind": "api",
       "tag": "test_insights",
@@ -464,9 +612,29 @@
       "tag": "test_insights"
     },
     {
+      "id": "api:PATCH /orgs/{owner}/merge-queue/policies/{policy_id}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:PATCH /orgs/{owner}/repositories/{repository}/merge-queue/policies/{policy_id}",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
       "id": "api:PATCH /repos/{owner}/{repository}/scheduled_freeze/{freeze_id}",
       "kind": "api",
       "tag": "scheduled_freeze"
+    },
+    {
+      "id": "api:POST /ci/oidc/exchange",
+      "kind": "api",
+      "tag": "ci_identity"
+    },
+    {
+      "id": "api:POST /ci/{owner}/oidc/trust-policies",
+      "kind": "api",
+      "tag": "ci_identity"
     },
     {
       "id": "api:POST /ci/{owner}/repositories/{repository}/quarantines",
@@ -488,6 +656,31 @@
       "id": "api:POST /integrations/{owner}/configuration/slack/{channel_configuration_id}/{product}/{notification_configuration_id}/test",
       "kind": "api",
       "tag": "integrations"
+    },
+    {
+      "id": "api:POST /orgs/{owner}/merge-queue/policies",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:POST /orgs/{owner}/merge-queue/simulator/policies",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:POST /orgs/{owner}/repositories/{repository}/merge-queue/policies",
+      "kind": "api",
+      "tag": "merge_queue"
+    },
+    {
+      "id": "api:POST /orgs/{owner}/repositories/{repository}/scopes/coverage/simulate",
+      "kind": "api",
+      "tag": "scopes"
+    },
+    {
+      "id": "api:POST /orgs/{owner}/role-grants",
+      "kind": "api",
+      "tag": "roles"
     },
     {
       "id": "api:POST /repos/{owner}/{repository}/configuration-simulator",
@@ -549,7 +742,20 @@
     {
       "id": "api:PUT /orgs/{owner}/merge-queue/settings",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:PUT /orgs/{owner}/repositories/{repository}/merge-queue/branch-patterns/{branch_pattern_name}/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
+    },
+    {
+      "id": "api:PUT /orgs/{owner}/repositories/{repository}/merge-queue/settings",
+      "kind": "api",
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:PUT /products/{owner}/{repository}",
@@ -569,12 +775,14 @@
     {
       "id": "api:PUT /repos/{owner}/{repository}/merge-queue/settings",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:PUT /repos/{owner}/{repository}/merge-queue/settings/branches/{branch}",
       "kind": "api",
-      "tag": "merge_queue"
+      "tag": "merge_queue",
+      "deprecated": true
     },
     {
       "id": "api:PUT /repos/{owner}/{repository}/pulls/{number}/scopes",
@@ -1718,6 +1926,22 @@
       "kind": "cli"
     },
     {
+      "id": "cli:mergify tests retry off",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry on",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry set",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry show",
+      "kind": "cli"
+    },
+    {
       "id": "cli:mergify tests runs",
       "kind": "cli"
     },
@@ -2434,12 +2658,6 @@
       "id": "config:defaults.queue_rule.merge_method",
       "kind": "config",
       "type": "string?"
-    },
-    {
-      "id": "config:defaults.queue_rule.queue_branch_merge_method",
-      "kind": "config",
-      "type": "string?",
-      "deprecated": true
     },
     {
       "id": "config:defaults.queue_rule.queue_branch_prefix",
@@ -3164,12 +3382,6 @@
       "type": "string"
     },
     {
-      "id": "config:queue_rules.queue_branch_merge_method",
-      "kind": "config",
-      "type": "string?",
-      "deprecated": true
-    },
-    {
       "id": "config:queue_rules.queue_branch_prefix",
       "kind": "config",
       "type": "string"
@@ -3690,11 +3902,6 @@
       "value": null
     },
     {
-      "id": "default:defaults.queue_rule.queue_branch_merge_method",
-      "kind": "default",
-      "value": null
-    },
-    {
       "id": "default:defaults.queue_rule.queue_branch_prefix",
       "kind": "default",
       "value": "mergify/merge-queue/"
@@ -4107,11 +4314,6 @@
       "value": null
     },
     {
-      "id": "default:queue_rules.queue_branch_merge_method",
-      "kind": "default",
-      "value": null
-    },
-    {
       "id": "default:queue_rules.queue_branch_prefix",
       "kind": "default",
       "value": "mergify/merge-queue/"
@@ -4221,6 +4423,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:language:c",
+      "kind": "enum"
+    },
+    {
       "id": "enum:language:csharp",
       "kind": "enum"
     },
@@ -4262,6 +4468,10 @@
     },
     {
       "id": "enum:language:mergify",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:php",
       "kind": "enum"
     },
     {
@@ -4361,11 +4571,27 @@
       "kind": "enum"
     },
     {
+      "id": "enum:package-manager:composer",
+      "kind": "enum"
+    },
+    {
       "id": "enum:package-manager:docker",
       "kind": "enum"
     },
     {
+      "id": "enum:package-manager:docker-compose",
+      "kind": "enum"
+    },
+    {
       "id": "enum:package-manager:gomod",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:gradle",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:package-manager:helm",
       "kind": "enum"
     },
     {
@@ -4553,6 +4779,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:queue-dequeue-reason:PR_IN_SAME_BATCH_DEQUEUED",
+      "kind": "enum"
+    },
+    {
       "id": "enum:queue-dequeue-reason:PR_MANUALLY_DEQUEUED",
       "kind": "enum"
     },
@@ -4637,7 +4867,15 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:c",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:cargo",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:composer",
       "kind": "enum"
     },
     {
@@ -4661,6 +4899,10 @@
       "kind": "enum"
     },
     {
+      "id": "enum:strategy:gradle",
+      "kind": "enum"
+    },
+    {
       "id": "enum:strategy:haskell",
       "kind": "enum"
     },
@@ -4678,6 +4920,10 @@
     },
     {
       "id": "enum:strategy:kotlin",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:manual",
       "kind": "enum"
     },
     {
@@ -4702,6 +4948,10 @@
     },
     {
       "id": "enum:strategy:ours",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:strategy:php",
       "kind": "enum"
     },
     {
