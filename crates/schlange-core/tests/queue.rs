@@ -206,6 +206,53 @@ fn external_reset_context_survives_restart_and_stale_car_replies() {
 }
 
 #[test]
+fn pre_queue_base_move_context_is_bound_to_the_open_head_and_base() {
+    let mut dr = Driver::new();
+    let mut pr = PullRequest::new(1, "a", "main", "pr-1", "h1");
+    pr.draft = true;
+    pr.base_tip = Some("b0".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b0")]);
+    pr.base_tip = Some("b1".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b1")]);
+    assert_eq!(
+        dr.state.base_moved_heads.get(&1).map(String::as_str),
+        Some("h1")
+    );
+
+    // The marker is journaled, but belongs only to this exact open head and base.
+    dr.state = serde_json::from_slice(&serde_json::to_vec(&dr.state).unwrap()).unwrap();
+    dr.feed(Event::PullRequestSynchronized {
+        number: 1,
+        head_sha: "h2".into(),
+        files: vec![],
+    });
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+
+    pr.head_sha = "h2".into();
+    pr.base_tip = Some("b2".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b2")]);
+    assert_eq!(
+        dr.state.base_moved_heads.get(&1).map(String::as_str),
+        Some("h2")
+    );
+    dr.feed(Event::Closed { number: 1 });
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+
+    // Reopening does not resurrect old context. A later move may mark this head again, but
+    // retargeting that unchanged head to another base invalidates the old base's context.
+    pr.closed = false;
+    dr.snapshot(vec![pr.clone()], &[("main", "b2")]);
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+    pr.base_tip = Some("b3".into());
+    dr.snapshot(vec![pr.clone()], &[("main", "b3")]);
+    assert!(dr.state.base_moved_heads.contains_key(&1));
+    pr.base = "release".into();
+    pr.base_tip = Some("r0".into());
+    dr.snapshot(vec![pr], &[("release", "r0")]);
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+}
+
+#[test]
 fn landing_refused_because_the_head_moved_dequeues() {
     let mut dr = Driver::new();
     let car = dr.queued_car();

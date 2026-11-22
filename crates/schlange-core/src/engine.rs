@@ -660,6 +660,13 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             head_sha,
             files,
         } => {
+            if state
+                .pull_requests
+                .get(number)
+                .is_some_and(|p| p.head_sha != *head_sha)
+            {
+                state.base_moved_heads.remove(number);
+            }
             if let Some(p) = pr(state, *number) {
                 p.head_sha = head_sha.clone();
                 p.files = files.clone();
@@ -698,6 +705,7 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             }
         }
         Event::Closed { number } => {
+            state.base_moved_heads.remove(number);
             if let Some(p) = pr(state, *number) {
                 p.closed = true;
             }
@@ -727,7 +735,13 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                         && !p.merged
                     {
                         state.base_moved_heads.insert(p.number, p.head_sha.clone());
-                    } else if !same_head || p.closed || p.merged {
+                    } else if !same_head
+                        || old.base != p.base
+                        || old.closed
+                        || old.merged
+                        || p.closed
+                        || p.merged
+                    {
                         state.base_moved_heads.remove(&p.number);
                     }
                 }
