@@ -2,8 +2,8 @@
 # #2 changes the same file as #1 differently: it is held (CONFLICT_WITH_PULL_AHEAD) and keeps its
 # place. When #1 merges, the conflict reaches main and #2 leaves with CONFLICT_WITH_BASE_BRANCH.
 # #4 conflicts with #3; #3 is stopped with the label `halt` before it lands, so #4 is released
-# and merges. #5 conflicts with main from the start (a direct push changed its file) and leaves
-# at once.
+# and merges. #5 conflicts with main before entry (a direct push changed its file), so the
+# known conflict holds it out of the queue.
 name: p1-conflict-ahead
 description: Held behind a conflicting pull request; dequeued if it merges, released if it leaves.
 config: configs/two-step.yml
@@ -37,7 +37,7 @@ expect:
   - { pr: 2, state: dequeued, reason: CONFLICT_WITH_BASE_BRANCH }
   - { pr: 3, state: dequeued, reason: PR_DEQUEUED }
   - { pr: 4, state: merged }
-  - { pr: 5, state: dequeued, reason: CONFLICT_WITH_BASE_BRANCH }
+  - { pr: 5, state: open, held: conflict-with-base }
 expect_merged_order: [1, 4]
 expect_log:
   - "CONFLICT_WITH_PULL_AHEAD"

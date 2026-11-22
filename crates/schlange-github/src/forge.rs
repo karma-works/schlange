@@ -492,6 +492,7 @@ impl GithubForge {
         let cmp = self.api.compare(&tip, &head, prio)?;
         pr.behind_base = cmp.behind_by > 0;
         pr.base_tip = Some(tip);
+        pr.conflict = p.mergeable.map(|mergeable| !mergeable);
         pr.body = p.body.clone().unwrap_or_default();
         pr.from_fork = match (&p.head.repo, &p.base.repo) {
             (Some(h), Some(b)) => h.full_name != b.full_name,

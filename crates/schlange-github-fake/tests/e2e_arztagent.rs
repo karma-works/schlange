@@ -443,3 +443,29 @@ fn external_base_conflict_context_survives_service_restart() {
     t.assert_invariants();
     t.shutdown();
 }
+
+#[test]
+fn a_settled_base_conflict_is_held_before_queue_entry() {
+    let t = start();
+    let n = t
+        .open_pr(BOT)
+        .label("halt")
+        .file("shared.py", "pull request\n")
+        .create();
+    green(&t, n, true);
+    t.gh.push_base(&[("shared.py".into(), "external push\n".into())]);
+    t.settle();
+    t.pr(n).unlabel("halt");
+    t.wait_until("known conflict held before entry", |t| {
+        t.status().is_some_and(|s| {
+            !s.queued.contains(&n)
+                && s.state["holds"][n.to_string()]
+                    .to_string()
+                    .contains("conflict-with-base")
+        })
+    });
+    assert!(t.gh.open_queue_drafts().is_empty());
+    assert!(t.dequeue_code(n).is_none());
+    t.assert_invariants();
+    t.shutdown();
+}

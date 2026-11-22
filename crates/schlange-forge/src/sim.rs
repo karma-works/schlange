@@ -1334,6 +1334,7 @@ impl<G: GitStore> SimForge<G> {
         if let Some(tip) = self.repo.ref_sha(&pr.base) {
             if let Some(mb) = self.repo.merge_base(&tip, &pr.head_sha) {
                 pr.files = self.repo.changed_paths(&mb, &pr.head_sha);
+                pr.conflict = Some(self.repo.merged_tree_id(&mb, &tip, &pr.head_sha).is_err());
             }
             pr.behind_base = !self.repo.is_ancestor(&tip, &pr.head_sha);
             pr.base_tip = Some(tip);
