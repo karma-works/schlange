@@ -102,6 +102,9 @@ pub enum EvalError {
     /// The forge listed only part of the changed files: a condition on them cannot be judged.
     #[error("`{0}` cannot be judged: the forge listed only part of the changed files")]
     IncompleteFiles(String),
+    /// GitHub reports mergeability asynchronously, so `null` is not evidence of no conflict.
+    #[error("`{0}` cannot be judged: the forge has not computed mergeability yet")]
+    UnknownMergeability(String),
 }
 
 /// The conclusions a `check-*` attribute selects; `None` for other attributes.
@@ -172,6 +175,10 @@ pub fn attribute(pr: &PullRequest, ctx: &Context, name: &str) -> Result<AttrValu
         "draft" => AttrValue::Bool(pr.draft),
         "closed" => AttrValue::Bool(pr.closed),
         "merged" => AttrValue::Bool(pr.merged),
+        "conflict" => match pr.conflict {
+            Some(conflict) => AttrValue::Bool(conflict),
+            None => return Err(EvalError::UnknownMergeability(name.to_string())),
+        },
         "label" => AttrValue::List(pr.labels.iter().cloned().collect()),
         "files" | "mergify-configuration-changed" if pr.files_incomplete => {
             return Err(EvalError::IncompleteFiles(name.to_string()));
@@ -1005,5 +1012,20 @@ mod tests {
                 "approved-reviews-by".into()
             ))
         );
+    }
+
+    #[test]
+    fn conflict_is_tri_state_and_unknown_fails_closed() {
+        let mut p = pr();
+        let ctx = Context::default();
+        p.conflict = Some(true);
+        assert_eq!(attribute(&p, &ctx, "conflict"), Ok(AttrValue::Bool(true)));
+        p.conflict = Some(false);
+        assert_eq!(attribute(&p, &ctx, "conflict"), Ok(AttrValue::Bool(false)));
+        p.conflict = None;
+        assert!(matches!(
+            attribute(&p, &ctx, "conflict"),
+            Err(EvalError::UnknownMergeability(_))
+        ));
     }
 }

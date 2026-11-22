@@ -1,0 +1,20 @@
+# The public `conflict` condition is tri-state. The simulator always has a settled mergeability
+# answer: a clean pull request satisfies `-conflict`, while a known conflict is held before entry.
+name: p1-conflict-attribute
+description: The conflict condition admits a clean pull request and holds a known conflict.
+config: configs/conflict-attribute.yml
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: full, duration: 1m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, files: { clean.txt: "clean\n" } }
+  - { number: 2, author: bot, labels: [halt], files: { shared.txt: "pull request\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 0s, open: 2 }
+  - { at: 2m, push_base: { files: { shared.txt: "external push\n" } } }
+  - { at: 3m, unlabel: { pr: 2, name: halt } }
+expect:
+  - { pr: 1, state: merged }
+  - { pr: 2, state: open, held: conflict-with-base }
+expect_merged_order: [1]

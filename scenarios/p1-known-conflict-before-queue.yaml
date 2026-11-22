@@ -1,0 +1,17 @@
+# Sandbox S17 with GitHub's mergeability settled before the hold is released: the pull request
+# is ready and otherwise eligible, but a base push made it conflict while `halt` kept it out.
+# A known base conflict is a built-in hold, not a transient queue entry.
+name: p1-known-conflict-before-queue
+description: A ready pull request with a known base conflict stays out of the queue.
+config: configs/two-step.yml
+ci:
+  - { check: quick, duration: 1m, runs_on: pull_request }
+  - { check: full, duration: 10m, runs_on: queue }
+pull_requests:
+  - { number: 1, author: bot, labels: [halt], files: { shared.txt: "pull request\n" } }
+events:
+  - { at: 0s, open: 1 }
+  - { at: 2m, push_base: { files: { shared.txt: "external push\n" } } }
+  - { at: 3m, unlabel: { pr: 1, name: halt } }
+expect:
+  - { pr: 1, state: open, held: conflict-with-base }

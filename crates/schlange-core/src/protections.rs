@@ -30,8 +30,8 @@ pub const MAX_DEPENDENCIES: usize = 50;
 /// Why an open pull request is not (or no longer) in the queue.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hold {
-    /// `depends-on`, `merge-after`, `configuration-changed`, `queue-command`,
-    /// `manually-dequeued`.
+    /// `conflict-with-base`, `depends-on`, `merge-after`, `configuration-changed`,
+    /// `queue-command`, `manually-dequeued`.
     pub kind: String,
     pub text: String,
     /// It can never pass as the pull request is now (a failure, not a wait).
@@ -247,6 +247,15 @@ pub fn protections(state: &State, pr: &PullRequest, now: Time) -> (Vec<Hold>, Op
     let repository = state.host.repository.clone();
     let mut holds = Vec::new();
     let mut wake = None;
+    // GitHub computes mergeability asynchronously. A known conflict prevents a new queue entry;
+    // `None` is deliberately not taken for either answer. Once queued, the car/reset path owns
+    // conflicts so a base move can rebuild or dequeue with the precise queue reason.
+    if pr.conflict == Some(true) && !state.queued.contains_key(&pr.number) {
+        holds.push(Hold::wait(
+            "conflict-with-base",
+            "the pull request conflicts with the current base branch",
+        ));
+    }
     // Depends-On.
     let (refs, bad) = depends_on(&pr.body);
     if refs.len() + bad.len() > MAX_DEPENDENCIES {
@@ -353,6 +362,7 @@ pub fn protections(state: &State, pr: &PullRequest, now: Time) -> (Vec<Hold>, Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{EntryStatus, QueueEntry};
     use crate::model::Dependency;
 
     fn state_with(prs: &[(u64, &str, bool, bool)]) -> State {
@@ -401,6 +411,36 @@ mod tests {
             depends_on("Fixes a bug.\n\ndepends-on: #3\nDepends-On : #3\nDepends-On: nope\n");
         assert_eq!(refs.len(), 1, "duplicates count once");
         assert_eq!(bad, vec!["nope".to_string()]);
+    }
+
+    #[test]
+    fn known_base_conflict_holds_only_before_queue_entry() {
+        let mut s = State::default();
+        let mut p = PullRequest::new(1, "bot", "main", "pr-1", "head");
+        p.conflict = Some(true);
+        assert_eq!(protections(&s, &p, 0).0[0].kind, "conflict-with-base");
+        p.conflict = None;
+        assert!(protections(&s, &p, 0).0.is_empty());
+        p.conflict = Some(true);
+        s.queued.insert(
+            1,
+            QueueEntry {
+                queue: "default".into(),
+                rule: "auto".into(),
+                since: 0,
+                head_sha: "head".into(),
+                base: "main".into(),
+                seq: 1,
+                waiting_since: 0,
+                status: EntryStatus::Waiting,
+                external_reset: false,
+                by: None,
+                priority: 2000,
+                priority_rule: None,
+                interrupt: false,
+            },
+        );
+        assert!(protections(&s, &p, 0).0.is_empty());
     }
 
     #[test]

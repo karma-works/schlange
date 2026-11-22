@@ -1,0 +1,18 @@
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base = main
+      - -draft
+      - -conflict
+      - -label = halt
+      - check-success = quick
+    merge_conditions:
+      - check-success = full
+    batch_size: 1
+
+pull_request_rules:
+  - name: queue bot pull requests
+    conditions:
+      - author = bot
+    actions:
+      queue:

@@ -1314,7 +1314,7 @@ pub(crate) fn fingerprint(rules: &Rules, pr: &PullRequest) -> String {
     let own = crate::cosmetics::queue_labels(rules);
     let labels: Vec<&String> = pr.labels.iter().filter(|l| !own.contains(*l)).collect();
     format!(
-        "{}|{}|{}|{}|{:?}|{:?}|{:?}|{}",
+        "{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{}",
         pr.head_sha,
         pr.base,
         pr.title,
@@ -1322,6 +1322,7 @@ pub(crate) fn fingerprint(rules: &Rules, pr: &PullRequest) -> String {
         labels,
         pr.files,
         pr.dependabot_update_types,
+        pr.conflict,
         pr.body
     )
 }

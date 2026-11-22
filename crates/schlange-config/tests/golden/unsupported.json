@@ -16,15 +16,6 @@
     {
       "stage": "support",
       "severity": "unsupported",
-      "pointer": "/queue_rules/1/queue_conditions/0",
-      "line": 12,
-      "column": 9,
-      "message": "`attr:conflict` is not supported by Schlange yet (feature queue-conflicts, P1, partial: not built in this partial feature (`attr:conflict`))",
-      "feature": "queue-conflicts"
-    },
-    {
-      "stage": "support",
-      "severity": "unsupported",
       "pointer": "/queue_rules/1/queue_conditions/1",
       "line": 13,
       "column": 9,
@@ -89,11 +80,7 @@
       "feature": "queue-conflicts",
       "priority": "P1",
       "status": "partial",
-      "supported": false,
-      "reason": {
-        "kind": "not_built",
-        "pattern": "attr:conflict"
-      },
+      "supported": true,
       "pointer": "/queue_rules/1/queue_conditions/0"
     },
     {
