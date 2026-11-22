@@ -8,10 +8,12 @@ inventory:
   - "api:POST /repos/{owner}/{repository}/configuration-simulator"
   - "api:POST /repos/{owner}/{repository}/pulls/{number}/simulator"
   - "api:POST /repos/{owner}/{repository}/simulator"
+  - "api:POST /orgs/{owner}/merge-queue/simulator/policies"
   - "cli:mergify config simulate"
 unsupported:
   - "api:POST /repos/{owner}/{repository}/configuration-simulator"
   - "api:POST /repos/{owner}/{repository}/simulator"
+  - "api:POST /orgs/{owner}/merge-queue/simulator/policies"
 problems:
   - "W-12"
 source: "https://docs.mergify.com/configuration/file-format"

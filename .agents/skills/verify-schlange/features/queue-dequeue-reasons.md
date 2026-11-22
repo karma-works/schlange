@@ -7,6 +7,8 @@ status: partial
 inventory:
   - "attr:queue-dequeue-reason"
   - "enum:queue-dequeue-reason:*"
+unsupported:
+  - "enum:queue-dequeue-reason:PR_IN_SAME_BATCH_DEQUEUED"
 problems:
   - "MQ-45"
   - "MQ-09"
@@ -25,6 +27,10 @@ for example because the queue conditions no longer hold, a check failed, a confl
 human dequeued it. The code can also be read as a condition attribute.
 
 ## Sub-features
+
+- `same-batch-dequeued`: not built. The November 22 schema added
+  `PR_IN_SAME_BATCH_DEQUEUED`; Schlange does not emit it until its triggering behaviour has
+  been observed and reproduced clean-room.
 
 - `automatic`: built. Every dequeue carries a code and a text (`crates/schlange-core/src/reasons.rs`); a pull request whose checks end while it stays queued gets a `checks ended` line with a code too.
 - `codes`: built for these paths. A code is *not* assumed when the docs name it for the path (`checks-failed`, `checks-timeout`, `checks-interrupted`, `batch-max-failure-resolution-attempts`, `dropped-by-bisection-elimination`) or when the code's own name states exactly that path; it is *assumed* where we picked the closest code for a path its name does not state (critic 1abc: the flags were inverted before):
