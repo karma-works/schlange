@@ -1,0 +1,54 @@
+{
+  "feature": "queue-conflicts",
+  "verdict": "deviating",
+  "findings": [
+    {
+      "subfeature": "conflict-base",
+      "verdict": "conformant",
+      "evidence": "`.research/mergify/merge-queue_lifecycle.md:150-170` requires immediate removal for a base conflict. `cargo run -q -p schlange -- sim run scenarios/p1-conflict-ahead.yaml` exited 0 and dequeued #5 with `CONFLICT_WITH_BASE_BRANCH`; all invariants passed. External-reset conflict scenarios also exited 0.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "conflict-ahead",
+      "verdict": "conformant",
+      "evidence": "`.research/mergify/merge-queue_lifecycle.md:140-168` requires holding in place, resuming if the predecessor leaves, and dequeuing if it merges. `p1-conflict-ahead.yaml` exited 0 and demonstrated all three outcomes with `CONFLICT_WITH_PULL_AHEAD`/`CONFLICT_WITH_BASE_BRANCH`.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "external-merge",
+      "verdict": "conformant",
+      "evidence": "`.research/mergify/schema.json:2472-2478` defaults to `always`; lifecycle lines 312-322 require rebuilding on a manually moved base. `p1-base-moved.yaml` exited 0, rebuilt both cars with `MERGE_QUEUE_RESET`, and preserved the hotfix. `cargo test -p schlange-forge --test dsl merged_by_hand_while_queued -- --exact` passed for `PR_MANUALLY_MERGED`.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "never",
+      "verdict": "deviating",
+      "evidence": "The schema says `never` leaves the queue unchanged and does not re-evaluate after an external merge (`.research/mergify/schema.json:2472-2478`). `crates/schlange-core/src/queue.rs:226-234` disables this behavior for branch-landing methods. `cargo test -p schlange-forge --test p2 merge_batch_with_never_resets_after_an_external_push -- --exact` passed while explicitly asserting `MERGE_QUEUE_RESET`.",
+      "severity": "major"
+    },
+    {
+      "subfeature": "semantic-conflict",
+      "verdict": "conformant",
+      "evidence": "`cargo run -q -p schlange -- sim run scenarios/p1-semantic-conflict.yaml` exited 0: #2 was tested on the speculative combination with #1, failed `full`, and was dequeued while #1 and unrelated #3 landed; I0-I5 passed.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "line-level",
+      "verdict": "conformant",
+      "evidence": "`cargo test -p schlange-forge --test localgit line_level_merge_differs_from_the_in_memory_model -- --exact` passed: real Git merged different-line edits while the deliberately file-level in-memory model reported a conflict.",
+      "severity": "info"
+    },
+    {
+      "subfeature": "conflict attribute",
+      "verdict": "missing",
+      "evidence": "The schema defines boolean `conflict` at `.research/mergify/schema.json:2868-2872`, but `crates/schlange-core/src/eval.rs:164-220` has no evaluator case. `config validate --strict crates/schlange-config/tests/golden/unsupported.yml` exited 2 and reported `attr:conflict` unsupported by `queue-conflicts`.",
+      "severity": "major"
+    }
+  ],
+  "missing_tests": [
+    "MQ-09"
+  ],
+  "clean_room_ok": true,
+  "summary": "Targeted validation and all queue-conflicts scenarios/tests passed. MQ-09 remains incomplete because `docs/mq-coverage.md:27` explicitly says reopening is untested. The full workspace suite could not finish green: after rerunning with localhost permission, an unrelated config golden test failed because its `conflict_resolvers` fixture no longer satisfies the pinned schema. No copied Mergify code or documentation prose was found outside `.research/`.",
+  "commit": "9a9c028520beb7d9ca35a3399f93d1f2395c7ba6"
+}
