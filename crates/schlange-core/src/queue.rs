@@ -573,6 +573,7 @@ pub(crate) fn car_built(
         if let Some(entry) = state.queued.get_mut(number) {
             entry.external_reset = false;
         }
+        state.base_moved_heads.remove(number);
     }
     // The queue's own push to its branch is known now (not a foreign push).
     state

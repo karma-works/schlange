@@ -10,6 +10,10 @@ inventory:
   - "api:PUT /default_products/{owner}"
   - "api:PUT /products/{owner}/{repository}"
   - "api:GET /application"
+  - "api:POST /ci/oidc/exchange"
+  - "api:*/ci/{owner}/oidc/*"
+  - "api:*/orgs/{owner}/role-grants*"
+  - "api:GET /user"
   - "cli:mergify auth *"
 problems:
   - "W-20"

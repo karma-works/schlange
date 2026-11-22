@@ -474,10 +474,28 @@ pub struct Sample {
     pub secs: Time,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseMoveContext {
+    pub head_sha: String,
+    pub base: String,
+    /// The base tip when this head was first observed before the move.
+    pub original_tip: String,
+    /// The latest different tip observed for this head. Returning to `original_tip` clears the
+    /// context, which makes a regressed read followed by a fresh read harmless (MQ-33).
+    pub observed_tip: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
     pub queued: BTreeMap<u64, QueueEntry>,
+    /// Draft pull request heads that were already observed when their base tip changed. If one
+    /// of these heads later becomes ready, enters the queue and no longer applies, Mergify
+    /// reports the generic `PR_DEQUEUED` code rather than the code for a pre-existing base
+    /// conflict (sandbox S13). Ready pull requests waiting on checks are deliberately excluded;
+    /// S17 has not shown them entering the queue after the move.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub base_moved_heads: BTreeMap<u64, BaseMoveContext>,
     /// Branch heads as last read from the forge.
     pub branches: BTreeMap<String, String>,
     /// One queue per base branch.
@@ -653,6 +671,13 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             head_sha,
             files,
         } => {
+            if state
+                .pull_requests
+                .get(number)
+                .is_some_and(|p| p.head_sha != *head_sha)
+            {
+                state.base_moved_heads.remove(number);
+            }
             if let Some(p) = pr(state, *number) {
                 p.head_sha = head_sha.clone();
                 p.files = files.clone();
@@ -691,6 +716,7 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
             }
         }
         Event::Closed { number } => {
+            state.base_moved_heads.remove(number);
             if let Some(p) = pr(state, *number) {
                 p.closed = true;
             }
@@ -704,6 +730,51 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                 // Merged is final: a read that says otherwise lags behind (MQ-33).
                 if !p.merged && state.pull_requests.get(&p.number).is_some_and(|o| o.merged) {
                     continue;
+                }
+                if let Some(old) = state.pull_requests.get(&p.number) {
+                    let same_head = old.head_sha == p.head_sha;
+                    let base_tip_moved = same_head
+                        && old.base == p.base
+                        && old.base_tip.is_some()
+                        && p.base_tip.is_some()
+                        && old.base_tip != p.base_tip;
+                    if base_tip_moved
+                        && old.draft
+                        && !old.closed
+                        && !old.merged
+                        && !p.closed
+                        && !p.merged
+                    {
+                        let old_tip = old.base_tip.clone().expect("checked above");
+                        let observed_tip = p.base_tip.clone().expect("checked above");
+                        let original_tip = state
+                            .base_moved_heads
+                            .get(&p.number)
+                            .filter(|c| c.head_sha == p.head_sha && c.base == p.base)
+                            .map(|c| c.original_tip.clone())
+                            .unwrap_or(old_tip);
+                        if observed_tip == original_tip {
+                            state.base_moved_heads.remove(&p.number);
+                        } else {
+                            state.base_moved_heads.insert(
+                                p.number,
+                                BaseMoveContext {
+                                    head_sha: p.head_sha.clone(),
+                                    base: p.base.clone(),
+                                    original_tip,
+                                    observed_tip,
+                                },
+                            );
+                        }
+                    } else if !same_head
+                        || old.base != p.base
+                        || old.closed
+                        || old.merged
+                        || p.closed
+                        || p.merged
+                    {
+                        state.base_moved_heads.remove(&p.number);
+                    }
                 }
                 state.pull_requests.insert(p.number, p.clone());
             }
@@ -881,6 +952,10 @@ fn enqueue(
     out: &mut Vec<Decision>,
 ) {
     let seq = state.next_id();
+    let external_reset = state
+        .base_moved_heads
+        .get(&number)
+        .is_some_and(|c| c.head_sha == head_sha && c.base == base);
     state.queued.insert(
         number,
         QueueEntry {
@@ -892,7 +967,7 @@ fn enqueue(
             seq,
             waiting_since: now,
             status: EntryStatus::Waiting,
-            external_reset: false,
+            external_reset,
             by,
             priority: default_priority(),
             priority_rule: None,

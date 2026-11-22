@@ -7,6 +7,8 @@ status: partial
 inventory:
   - "attr:queue-dequeue-reason"
   - "enum:queue-dequeue-reason:*"
+unsupported:
+  - "enum:queue-dequeue-reason:PR_IN_SAME_BATCH_DEQUEUED"
 problems:
   - "MQ-45"
   - "MQ-09"
@@ -25,6 +27,10 @@ for example because the queue conditions no longer hold, a check failed, a confl
 human dequeued it. The code can also be read as a condition attribute.
 
 ## Sub-features
+
+- `same-batch-dequeued`: not built. The November 22 schema added
+  `PR_IN_SAME_BATCH_DEQUEUED`; Schlange does not emit it until its triggering behaviour has
+  been observed and reproduced clean-room.
 
 - `automatic`: built. Every dequeue carries a code and a text (`crates/schlange-core/src/reasons.rs`); a pull request whose checks end while it stays queued gets a `checks ended` line with a code too.
 - `codes`: built for these paths. A code is *not* assumed when the docs name it for the path (`checks-failed`, `checks-timeout`, `checks-interrupted`, `batch-max-failure-resolution-attempts`, `dropped-by-bisection-elimination`) or when the code's own name states exactly that path; it is *assumed* where we picked the closest code for a path its name does not state (critic 1abc: the flags were inverted before):
@@ -64,7 +70,7 @@ human dequeued it. The code can also be read as a condition attribute.
   | `queue <other queue>` command while queued | `PR_MANUALLY_DEQUEUED` *assumed* | yes, then waits for the other queue |
   | a built-in protection holds a queued pull request (body edited) | `PR_DEQUEUED` *assumed* | yes |
 
-- `sticky-dequeue`: built. A pull request dequeued because its queue conditions stopped holding (`PR_DEQUEUED`: label `halt`, back to draft) is not queued again at the same head when the cause goes away; it waits with the hold `dequeued-waits-for-new-head` (reason in `explain` and in `holds`). A new head lifts it. Observed on Mergify with Arztagent's configuration in the sandbox (s05, s07: the pull request stayed open for 40 minutes after the cause went away). **Deliberate deviation:** a `queue` command from a sender that `commands_restrictions` allows also lifts it; the old S11 reference recorded an open PR after a wait for closure, but its timeout provenance is unavailable, so it does not establish Mergify's outcome or its cause. S18 is prepared for a fresh bounded observation with confirmed queue-entry and dequeue checkpoints. An agent removing `halt` never restarts a merge. Tests: `scenarios/p1-sticky-dequeue.yaml`, `p1-label-halt.yaml`, `cargo test -p schlange-github-fake --test e2e_arztagent a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human`.
+- `sticky-dequeue`: built. A pull request dequeued because its queue conditions stopped holding (`PR_DEQUEUED`: label `halt`, back to draft) is not queued again at the same head when the cause goes away; it waits with the hold `dequeued-waits-for-new-head` (reason in `explain` and in `holds`). A new head lifts it. Observed on Mergify with Arztagent's configuration in the sandbox (s05, s07: the pull request stayed open for 40 minutes after the cause went away). A `queue` command from a sender that `commands_restrictions` allows also lifts it: clean run 45009661581 recorded S18 entering twice, leaving once with `PR_MANUALLY_DEQUEUED`, then merging. This supersedes the provisional, timed-out S11 observation without promoting S11 itself. An agent removing `halt` never restarts a merge. Tests: `scenarios/p1-sticky-dequeue.yaml`, `p1-label-halt.yaml`, `cargo test -p schlange-github-fake --test e2e_arztagent a_dequeued_pull_request_waits_for_a_new_head_or_a_listed_human`.
 - `no-requeue-loop`: built. After `CHECKS_FAILED`, `CHECKS_TIMEOUT`, `CHECKS_INTERRUPTED`, conflicts and split drops, the `queue` action does not queue the same head again; a new push does, and so does a `queue` command (which resets the status, docs: commands/queue).
 - `own-rebase`: not applicable yet: Schlange never pushes to a pull request (in-place updates are not built), so its own updates cannot dequeue (W-08).
 - `attribute`: built. `queue-dequeue-reason` is the code of the last time the pull request's queue checks ended (a dequeue or a `checks ended` line), `NONE` before; `=` and `!=` accept the documented kebab case (`checks-failed`) as well as the schema's upper case.
