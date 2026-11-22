@@ -156,8 +156,8 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | | conformant | partial | missing |
 |---|---:|---:|---:|
 | Features (86) | 0 | 73 | 13 |
-| Sub-features (314) | – | built 260, partial 13 | 41 |
-| Sub-features Arztagent uses (169) | – | built 153, partial 8 | 8 |
+| Sub-features (314) | – | built 261, partial 12 | 41 |
+| Sub-features Arztagent uses (169) | – | built 154, partial 7 | 8 |
 
 <details>
 <summary><b>P1 – what Arztagent uses</b>: 36 features (0 conformant, 36 partial, 0 missing)</summary>
@@ -191,7 +191,7 @@ Every Mergify feature has a file in the feature map ([`.agents/skills/verify-sch
 | [Required checks from branch protection and rulesets](.agents/skills/verify-schlange/features/queue-branch-protection.md) | partial | 5 / 0 / 0 | yes |
 | [Check timeout and retries (defaults)](.agents/skills/verify-schlange/features/queue-checks-timeout.md) | partial | 7 / 0 / 0 | yes |
 | [Commit message on merge](.agents/skills/verify-schlange/features/queue-commit-message.md) | partial | 4 / 0 / 1 | yes |
-| [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 4 / 1 / 0 | yes |
+| [Conflicts and a moving base](.agents/skills/verify-schlange/features/queue-conflicts.md) | partial | 5 / 0 / 0 | yes |
 | [Dequeue with a reason](.agents/skills/verify-schlange/features/queue-dequeue-reasons.md) | partial | 6 / 0 / 1 | yes |
 | [Queue pull requests as drafts on `mergify/merge-queue/`](.agents/skills/verify-schlange/features/queue-draft-pr.md) | partial | 4 / 0 / 0 | yes |
 | [Queue labels and status comments](.agents/skills/verify-schlange/features/queue-labels-comments.md) | partial | 4 / 0 / 0 | yes |
