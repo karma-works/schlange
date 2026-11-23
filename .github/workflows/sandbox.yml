@@ -152,6 +152,14 @@ jobs:
         run: |
           read -ra names <<<"$SCENARIOS"
           bash sandbox/ci/run-scenarios.sh "$REPO" "${names[@]}"
+      - name: Check same-run reference histories
+        if: ${{ always() && inputs.shadow_mode && inputs.repo == 'queue-lab' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/ci/check-reference-history.py \
+            "$RUNNER_TEMP/sandbox-runs" \
+            "$RUNNER_TEMP/shadow-evidence/reference-history-check.json"
       - name: Verify shadow report against independent Mergify recordings
         if: ${{ always() && inputs.shadow_mode && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: |

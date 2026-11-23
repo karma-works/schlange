@@ -352,6 +352,13 @@ queue-condition index, base conflict, hold, closed pull request, or other cause.
 contains row IDs, PR numbers, timestamps, and cause codes. Invalid inputs produce an incomplete
 marker. The strict comparison uses its own evidence.
 
+`reference-history-check.json` is a separate same-run integrity check for the public Activity Log
+capture. It binds the workflow run, attempt, commit, repository, scenario interval and exact pull
+request set, then compares entry counts, ordered non-merge dequeue codes and terminal merges with
+the driver's `outcome.json`. A terminal merge requires both its merge leave and merged record.
+The workflow retains an incomplete result without making this diagnostic a gate. It validates only
+the captured reference history; it is not a shadow agreement verdict.
+
 Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
 closure, `ci-ok` and Mergify check completion times, member merge times, and the activity
 log's receipt times for queue entries and exits. Draft title references are hints limited to
