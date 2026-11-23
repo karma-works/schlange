@@ -343,7 +343,13 @@ and the shadow write gate; production acceptance must instead use the dedicated 
 The workflow independently records Mergify events and checks every selected PR's queue entry,
 merge, batch, order and dequeue reason against the shadow report. Empty, pending, inconclusive,
 unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
-`report.json` and `verification.json`, without upstream prose or private serve logs.
+`report.json` and `verification.json`, without upstream prose or private serve logs. After the
+strict comparison attempt, whether it succeeds or fails, `schlange-dequeue-causes.json` reads the
+local database in query-only mode and classifies selected Schlange `PR_DEQUEUED` occurrences as a
+queue-condition index,
+base conflict, hold, closed pull request or other. It publishes only row IDs, pull request
+numbers, timestamps and those finite causes. The optional diagnostic never affects the comparison
+gate; an invalid binding, time window, row or bound produces an atomic incomplete marker.
 
 Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
 closure, `ci-ok` and Mergify check completion times, member merge times, and the activity
