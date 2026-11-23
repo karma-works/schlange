@@ -56,6 +56,15 @@ def inspect():
                 if conclusion not in driver.CHECK_CONCLUSIONS:
                     conclusion = "pending_or_unknown"
                 counts[f"{app}/{conclusion}"] += 1
+        cancelled_reference_roles = []
+        for item in runs:
+            if (isinstance(item, dict) and item.get("head_sha") == sha
+                    and item.get("conclusion") == "cancelled"
+                    and (item.get("app") or {}).get("slug") == "mergify"):
+                name = item.get("name")
+                value = "queue_check" if name == "Mergify Merge Queue" else (
+                    "rule_check" if isinstance(name, str) and name.startswith("Rule: ") else "other")
+                cancelled_reference_roles.append(value)
         status_page = client.read_json(f"{root}/commits/{sha}/status?per_page=100")
         statuses = status_page.get("statuses")
         status_complete = isinstance(statuses, list) and status_page.get("total_count") == len(statuses)
@@ -68,13 +77,29 @@ def inspect():
         state = {"org": "schlange-sandbox", "repo": "queue-lab", "run_id": ref.split("/")[1],
                  "started": "2026-11-23T10:24:09Z", "finished": stamped,
                  "timed_out": False, "prs": {"a": {"number": PULL}}}
-        activity = driver.capture_reference_activity(state, driver.mergify_client(), stamped)
+        reference = driver.mergify_client()
+        activity = driver.capture_reference_activity(state, reference, stamped)
+        unqueued_state = "unavailable"
+        try:
+            unqueued, headers = reference.activity_page(
+                f"{driver.MERGIFY_API}/repos/{REPOSITORY}/merge-queue/unqueued-pulls?branch=main&per_page=100")
+            items = unqueued.get("pull_requests")
+            target_states = [item.get("state") for item in items if isinstance(item, dict)
+                             and item.get("number") == PULL] if isinstance(items, list) else []
+            if target_states in (["waiting_for_conditions"], ["ready"]):
+                unqueued_state = target_states[0]
+            elif isinstance(items, list) and not target_states and not driver._activity_link_header(headers):
+                unqueued_state = "absent"
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
         return {**report, "complete": activity["complete"], "observed_at": stamped,
                 "reference_incomplete_reason": activity["incomplete_reason"],
                 "open": pull.get("state") == "open", "merged": pull.get("merged") is True,
                 "mergeable": pull.get("mergeable") if type(pull.get("mergeable")) is bool else None,
                 "checks_on_current_head": rows,
                 "check_conclusion_counts": counts,
+                "cancelled_reference_check_roles": cancelled_reference_roles,
+                "reference_unqueued_state": unqueued_state,
                 "commit_statuses_complete": status_complete,
                 "commit_status_counts": status_counts,
                 "lifecycle": [{key: event[key] for key in ("kind", "received_at", "reason_code") if key in event}
