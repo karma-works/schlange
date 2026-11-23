@@ -230,11 +230,13 @@ class CheckpointTests(unittest.TestCase):
             'run': {'repo': 'queue-lab'},
             'prs': {'a': {'number': 2, 'merged_at': at, 'checks': [
                 {'id': 7, 'app': 'mergify', 'status': 'completed', 'conclusion': 'neutral',
-                 'completed_at': at, 'name': 'private check name'},
+                 'started_at': at, 'completed_at': at, 'name': 'private check name',
+                 'recognized_dequeue_codes': ['PR_MANUALLY_DEQUEUED']},
                 {'id': 8, 'app': 'other', 'status': 'completed', 'completed_at': at},
                 {'id': 9, 'app': 'mergify', 'status': 'completed', 'conclusion': 'private conclusion',
-                 'completed_at': 'private invalid timestamp'},
-                {'id': 10, 'app': 'mergify', 'status': 'in_progress', 'completed_at': None},
+                 'started_at': at, 'completed_at': 'private invalid timestamp'},
+                {'id': 10, 'app': 'mergify', 'status': 'in_progress', 'conclusion': None,
+                 'started_at': at, 'completed_at': None},
             ]}},
             'queue_prs': [{'number': 3, 'user': 'mergify[bot]', 'created_at': at,
                            'closed_at': None, 'title': 'private #99 #2 #2', 'body': 'private body',
@@ -250,8 +252,15 @@ class CheckpointTests(unittest.TestCase):
                                             'ci_completed': [{'id': 4, 'completed_at': at,
                                                               'conclusion': 'failure'}]}])
         self.assertEqual(timing['pull_requests'], [{'number': 2, 'merged_at': at,
-                                                   'mergify_checks': [{'id': 7, 'completed_at': at,
-                                                                       'conclusion': 'neutral'}]}])
+            'mergify_checks': [
+                {'id': 7, 'status': 'completed', 'conclusion': 'neutral',
+                 'started_at': at, 'completed_at': at,
+                 'recognized_dequeue_codes': ['PR_MANUALLY_DEQUEUED']},
+                {'id': 9, 'status': 'completed', 'conclusion': None,
+                 'started_at': at, 'completed_at': None, 'recognized_dequeue_codes': []},
+                {'id': 10, 'status': 'in_progress', 'conclusion': None,
+                 'started_at': at, 'completed_at': None, 'recognized_dequeue_codes': []},
+            ]}])
         self.assertEqual(timing['queue_events'], [{'number': 2, 'kind': 'enter', 'received_at': at}])
         self.assertFalse(timing['complete'])
         trace['prs']['a']['checks'].pop(2)
@@ -263,6 +272,98 @@ class CheckpointTests(unittest.TestCase):
         del trace['mergify_events']
         self.assertFalse(driver.public_queue_timing(trace)['complete'])
         self.assertNotIn('private', json.dumps(timing))
+
+    def test_public_check_marker_retains_only_structured_fields_and_exact_codes(self):
+        at = '2026-01-02T03:04:05Z'
+        marker, complete = driver.public_check_marker({
+            'id': 7, 'app': 'mergify', 'status': 'completed', 'conclusion': 'neutral',
+            'started_at': at, 'completed_at': at, 'name': 'private check name',
+            'output': {
+                'title': 'private PR_MANUALLY_DEQUEUED suffix',
+                'summary': 'private NOT_CHECKS_TIMEOUT CHECKS_TIMEOUT',
+            },
+        })
+        self.assertTrue(complete)
+        self.assertEqual(marker, {
+            'id': 7, 'status': 'completed', 'conclusion': 'neutral',
+            'started_at': at, 'completed_at': at,
+            'recognized_dequeue_codes': ['CHECKS_TIMEOUT', 'PR_MANUALLY_DEQUEUED'],
+        })
+        self.assertNotIn('private', json.dumps(marker))
+
+        marker, complete = driver.public_check_marker({
+            'id': 8, 'app': 'mergify', 'status': 'private status',
+            'conclusion': 'private conclusion', 'started_at': 'private time',
+            'completed_at': None, 'output': {'title': 'PR_DEQUEUED_EXTRA'},
+        })
+        self.assertFalse(complete)
+        self.assertEqual(marker, {
+            'id': 8, 'status': None, 'conclusion': None, 'started_at': None,
+            'completed_at': None, 'recognized_dequeue_codes': [],
+        })
+
+    def test_checkpoint_check_markers_are_app_filtered_and_one_page_bounded(self):
+        at = '2026-01-02T03:04:05Z'
+        client = unittest.mock.Mock()
+        client.call.side_effect = [
+            {'head': {'sha': 'a' * 40}},
+            {'total_count': 101, 'check_runs': [
+                {'id': 7, 'app': {'slug': 'mergify'}, 'status': 'completed',
+                 'conclusion': 'neutral', 'started_at': at, 'completed_at': at,
+                 'name': 'private', 'output': {'title': 'PR_MANUALLY_DEQUEUED'}},
+                {'id': 8, 'app': {'slug': 'other'}, 'status': 'completed',
+                 'conclusion': 'success', 'started_at': at, 'completed_at': at,
+                 'output': {'summary': 'PR_DEQUEUED'}},
+            ]},
+        ]
+        with patch.object(driver, 'now_iso', return_value=at):
+            observed = driver.observe_mergify_check_markers(
+                client, '/repos/schlange-sandbox/queue-lab', [2])
+        self.assertFalse(observed['complete'])
+        self.assertTrue(observed['truncated'])
+        self.assertEqual(observed['pull_requests'], [{
+            'number': 2, 'observed_at': at, 'complete': False, 'truncated': True,
+            'checks': [{'id': 7, 'status': 'completed', 'conclusion': 'neutral',
+                        'started_at': at, 'completed_at': at,
+                        'recognized_dequeue_codes': ['PR_MANUALLY_DEQUEUED']}],
+        }])
+        client.call.assert_has_calls([
+            unittest.mock.call('GET', '/repos/schlange-sandbox/queue-lab/pulls/2', retry=False),
+            unittest.mock.call('GET', '/repos/schlange-sandbox/queue-lab/commits/' + 'a' * 40
+                               + '/check-runs?filter=all&per_page=100&page=1', retry=False),
+        ])
+        self.assertNotIn('private', json.dumps(observed))
+
+    def test_checkpoint_check_marker_failure_is_explicit_and_prose_free(self):
+        client = unittest.mock.Mock()
+        client.call.side_effect = driver.urllib.error.URLError('private network failure')
+        with patch.object(driver, 'now_iso', return_value='2026-01-02T03:04:05Z'):
+            observed = driver.observe_mergify_check_markers(
+                client, '/repos/schlange-sandbox/queue-lab', [2])
+        self.assertEqual(observed, {
+            'complete': False, 'truncated': False,
+            'pull_requests': [{'number': 2, 'observed_at': '2026-01-02T03:04:05Z',
+                               'complete': False, 'truncated': False, 'checks': []}],
+        })
+        self.assertNotIn('private', json.dumps(observed))
+
+    def test_checkpoint_check_marker_malformed_rows_are_bounded_and_non_throwing(self):
+        at = '2026-01-02T03:04:05Z'
+        client = unittest.mock.Mock()
+        malformed = [None, {'app': 'not an object'}] + [
+            {'id': n, 'app': {'slug': 'other'}} for n in range(2, 103)]
+        client.call.side_effect = [
+            {'head': {'sha': 'b' * 40}},
+            {'total_count': len(malformed), 'check_runs': malformed},
+        ]
+        with patch.object(driver, 'now_iso', return_value=at):
+            observed = driver.observe_mergify_check_markers(
+                client, '/repos/schlange-sandbox/queue-lab', [2])
+        self.assertFalse(observed['complete'])
+        self.assertTrue(observed['truncated'])
+        self.assertEqual(observed['pull_requests'], [{
+            'number': 2, 'observed_at': at, 'complete': False, 'truncated': True, 'checks': [],
+        }])
 
     def test_compatibility_comparison_rejects_missing_queue_observation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -458,13 +559,20 @@ class CheckpointTests(unittest.TestCase):
 
     def test_wait_queued_requires_an_unmatched_entry_and_fails_on_timeout(self):
         run = object.__new__(driver.Run)
+        run.repo = 'queue-lab'
+        run.r = '/repos/schlange-sandbox/queue-lab'
+        run.actors = {'human': unittest.mock.Mock()}
         run.prs = {'a': {'number': 42}}
         run.checkpoints = []
         run.timed_out = False
         run.save_state = unittest.mock.Mock()
         run.pr_state = lambda _: ('open', '')
         run.queue_events = lambda: [{'pull_request': 42, 'type': 'action.queue.enter', 'received_at': '2026-01-01T00:00:00Z'}]
-        run.step_wait({'wait': 'queued', 'prs': ['a'], 'timeout': 1})
+        marker = {'complete': True, 'truncated': False, 'pull_requests': []}
+        with patch.object(driver, 'observe_mergify_check_markers', return_value=marker) as observe:
+            run.step_wait({'wait': 'queued', 'prs': ['a'], 'timeout': 1})
+        observe.assert_called_once_with(run.actors['human'], run.r, [42])
+        self.assertEqual(run.checkpoints[0]['observed_mergify_checks'], marker)
         self.assertEqual(run.checkpoints[0]['events'][0]['received_at'], '2026-01-01T00:00:00Z')
         run.queue_events = lambda: [
             {'pull_request': 42, 'type': 'action.queue.enter'},

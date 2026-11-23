@@ -53,6 +53,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNS = Path(os.environ.get("SANDBOX_RUNS", REPO_ROOT / ".sandbox-runs"))
 API = "https://api.github.com"
 QUEUE_PREFIX = "mergify/merge-queue/"
+CHECK_STATUSES = {"queued", "in_progress", "completed"}
+CHECK_CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out",
+                     "action_required", "stale", "startup_failure"}
+DEQUEUE_CODES = (
+    "PR_DEQUEUED", "PR_AHEAD_DEQUEUED", "BATCH_AHEAD_FAILED", "CHECKS_TIMEOUT",
+    "CHECKS_FAILED", "CHECKS_INTERRUPTED", "DROPPED_BY_BISECTION_ELIMINATION",
+    "QUEUE_RULE_MISSING", "BASE_BRANCH_CHANGED", "PR_UNEXPECTEDLY_FAILED_TO_MERGE",
+    "BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS", "CONFLICT_WITH_BASE_BRANCH",
+    "CONFLICT_WITH_PULL_AHEAD", "DRAFT_PULL_REQUEST_CHANGED", "BATCH_PULL_REQUEST_CLOSED",
+    "PULL_REQUEST_UPDATED", "MERGE_QUEUE_RESET", "PR_MANUALLY_MERGED",
+    "BATCH_AHEAD_BRANCH_EDITED", "BATCH_REBUILT", "BATCH_AHEAD_REBUILT", "CHECKS_RETRIED",
+    "PR_MANUALLY_DEQUEUED", "PR_WITH_HIGHER_PRIORITY_QUEUED",
+    "PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE", "INTERMEDIATE_RESULTS_SKIPPED", "PR_CLOSED",
+)
 # The driver acts with the sandbox credentials and must never touch another organisation, so the
 # organisation is fixed; SANDBOX_ORG and --org can only repeat it.
 ALLOWED_ORG = "schlange-sandbox"
@@ -280,6 +294,106 @@ def dequeued_since_checkpoint(events, number, reason, prior_events):
     entered = any(e.get("pull_request") == number and "queue" in e.get("type", "")
                   and e["type"].endswith("enter") for e in events)
     return entered and not currently_queued(events, number) and matching(events) > matching(prior_events)
+
+
+def exact_dequeue_codes(check):
+    """Return only known literal tokens; never retain check output prose."""
+    if not isinstance(check, dict):
+        return []
+    supplied = check.get("recognized_dequeue_codes")
+    if isinstance(supplied, list):
+        words = set(x for x in supplied if isinstance(x, str) and x in DEQUEUE_CODES)
+    else:
+        output = check.get("output") if isinstance(check.get("output"), dict) else {}
+        text = " ".join(x for x in (output.get("title"), output.get("summary")) if isinstance(x, str))
+        words = set(re.split(r"[^A-Za-z0-9_]+", text))
+    return [code for code in DEQUEUE_CODES if code in words]
+
+
+def public_timestamp(value, optional=False):
+    if optional and value is None:
+        return None, True
+    if isinstance(value, str) and re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})", value):
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            pass
+        else:
+            return value, True
+    return None, False
+
+
+def public_check_marker(check):
+    """A prose-free structural check-run marker, plus whether every field was valid."""
+    if not isinstance(check, dict):
+        return None, False
+    check_id = check.get("id")
+    if type(check_id) is not int or check_id <= 0:
+        return None, False
+    status = check.get("status") if check.get("status") in CHECK_STATUSES else None
+    conclusion = check.get("conclusion")
+    if conclusion not in CHECK_CONCLUSIONS:
+        conclusion = None
+    started_at, started_valid = public_timestamp(check.get("started_at"))
+    completed_at, completed_valid = public_timestamp(
+        check.get("completed_at"), optional=status != "completed")
+    complete = (status is not None and started_valid and completed_valid
+                and (status != "completed" or conclusion is not None))
+    return {
+        "id": check_id,
+        "status": status,
+        "conclusion": conclusion,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "recognized_dequeue_codes": exact_dequeue_codes(check),
+    }, complete
+
+
+def observe_mergify_check_markers(client, repo_path, numbers):
+    """Read at most one page of checks per scenario PR; failures stay explicit and prose-free."""
+    result = {"complete": True, "truncated": False, "pull_requests": []}
+    transport_errors = (AttributeError, KeyError, RuntimeError, TimeoutError, TypeError, ValueError,
+                        urllib.error.URLError)
+    for number in numbers:
+        row = {"number": number, "observed_at": None, "complete": True, "truncated": False,
+               "checks": []}
+        result["pull_requests"].append(row)
+        try:
+            pr = client.call("GET", f"{repo_path}/pulls/{number}", retry=False)
+            if not isinstance(pr, dict):
+                raise TypeError("pull response is not an object")
+            head = (pr.get("head") or {}).get("sha")
+            if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+                raise ValueError("pull head is invalid")
+            response = client.call(
+                "GET", f"{repo_path}/commits/{head}/check-runs?filter=all&per_page=100&page=1",
+                retry=False)
+            if not isinstance(response, dict) or not isinstance(response.get("check_runs"), list):
+                raise TypeError("check response is invalid")
+            all_checks = response["check_runs"]
+            checks = all_checks[:100]
+            total = response.get("total_count")
+            if len(all_checks) > 100 or (type(total) is int and total > len(checks)):
+                row["truncated"] = True
+                result["truncated"] = True
+            if type(total) is not int or total < len(all_checks) or row["truncated"]:
+                row["complete"] = False
+            for check in checks:
+                if not isinstance(check, dict) or not isinstance(check.get("app"), dict):
+                    row["complete"] = False
+                    continue
+                if check["app"].get("slug") != "mergify":
+                    continue
+                marker, complete = public_check_marker(check)
+                row["complete"] &= complete
+                if marker is not None:
+                    row["checks"].append(marker)
+        except transport_errors:
+            row["complete"] = False
+        row["observed_at"] = now_iso()
+        result["complete"] &= row["complete"]
+    return result
 
 
 # --- Scenario ---------------------------------------------------------------------------
@@ -571,13 +685,17 @@ class Run:
                     return st[k] == "open" and (queued if what == "queued" else entered and left and not queued)
                 if all(matches(k) for k in keys):
                     numbers = {self.prs[k]["number"] for k in keys}
-                    self.checkpoints.append({"kind": what, "at": now_iso(), "prs": keys,
+                    checkpoint = {"kind": what, "at": now_iso(), "prs": keys,
                         "events": [{"pull_request": e["pull_request"], "type": e["type"],
                                     "received_at": e.get("received_at"),
                                     "metadata": {"dequeue_code": (e.get("metadata") or {}).get("dequeue_code")}}
                                    for e in events if e.get("pull_request") in numbers
                                    and "queue" in e["type"] and (e["type"].endswith("enter")
-                                                                 or e["type"].endswith("leave"))]})
+                                                                 or e["type"].endswith("leave"))]}
+                    if getattr(self, "repo", None) == "queue-lab":
+                        checkpoint["observed_mergify_checks"] = observe_mergify_check_markers(
+                            self.actors["human"], self.r, sorted(numbers))
+                    self.checkpoints.append(checkpoint)
                     log(f"{what.capitalize()} checkpoint: " + ", ".join(keys))
                     return
                 if any(st[k] != "open" for k in keys):
@@ -618,10 +736,6 @@ class Run:
 
 
 # --- Recording -----------------------------------------------------------------------
-
-CHECK_CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out",
-                     "action_required", "stale", "startup_failure"}
-
 
 def public_record_summary(summary):
     """Print only structured facts; upstream text stays in the private local summary."""
@@ -671,6 +785,18 @@ def public_queue_timing(trace):
             results.append({"id": check_id, "completed_at": at, "conclusion": conclusion})
         return results
 
+    def check_markers(checks, app):
+        nonlocal complete
+        results = []
+        for check in checks:
+            if check.get("app") != app:
+                continue
+            marker, valid = public_check_marker(check)
+            complete &= valid
+            if marker is not None:
+                results.append(marker)
+        return results
+
     prs = trace["prs"].values()
     by_number = {str(pr["number"]): pr["number"] for pr in prs}
     numbers = set(by_number.values())
@@ -692,7 +818,7 @@ def public_queue_timing(trace):
               if event.get("pull_request") in numbers and event["type"] in event_kinds]
     members = [{"number": pr["number"],
                 "merged_at": timestamp(pr["merged_at"], optional=not pr.get("merged", False)),
-                "mergify_checks": completions(pr["checks"], "mergify")}
+                "mergify_checks": check_markers(pr["checks"], "mergify")}
                for pr in prs]
     return {"complete": complete, "drafts": drafts, "queue_events": events, "pull_requests": members}
 
@@ -970,7 +1096,8 @@ def slim_event(e):
 
 def slim_check(x):
     return {"id": x.get("id"), "name": x["name"], "status": x["status"], "conclusion": x["conclusion"],
-            "app": (x.get("app") or {}).get("slug"), "started_at": x["started_at"], "completed_at": x["completed_at"]}
+            "app": (x.get("app") or {}).get("slug"), "started_at": x["started_at"], "completed_at": x["completed_at"],
+            "recognized_dequeue_codes": exact_dequeue_codes(x)}
 
 
 # --- Commands ----------------------------------------------------------------------------
