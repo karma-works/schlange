@@ -351,6 +351,13 @@ log's receipt times for queue entries and exits. Draft title references are hint
 scenario PR numbers. Missing activity logs or malformed required observations set `complete`
 to `false`. Receipt times may lag the action. This artifact does not affect baseline comparison.
 
+Shadow runs on `queue-lab` also publish `reference-activity.json`. The export records Mergify
+queue entries, exits, and merges for the scenario PRs. It binds those events to the Actions
+run, attempt, commit, and scenario time window. The query ends at scenario completion so
+cleanup events stay outside the window. A failed, truncated, or ambiguous read produces
+`complete: false` and an empty event list. The existing outcome and shadow verifier use
+their own evidence.
+
 The shadow report stores queue-entry, batch and dequeue occurrences as append-only events and
 compares entry counts and ordered dequeue-code histories. The independent verifier therefore
 accepts an S18-style dequeue, requeue and later landing only when those histories match its
