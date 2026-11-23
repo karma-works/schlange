@@ -15,6 +15,24 @@ use schlange_github_fake::{CiOn, CiRule, Tester};
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
 const BOT: &str = "arztagent-bot";
 
+const CHECK_FAILURE_QUEUE: &str = r##"
+queue_rules:
+  - name: default
+    batch_size: 1
+    queue_conditions:
+      - base = main
+      - "#check-failure = 0"
+    merge_conditions:
+      - "#check-failure = 0"
+      - check-success = ci-ok
+pull_request_rules:
+  - name: queue test pull requests
+    conditions:
+      - author = arztagent-bot
+    actions:
+      queue:
+"##;
+
 fn arztagent_ci(t: Tester) -> Tester {
     t.ci(CiRule::success(
         "Risk class and data protection",
@@ -408,6 +426,129 @@ fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
     assert_eq!(row["queue_entries"]["mergify"], 0);
     assert_eq!(row["dequeue_reasons"]["schlange"], serde_json::json!([]));
     assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn shadow_queue_conditions_ignore_the_competing_queues_cancelled_check() {
+    let mut t = Tester::new(CHECK_FAILURE_QUEUE)
+        .ci(CiRule::success("ci-ok", CiOn::Both))
+        .shadow()
+        .persistent()
+        .start();
+    let own = green_pr(&t, "backend/own.py", "own = 1\n");
+    let unknown = green_pr(&t, "backend/unknown.py", "unknown = 1\n");
+    let competing = green_pr(&t, "backend/competing.py", "competing = 1\n");
+    for n in [own, unknown, competing] {
+        t.pr(n).wait_queued();
+    }
+
+    // A cancellation from an ordinary CI app is part of the counterfactual input and must
+    // still make the exact fixture-style queue condition false.
+    t.gh.report_check_as(
+        own,
+        "cancelled ordinary CI",
+        Some("cancelled"),
+        "github-actions",
+    );
+    t.wait_until("ordinary cancellation dequeues", |t| {
+        t.dequeue_code(own).as_deref() == Some("PR_DEQUEUED")
+    });
+    let own_decision = t
+        .decisions()
+        .into_iter()
+        .find(|d| d.contains(&format!(r#""type":"dequeue","number":{own}"#)))
+        .expect("ordinary cancellation has a dequeue decision");
+    assert!(
+        own_decision.contains("queue_conditions no longer hold (condition 2 is false)"),
+        "{own_decision}"
+    );
+
+    // A legacy commit status has no verified app slug and must not be projected out either.
+    t.gh.report_status(unknown, "unknown publisher", "failure");
+    t.wait_until("unknown publisher failure dequeues", |t| {
+        t.dequeue_code(unknown).as_deref() == Some("PR_DEQUEUED")
+    });
+
+    // The configured competing queue would not exist in Schlange's counterfactual. Its own
+    // cancelled status must remain observer evidence, not an input that dequeues the PR.
+    t.gh.mergify_check(competing, "cancelled competing queue", Some("cancelled"));
+    reconcile(&t);
+    let status = t.status().expect("fresh shadow worker state");
+    assert!(
+        status.state["queued"].get(competing.to_string()).is_some(),
+        "configured Mergify cancellation contaminated the core: decisions={:?}",
+        t.decisions()
+    );
+    assert_eq!(t.dequeue_code(competing), None);
+
+    // Projection changes only the counterfactual input. The raw observer still records the
+    // configured app's structured queue membership and recognized dequeue output durably.
+    t.gh.mergify_queue(competing);
+    let _draft = t.gh.mergify_embark(&[competing]);
+    t.settle();
+    t.gh.mergify_dequeue(competing, "CHECKS_FAILED");
+    reconcile(&t);
+    let observed = report(&t);
+    let row = observed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == competing)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["CHECKS_FAILED"]),
+        "{observed:#}"
+    );
+    t.stop_service();
+    t.start_service();
+    reconcile(&t);
+    let restarted = report(&t);
+    let row = restarted["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == competing)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["CHECKS_FAILED"]),
+        "{restarted:#}"
+    );
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_virtual_draft_does_not_borrow_the_reference_queues_own_checks() {
+    let mut t = Tester::new(CHECK_FAILURE_QUEUE)
+        .ci(CiRule::success("ci-ok", CiOn::Both))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/virtual.py", "virtual = 1\n");
+    t.pr(n).wait_queued();
+
+    // Let the matching draft and all its checks first appear while the observer is stopped.
+    // Restart reconciliation must project the configured app's cancellation both from the
+    // full snapshot and from a source fetched separately for the virtual draft.
+    t.stop_service();
+    let draft = t.gh.mergify_embark(&[n]);
+    t.gh.mergify_check(draft, "cancelled reference bookkeeping", Some("cancelled"));
+    t.start_service();
+    reconcile(&t);
+    t.wait_until(
+        "Schlange would land from the projected virtual draft",
+        |t| {
+            t.decisions().iter().any(|decision| {
+                decision.contains(r#""type":"land""#)
+                    && decision.contains(&format!(r#""number":{n}"#))
+            })
+        },
+    );
+    assert_eq!(t.dequeue_code(n), None);
     assert_no_writes(&t);
     t.shutdown();
 }

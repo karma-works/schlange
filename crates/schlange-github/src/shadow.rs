@@ -321,6 +321,14 @@ fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
 }
 
 impl Shadow {
+    /// Removes evidence produced by the reference queue from the counterfactual engine view.
+    /// The app slug on `CheckRun` was verified by the GitHub adapter; unknown and other-app
+    /// checks remain inputs. Raw API reads in `observe` are deliberately unaffected.
+    fn project_reference_checks(&self, pr: &mut PullRequest) {
+        pr.checks
+            .retain(|check| check.app.as_deref() != Some(self.cfg.mergify_app.as_str()));
+    }
+
     pub fn new(cfg: ShadowConfig, repo: &str, store: Option<Store>) -> Self {
         let facts_result = store.as_ref().map(|s| s.shadow_facts(repo));
         let events_result = store.as_ref().map(|s| s.shadow_events(repo));
@@ -854,6 +862,9 @@ impl Shadow {
             }
             self.note_other(p, now);
         }
+        for p in &mut pull_requests {
+            self.project_reference_checks(p);
+        }
         let ids: Vec<u64> = self.cars.keys().copied().collect();
         for id in ids {
             let mut car = self.cars[&id].clone();
@@ -889,7 +900,10 @@ impl Shadow {
                     .join(", ")
             );
             pr.head_tree = Some(car.tree.clone());
-            if let Some(src) = source {
+            if let Some(mut src) = source {
+                // A partial refresh may fetch the source outside `pull_requests`; apply the
+                // same projection before borrowing its checks for the virtual draft.
+                self.project_reference_checks(&mut src);
                 pr.checks = src
                     .checks
                     .iter()

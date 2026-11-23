@@ -12,6 +12,13 @@ configuration, and makes every decision it would make as the queue: queue, batch
 dequeue. It sends none of them to GitHub. Instead it watches what the active queue does and
 stores, per pull request, whether the two agree. `schlange shadow report` shows the result.
 
+The counterfactual engine excludes check runs whose verified app slug is the configured
+reference queue app. Those checks remain raw observer evidence, but cannot make Schlange enter
+or leave its simulated queue; checks from GitHub Actions, unknown publishers, and other apps
+remain normal condition inputs. A configuration that intentionally depends on a check produced
+by the reference queue needs a separate comparison setup because removing that queue also
+removes that check.
+
 Three things keep it from writing:
 
 1. **Permissions.** The GitHub App has read access only. GitHub refuses any write, whatever
