@@ -642,6 +642,108 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual((org, repo), ('schlange-sandbox', 'queue-lab'))
             self.assertTrue(prefix.startswith('sbx/s99-queue-lab-'))
 
+    def test_shadow_snapshot_is_taken_before_scenario_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / 'scenario.json'
+            scenario.write_text(json.dumps({'id': 'S99', 'title': 'test', 'steps': []}))
+            args = unittest.mock.Mock(scenario=str(scenario), no_wait=True,
+                                      org='schlange-sandbox', repo='queue-lab', keep=False,
+                                      baseline=None)
+            order = []
+            with patch.object(driver, 'RUNS', Path(directory)), patch.object(driver, 'Run'), \
+                 patch.object(driver, 'record', side_effect=lambda _: order.append('record')), \
+                 patch.object(driver, 'snapshot_shadow_report',
+                              side_effect=lambda _: order.append('snapshot')), \
+                 patch.object(driver, 'cleanup', side_effect=lambda *_: order.append('cleanup')), \
+                 patch.object(driver, 'write_outcome', side_effect=lambda _: order.append('outcome')), \
+                 patch.object(driver, 'write_reference_activity'):
+                driver.cmd_run(args)
+            self.assertEqual(order, ['record', 'snapshot', 'cleanup', 'outcome'])
+
+    def test_shadow_snapshot_binds_selected_prs_and_fails_atomically(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab',
+                 'run_id': 's03-queue-lab-test', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 41}, 'b': {'number': 42}}}
+        rows = [{'number': 41, 'verdict': 'agree'}, {'number': 42, 'verdict': 'agree'},
+                {'number': 3, 'verdict': 'agree'}]
+        report = {'repository': 'schlange-sandbox/queue-lab', 'history_incomplete': False,
+                  'draft_observer': {}, 'pull_requests': rows}
+        client = unittest.mock.Mock()
+        client.call.return_value = report
+        env = {'GITHUB_ACTIONS': 'true', 'SANDBOX_SHADOW_SNAPSHOT': '1',
+               'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
+               'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'run.json').write_text(json.dumps(state))
+            with patch.object(driver, 'schlange_client', return_value=(client, 'http://127.0.0.1:1')), \
+                 patch.object(driver, 'now_iso', return_value='2026-01-01T00:10:01Z'), \
+                 patch.dict(driver.os.environ, env, clear=True):
+                driver.snapshot_shadow_report(path)
+            snapshot = json.loads((path / 'shadow-report.json').read_text())
+            self.assertTrue(snapshot['complete'], snapshot)
+            self.assertFalse((path / 'shadow-report.json.tmp').exists())
+            self.assertEqual(snapshot['selected_pull_requests'], [41, 42])
+            self.assertEqual(snapshot['scenario_run_id'], state['run_id'])
+            self.assertEqual(snapshot['scenario_finished_at'], state['finished'])
+            self.assertEqual([row['number'] for row in snapshot['report']['pull_requests']], [41, 42])
+            self.assertNotIn(3, snapshot['selected_pull_requests'])
+            client.call.assert_called_once_with(
+                'GET', 'http://127.0.0.1:1/repos/schlange-sandbox/queue-lab/shadow/report',
+                retry=False)
+
+            client.call.return_value = {**report, 'pull_requests': rows[:1]}
+            with patch.object(driver, 'schlange_client', return_value=(client, 'http://127.0.0.1:1')), \
+                 patch.object(driver, 'now_iso', return_value='2026-01-01T00:10:02Z'), \
+                 patch.object(driver.time, 'sleep'), patch.dict(driver.os.environ, env, clear=True):
+                driver.snapshot_shadow_report(path)
+            incomplete = json.loads((path / 'shadow-report.json').read_text())
+            self.assertFalse(incomplete['complete'])
+            self.assertEqual(incomplete['incomplete_reason'], 'selected_prs_missing')
+            self.assertNotIn('report', incomplete)
+
+    def test_shadow_snapshot_retries_pending_and_requires_repository_markers(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab',
+                 'run_id': 's03-queue-lab-test', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 41}}}
+        ready = {'repository': 'schlange-sandbox/queue-lab', 'history_incomplete': False,
+                 'draft_observer': {},
+                 'pull_requests': [{'number': 41, 'verdict': 'agree'}]}
+        pending = {**ready, 'pull_requests': [{'number': 41, 'verdict': 'pending'}]}
+        env = {'GITHUB_ACTIONS': 'true', 'SANDBOX_SHADOW_SNAPSHOT': '1',
+               'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
+               'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'run.json').write_text(json.dumps(state))
+            client = unittest.mock.Mock()
+            client.call.side_effect = [pending, ready]
+            with patch.object(driver, 'schlange_client', return_value=(client, 'http://127.0.0.1:1')), \
+                 patch.object(driver, 'now_iso', side_effect=[
+                     '2026-01-01T00:10:01Z', '2026-01-01T00:10:02Z']), \
+                 patch.object(driver.time, 'sleep'), patch.dict(driver.os.environ, env, clear=True):
+                driver.snapshot_shadow_report(path)
+            snapshot = json.loads((path / 'shadow-report.json').read_text())
+            self.assertTrue(snapshot['complete'], snapshot)
+            self.assertEqual(snapshot['captured_at'], '2026-01-01T00:10:02Z')
+            self.assertEqual(client.call.call_count, 2)
+
+            for field in ('history_incomplete', 'draft_observer'):
+                malformed = dict(ready)
+                del malformed[field]
+                client.reset_mock()
+                client.call.side_effect = None
+                client.call.return_value = malformed
+                with patch.object(driver, 'schlange_client',
+                                  return_value=(client, 'http://127.0.0.1:1')), \
+                     patch.object(driver, 'now_iso', return_value='2026-01-01T00:10:03Z'), \
+                     patch.dict(driver.os.environ, env, clear=True):
+                    driver.snapshot_shadow_report(path)
+                snapshot = json.loads((path / 'shadow-report.json').read_text())
+                self.assertFalse(snapshot['complete'], snapshot)
+                self.assertEqual(snapshot['incomplete_reason'], 'report_invalid')
+                self.assertNotIn('report', snapshot)
+
     def test_incomplete_event_log_fails_closed(self):
         class EmptyClient:
             def call(self, *_):

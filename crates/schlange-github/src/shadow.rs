@@ -1462,7 +1462,7 @@ pub struct ShadowReport {
     pub repository: String,
     #[serde(default)]
     pub draft_observer: DraftObserverDiagnostics,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub history_incomplete: bool,
     pub agreements: usize,
     pub disagreements: usize,
@@ -2758,6 +2758,11 @@ mod tests {
         let report: ShadowReport = serde_json::from_value(old).unwrap();
         assert!(report.draft_observer.structures.is_empty());
         assert!(!report.draft_observer.truncated);
+        assert!(!report.history_incomplete);
+        assert_eq!(
+            serde_json::to_value(report).unwrap()["history_incomplete"],
+            false
+        );
     }
 
     #[test]
