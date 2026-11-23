@@ -117,6 +117,13 @@ jobs:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
         run: python3 -I sandbox/driver/sandbox.py inspect-open --repo "$REPO"
+      - name: Cross-check archived S03 GitHub heads
+        if: ${{ inputs.inspect_only && inputs.repo == 'queue-lab' && inputs.scenarios == 'verify-s03-heads' }}
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/driver/crosscheck_s03_heads.py > "$RUNNER_TEMP/shadow-evidence/s03-head-crosscheck.json"
       - name: Rust toolchain and cache (schlange-e2e)
         if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: rustup show active-toolchain || rustup toolchain install
