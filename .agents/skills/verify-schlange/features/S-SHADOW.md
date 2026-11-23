@@ -34,7 +34,9 @@ compares that with what Mergify did, per pull request.
   sandbox): drafts by `--mergify-login` on `ShadowConfig::mergify_queue_prefix` list their
   pull requests in the title's terminal `(#n, #m)` list or a dedicated embarkment section;
   the title list takes precedence over body sections about PRs ahead. Incidental references in member titles
-  and other body sections are ignored;
+  and other body sections are ignored. A sandbox-observed fallback requires the nonempty,
+  ordered, duplicate-free title `#N` list (excluding the draft itself) to equal both the `#N`
+  labels and `/pull/N` targets on the first reference-bearing body line;
   pull requests merged by that login landed through Mergify (`merged_by`, `merged_at`);
   only confirmed draft membership means queued. Generic `Summary` and rule-evaluation runs
   are never queue evidence. A known literal dequeue code in a concluded run's title or
@@ -46,7 +48,10 @@ compares that with what Mergify did, per pull request.
   lost; replay is deduplicated by draft PR number. The JSON report's `draft_observer` section
   lists only candidate PR numbers at the three structural gates: matching queue prefix,
   matching configured author and parsed membership. It retains no title, body or author
-  identity, and its probe rows never become parity rows. Missing codes are not inferred from prose.
+  identity, and its probe rows never become parity rows. Candidate structures retain only
+  numeric `#N` and `/pull/N` references, body line indexes/counts, and booleans for list/link
+  starts and HTML-comment delimiters, and are retained only for candidates that remain
+  unparsed. Missing codes are not inferred from prose.
 - `compare`: built. Per pull request: queue-entry count, landed, landing order (rank among the pull
   requests both landed; Mergify's merges in one second keep their batch's order), the batch
   it landed in, and the ordered dequeue-code history. The legacy queued boolean and latest
@@ -85,8 +90,17 @@ compares that with what Mergify did, per pull request.
   If neither an occurrence nor its incomplete-history marker can be stored, the worker leaves
   the durable webhook inbox row pending; restart replays it after storage recovers.
 - `acceptance-run`: missing. Two weeks on Arztagent next to the real Mergify (KONZEPT.md,
-  section 11) have not happened; only the fake GitHub's scripted other queue was compared.
-  W-01/W-02 latency is not measured against Mergify yet.
+  section 11) have not happened. Real `schlange-sandbox/queue-lab` runs 45109750499 and
+  45113336435 isolated the queue-draft observer format without retaining Mergify prose;
+  run 45114951923 then confirmed matching queue membership and entry count for S01 (`1/1`).
+  That run remained `inconclusive` for landing: the Actions runner has no webhook ingress and
+  the service recorded 17 reconciliations in total, but its decisive read observed Mergify's
+  merge before Schlange had recorded a pre-merge landing decision. The report therefore does
+  not prove I1 landing parity and correctly refuses to reconstruct a pre-merge read. This is
+  evidence for queue observation, not an acceptance result. The fake GitHub supplies the signed-webhook path
+  and the active sandbox supplies landing evidence; a real webhook-connected shadow deployment
+  and the two-week Arztagent run remain required. W-01/W-02 latency is not measured against
+  Mergify yet.
 
 ## How to get to it (user POV)
 
@@ -113,9 +127,9 @@ Preconditions:
   accepts a terminal parenthesized PR-number list in the title (including the issue's
   concrete `Fix #412 (#500)` example), otherwise its explicit
   `Embarked pull requests:` body section with one leading `#n` or
-  `#n: title` entry per line; it stops at an empty line or another section. Real draft
-  formatting must be confirmed on the sandbox before adding a format adapter. Unrecognized
-  formats produce no membership facts, rather than scraping arbitrary references.
+  `#n: title` entry per line; it stops at an empty line or another section. The sandbox fallback
+  accepts only the matching three-view structure described above. Other formats produce no
+  membership facts, rather than scraping arbitrary references.
 - Check-only queue entry before draft creation remains unobserved until an unambiguous
   real queue-check format is verified. Dequeue outputs containing no known literal code
   likewise remain unobserved; no production equivalence is claimed for these cases.
