@@ -18,13 +18,13 @@
     "action": 18,
     "api": 132,
     "attr": 76,
-    "cli": 44,
+    "cli": 48,
     "cmd": 8,
     "config": 292,
     "default": 152,
     "enum": 188
   },
-  "total": 910,
+  "total": 914,
   "entries": [
     {
       "id": "action:assign",
@@ -1923,6 +1923,22 @@
     },
     {
       "id": "cli:mergify tests quarantines remove",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry off",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry on",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry set",
+      "kind": "cli"
+    },
+    {
+      "id": "cli:mergify tests retry show",
       "kind": "cli"
     },
     {
