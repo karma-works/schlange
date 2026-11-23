@@ -101,6 +101,19 @@ class ShadowEvidenceTests(unittest.TestCase):
         row['queued'] = {'schlange': False, 'mergify': False, 'agree': True}
         self.assertNotEqual(self.check().returncode, 0)
 
+    def test_queue_history_mismatch_reports_structural_draft_counts(self):
+        self.report['draft_observer'] = {
+            'matching_queue_prefix': [80, 81],
+            'matching_configured_author': [80, 81],
+            'structured_membership_parsed': []}
+        self.report['pull_requests'][0]['queue_entries'] = {
+            'schlange': 0, 'mergify': 0, 'agree': True}
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('prefix=2', result.stderr)
+        self.assertIn('author=2', result.stderr)
+        self.assertIn('parsed=0', result.stderr)
+
     def test_shared_dequeue_reason_not_in_recording_does_not_pass(self):
         self.outcome['prs']['a'].update(end='open', queued=False, enter_count=0, dequeue_codes=[])
         self.outcome.update(landed=[], batches=[])

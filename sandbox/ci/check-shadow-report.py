@@ -15,6 +15,21 @@ def verify(report, recordings):
         raise ValueError('repository shadow occurrence history is incomplete')
     if report.get('repository') != 'schlange-sandbox/queue-lab':
         raise ValueError('shadow report is not for the reference sandbox')
+    diagnostics = report.get('draft_observer', {})
+    diagnostic_fields = ('matching_queue_prefix', 'matching_configured_author',
+                         'structured_membership_parsed')
+    if not isinstance(diagnostics, dict):
+        raise ValueError('invalid structural draft observer diagnostics')
+    for field in diagnostic_fields:
+        values = diagnostics.get(field, [])
+        if (not isinstance(values, list)
+                or any(type(number) is not int or number <= 0 for number in values)
+                or len(set(values)) != len(values)):
+            raise ValueError('invalid structural draft observer diagnostics')
+    diagnostic_summary = (
+        f"draft observer prefix={len(diagnostics.get('matching_queue_prefix', []))}, "
+        f"author={len(diagnostics.get('matching_configured_author', []))}, "
+        f"parsed={len(diagnostics.get('structured_membership_parsed', []))}")
     rows = report.get('pull_requests')
     if not isinstance(rows, list):
         raise ValueError('missing shadow comparisons')
@@ -86,7 +101,8 @@ def verify(report, recordings):
             if type(entries) is not int or entries < int(actual['queued']) or len(codes) > entries:
                 raise ValueError(f'PR #{number}: queue entry/dequeue history is not comparable')
             if row.get('queue_entries', {}).get('mergify') != entries:
-                raise ValueError(f'PR #{number}: observer has a different queue-entry history')
+                raise ValueError(f'PR #{number}: observer has a different queue-entry history; '
+                                 f'{diagnostic_summary}')
             if row.get('dequeue_reasons', {}).get('mergify') != codes:
                 raise ValueError(f'PR #{number}: observer has a different dequeue history')
             if (row.get('queued', {}).get('mergify') is not actual['queued']
