@@ -44,8 +44,99 @@ class ShadowEvidenceTests(unittest.TestCase):
         return subprocess.run(['python3', '-I', str(SCRIPT), str(self.root / 'report.json'),
                                str(self.root / 'runs')], capture_output=True, text=True)
 
+    def check_snapshots(self):
+        (self.recording / 'run.json').write_text(json.dumps(self.state))
+        (self.recording / 'outcome.json').write_text(json.dumps(self.outcome))
+        snapshot = {
+            'schema': 1, 'repository': 'schlange-sandbox/queue-lab',
+            'scenario_run_id': self.state['run_id'],
+            'scenario_finished_at': self.state['finished'],
+            'captured_at': '2026-11-03T06:00:01Z',
+            'selected_pull_requests': sorted(pr['number'] for pr in self.state['prs'].values()),
+            'source': {'workflow_run_id': 123, 'workflow_run_attempt': 2,
+                       'workflow_commit': 'a' * 40,
+                       'workflow_repository': 'karma-works/schlange'},
+            'complete': True, 'incomplete_reason': None,
+            'report': {
+                'repository': self.report['repository'],
+                'history_incomplete': self.report.get('history_incomplete', False),
+                'draft_observer': self.report.get('draft_observer', {}),
+                'pull_requests': self.report['pull_requests'],
+            },
+        }
+        allowed = set(snapshot['selected_pull_requests'])
+        snapshot['report']['pull_requests'] = [
+            row for row in self.report['pull_requests'] if row.get('number') in allowed]
+        (self.recording / 'shadow-report.json').write_text(json.dumps(snapshot))
+        env = {**os.environ, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+               'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        return subprocess.run(['python3', '-I', str(SCRIPT), '--snapshots',
+                               str(self.root / 'runs')], capture_output=True, text=True, env=env)
+
     def test_agreement_matches_independent_mergify_recording(self):
         self.assertEqual(self.check().returncode, 0)
+
+    def test_live_mode_requires_bound_pre_cleanup_snapshot(self):
+        self.assertEqual(self.check_snapshots().returncode, 0)
+        snapshot = json.loads((self.recording / 'shadow-report.json').read_text())
+        snapshot['scenario_run_id'] = 'another-run'
+        (self.recording / 'shadow-report.json').write_text(json.dumps(snapshot))
+        result = subprocess.run(
+            ['python3', '-I', str(SCRIPT), '--snapshots', str(self.root / 'runs')],
+            capture_output=True, text=True,
+            env={**os.environ, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+                 'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'})
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_late_global_cleanup_fact_cannot_contaminate_snapshot_mode(self):
+        self.outcome['prs']['a'].update(end='open', queued=False, enter_count=1,
+                                        dequeue_codes=['CHECKS_INTERRUPTED'])
+        self.outcome.update(landed=[], batches=[])
+        row = self.report['pull_requests'][0]
+        row['queued'] = {'schlange': False, 'mergify': False, 'agree': True}
+        row.update(landed={'schlange': False, 'mergify': False, 'agree': True})
+        row.pop('order')
+        row.pop('batch')
+        row['dequeue_reason'] = {
+            'schlange': 'CHECKS_INTERRUPTED', 'mergify': 'CHECKS_INTERRUPTED', 'agree': True}
+        row['dequeue_reasons'] = {
+            'schlange': ['CHECKS_INTERRUPTED'], 'mergify': ['CHECKS_INTERRUPTED'], 'agree': True}
+        self.assertEqual(self.check_snapshots().returncode, 0)
+
+        # A report captured after cleanup has a different cause, but live verification reads
+        # only the scenario-bound file above.
+        late = copy.deepcopy(self.report)
+        late_row = late['pull_requests'][0]
+        late_row['dequeue_reason'] = {
+            'schlange': 'PR_DEQUEUED', 'mergify': 'CHECKS_INTERRUPTED', 'agree': False}
+        late_row['dequeue_reasons'] = {
+            'schlange': ['PR_DEQUEUED'], 'mergify': ['CHECKS_INTERRUPTED'], 'agree': False}
+        late_row['verdict'] = 'disagree'
+        (self.root / 'report.json').write_text(json.dumps(late))
+        env = {**os.environ, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+               'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        result = subprocess.run(['python3', '-I', str(SCRIPT), '--snapshots',
+                                 str(self.root / 'runs')], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_live_mode_refuses_missing_snapshot_without_global_fallback(self):
+        self.check_snapshots()
+        (self.recording / 'shadow-report.json').unlink()
+        (self.root / 'report.json').write_text(json.dumps(self.report))
+        env = {**os.environ, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+               'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        result = subprocess.run(['python3', '-I', str(SCRIPT), '--snapshots',
+                                 str(self.root / 'runs')], capture_output=True, text=True, env=env)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_workflow_gates_on_snapshots_and_keeps_global_report_diagnostic(self):
+        workflow = (SCRIPT.parents[2] / '.github' / 'workflows' / 'sandbox.yml').read_text()
+        self.assertIn("SANDBOX_SHADOW_SNAPSHOT: ${{ inputs.shadow_mode && '1' || '0' }}", workflow)
+        self.assertIn('check-shadow-report.py --snapshots', workflow)
+        self.assertIn('sandbox-runs/*/shadow-report.json', workflow)
+        global_report = workflow.index('shadow-evidence/report.json')
+        snapshots = workflow.index('check-shadow-report.py --snapshots')
+        self.assertLess(global_report, snapshots)
 
     def test_empty_report_cannot_pass(self):
         self.report['pull_requests'] = []
