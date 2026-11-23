@@ -7,18 +7,15 @@ acceptance contract; it does not relax the core, simulated-forge or localgit inv
 
 ## Journeys regex compatibility
 
-The Arztagent source snapshot retains `-check-failure ~= ^(?!verify-arztagent journeys$)`.
-Regex matching considers both the bare check name and `@<app>/<name>` (observed in PR #24).
-A failing GitHub Actions Journeys run therefore blocks entry or dequeues an existing pull
-request: its qualified name still matches that negative lookahead. Preserving this behavior is
-parity with the observed matcher, although it differs from the comment's informational intent.
+Arztagent exempts the informational `verify-arztagent journeys` umbrella and numbered shards
+`(1/4)` through `(4/4)`, under both bare and `@github-actions/`-qualified names. Regex matching
+considers both forms (observed in PR #24); another app, shard `5/4`, a near-miss name, or any
+unrelated red check remains blocking.
 
-The test-only derivative `scenarios/configs/arztagent-journeys-informational.yml` uses
-`^(?!(?:@github-actions/)?verify-arztagent journeys$)` to exempt both forms. Its fake-GitHub test
-checks that this regex is the only configuration difference from the unmodified source
-snapshot; another test explicitly checks the actual source's blocking behavior. The simulation
-also identifies CI as GitHub Actions instead of using unattributed runs. Any production change
-to Arztagent's configuration belongs in the human-authored constitution pull request.
+The golden fixture and `scenarios/configs/arztagent-journeys-informational.yml` have identical
+semantics. The simulation and fake-GitHub test cover the umbrella, a numbered shard, a late red
+shard that must not dequeue, the wrong app, shard `5/4`, and an unrelated red check. The generic
+`p1-check-regex-app.yaml` scenario retains the historical bare-only regression.
 
 ## Base changes before a merge
 

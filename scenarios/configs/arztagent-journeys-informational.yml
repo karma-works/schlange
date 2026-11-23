@@ -1,5 +1,4 @@
-# Test derivative of the Arztagent source snapshot. Only the Journeys exemption differs:
-# match both bare and GitHub Actions-qualified names. No production configuration is edited.
+# Scenario copy of Arztagent's current Journeys semantics. No production configuration is edited.
 
 queue_rules:
   - name: default
@@ -10,7 +9,7 @@ queue_rules:
       - base = main
       - -draft
       - -label = halt
-      - "-check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys$)"
+      - '-check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys(?: \([1-4]/4\))?$)'
       - check-success = ci-ok
       - check-success = Risk class and data protection
       - or:
