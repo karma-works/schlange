@@ -259,6 +259,90 @@ fn pre_queue_base_move_context_is_bound_to_the_open_head_and_base() {
 }
 
 #[test]
+fn a_ready_pull_held_during_a_base_move_gets_the_external_conflict_reason() {
+    let mut dr = Driver::new();
+    dr.rules = Rules::from_yaml(&CONFIG.replace(
+        "      - check-success = quick",
+        "      - check-success = quick\n      - -label = halt",
+    ))
+    .unwrap();
+    let mut pr = PullRequest::new(1, "a", "main", "pr-1", "h1");
+    pr.labels.insert("halt".into());
+    pr.base_tip = Some("b0".into());
+    pr.conflict = Some(false);
+    pr.checks = vec![run("quick", "h1", Some(Conclusion::Success), 1)];
+    dr.snapshot(vec![pr.clone()], &[("main", "b0")]);
+    assert!(!dr.state.queued.contains_key(&1));
+
+    pr.base_tip = Some("b1".into());
+    pr.conflict = None;
+    dr.snapshot(vec![pr.clone()], &[("main", "b1")]);
+    assert!(!dr.state.queued.contains_key(&1));
+
+    pr.labels.remove("halt");
+    let decisions = dr.snapshot(vec![pr.clone()], &[("main", "b1")]);
+    let car = decisions
+        .iter()
+        .find_map(|decision| match decision {
+            Decision::BuildCar { car, .. } => Some(*car),
+            _ => None,
+        })
+        .expect("a still-unknown conflict permits a speculative build");
+    assert!(dr.state.queued.contains_key(&1));
+    let decisions = dr.feed(Event::CarConflict {
+        car,
+        number: 1,
+        with_base: true,
+        with: vec![],
+    });
+    assert!(
+        decisions.iter().any(|decision| matches!(
+            decision,
+            Decision::Dequeue { reason, .. } if reason.code == Some(code::PR_DEQUEUED)
+        )),
+        "{decisions:?}"
+    );
+    assert_eq!(
+        dr.state.blocked_heads.get(&1).map(String::as_str),
+        Some("h1")
+    );
+    dr.snapshot(vec![pr], &[("main", "b1")]);
+    assert!(!dr.state.queued.contains_key(&1));
+}
+
+#[test]
+fn ready_held_heads_keep_the_original_base_across_moves_until_it_is_restored() {
+    let mut dr = Driver::new();
+    let mut became_conflicting = PullRequest::new(1, "a", "main", "pr-1", "h1");
+    became_conflicting.base_tip = Some("b0".into());
+    became_conflicting.conflict = Some(false);
+    let mut already_conflicting = PullRequest::new(2, "a", "main", "pr-2", "h2");
+    already_conflicting.base_tip = Some("b0".into());
+    already_conflicting.conflict = Some(true);
+    dr.snapshot(
+        vec![became_conflicting.clone(), already_conflicting.clone()],
+        &[("main", "b0")],
+    );
+    for tip in ["b1", "b2"] {
+        became_conflicting.base_tip = Some(tip.into());
+        became_conflicting.conflict = Some(true);
+        already_conflicting.base_tip = Some(tip.into());
+        dr.snapshot(
+            vec![became_conflicting.clone(), already_conflicting.clone()],
+            &[("main", tip)],
+        );
+        let context = &dr.state.base_moved_heads[&1];
+        assert_eq!(context.original_tip, "b0");
+        assert_eq!(context.observed_tip, tip);
+        assert!(!dr.state.base_moved_heads.contains_key(&2));
+    }
+    became_conflicting.base_tip = Some("b0".into());
+    became_conflicting.conflict = Some(false);
+    dr.snapshot(vec![became_conflicting], &[("main", "b0")]);
+    assert!(!dr.state.base_moved_heads.contains_key(&1));
+}
+
+#[test]
 fn a_stale_pre_queue_base_read_does_not_leave_move_context() {
     let mut dr = Driver::new();
     let mut pr = PullRequest::new(1, "a", "main", "pr-1", "h1");
