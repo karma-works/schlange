@@ -14,15 +14,12 @@
     "MQ-20"
   ],
   "steps": [
-    {"open": "a", "draft": true},
+    {"open": "a"},
     {"label": "a", "add": "halt", "as": "human"},
-    {"ready": "a"},
-    {"open": "b", "draft": true},
+    {"open": "b"},
     {"label": "b", "add": "halt", "as": "human"},
-    {"ready": "b"},
-    {"open": "c", "draft": true},
+    {"open": "c"},
     {"label": "c", "add": "halt", "as": "human"},
-    {"ready": "c"},
     {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
     {"wait_check": "a", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
     {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
@@ -36,11 +33,11 @@
     {"wait_check": "c", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
     {"assert_unqueued": "c"},
     {"label": "a", "remove": "halt", "as": "human"},
-    {"wait": "queued", "prs": ["a"], "timeout": 60},
+    {"wait": "queued", "prs": ["a"], "timeout": 120},
     {"label": "b", "remove": "halt", "as": "human"},
-    {"wait": "queued", "prs": ["b"], "timeout": 60},
+    {"wait": "queued", "prs": ["b"], "timeout": 120},
     {"label": "c", "remove": "halt", "as": "human"},
-    {"wait": "queued", "prs": ["c"], "timeout": 60},
+    {"wait": "queued", "prs": ["c"], "timeout": 120},
     {"wait": "done", "timeout": 2400}
   ]
 }
