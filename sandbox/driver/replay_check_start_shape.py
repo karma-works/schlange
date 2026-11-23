@@ -105,4 +105,4 @@ if __name__ == "__main__":
     probe = Probe()
     result = driver.capture_reference_check_starts(state, probe, driver.now_iso())
     print(json.dumps({"archived_run": 45150473573, "validation": result["incomplete_reason"],
-                      "rows": probe.rows[:150]}, indent=2))
+                      "events_accepted": len(result["events"]), "rows": probe.rows[:150]}, indent=2))
