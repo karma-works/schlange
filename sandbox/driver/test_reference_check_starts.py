@@ -29,9 +29,11 @@ class ReferenceCheckStartsTests(unittest.TestCase):
             'type': 'action.queue.checks_start', 'received_at': '2026-01-01T00:01:00Z',
             'metadata': {
                 'session_id': '33333333-3333-4333-8333-333333333333',
-                'pull_request_numbers': [8, 7], 'batch_id': self.batch_id,
-                'run_id': self.run_id, 'in_place': False, 'parent_batch_ids': [],
-                'speculative_check_pull_request': {'number': 10, 'head_sha': 'b' * 40},
+                'batch_id': self.batch_id, 'run_id': self.run_id, 'parent_batch_ids': [],
+                'speculative_check_pull_request': {
+                    'number': 10, 'head_sha': 'b' * 40, 'in_place': False,
+                    'pull_request_numbers': [8, 7],
+                },
                 'start_reason': 'private prose',
             },
         }
@@ -69,7 +71,7 @@ class ReferenceCheckStartsTests(unittest.TestCase):
         metadata.pop('run_id')
         metadata['parent_batch_ids'] = None
         metadata['batch_id'] = None
-        metadata['speculative_check_pull_request'] = {'number': None, 'head_sha': None}
+        metadata['speculative_check_pull_request'].update(number=None, head_sha=None)
         result = self.capture([self.event])
         self.assertFalse(result['complete'], result)
         self.assertEqual(result['incomplete_reason'], 'check_identity_missing')
@@ -78,7 +80,7 @@ class ReferenceCheckStartsTests(unittest.TestCase):
     def test_rejects_unselected_or_inconsistent_members(self):
         for invalid_members in ([7, 99], [8], [7, 7], [True, 7], []):
             with self.subTest(invalid_members=invalid_members):
-                self.event['metadata']['pull_request_numbers'] = invalid_members
+                self.event['metadata']['speculative_check_pull_request']['pull_request_numbers'] = invalid_members
                 result = self.capture([self.event])
                 self.assertFalse(result['complete'])
                 self.assertEqual(result['incomplete_reason'], 'event_invalid')
@@ -92,7 +94,7 @@ class ReferenceCheckStartsTests(unittest.TestCase):
         self.assertEqual([item['run_id'] for item in result['events']], [self.run_id, self.run_id])
 
     def test_rejects_conflicting_heads_for_one_run(self):
-        other_head = {'number': 10, 'head_sha': 'c' * 40}
+        other_head = {**self.event['metadata']['speculative_check_pull_request'], 'head_sha': 'c' * 40}
         second = {**self.event, 'id': 2, 'pull_request': 8,
                   'metadata': {**self.event['metadata'], 'speculative_check_pull_request': other_head}}
         result = self.capture([self.event, second])
@@ -101,10 +103,8 @@ class ReferenceCheckStartsTests(unittest.TestCase):
         self.assertEqual(result['events'], [])
 
     def test_distinguishes_in_place_pr_checks_from_draft_checks(self):
-        metadata = self.event['metadata']
-        metadata['in_place'] = True
-        metadata['pull_request_numbers'] = [7]
-        metadata['speculative_check_pull_request']['number'] = 7
+        check = self.event['metadata']['speculative_check_pull_request']
+        check.update(in_place=True, pull_request_numbers=[7], number=7)
         result = self.capture([self.event])
         self.assertTrue(result['complete'], result)
         self.assertTrue(result['events'][0]['in_place'])
