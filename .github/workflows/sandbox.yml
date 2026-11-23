@@ -145,6 +145,7 @@ jobs:
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
+          SANDBOX_REFERENCE_ACTIVITY: ${{ inputs.shadow_mode && '1' || '0' }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
           SCENARIOS: ${{ inputs.scenarios || 'all' }}
         # Several names become separate arguments.
@@ -199,6 +200,7 @@ jobs:
           path: |
             ${{ runner.temp }}/sandbox-runs/*/outcome.json
             ${{ runner.temp }}/sandbox-runs/*/queue-timing.json
+            ${{ runner.temp }}/sandbox-runs/*/reference-activity.json
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
             ${{ runner.temp }}/shadow-evidence/*.json
