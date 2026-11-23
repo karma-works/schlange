@@ -65,6 +65,8 @@ for s in "$@"; do
       result="recorded (no baseline)"
     elif grep -q '^KNOWN DEVIATION (documented)' "$result_log"; then
       result="known deviation (documented)"
+    elif grep -q '^SAME (accepted reference variant:' "$result_log"; then
+      result="same as accepted reference variant"
     else
       result="same as baseline"
     fi

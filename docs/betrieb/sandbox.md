@@ -220,6 +220,11 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   Mergify texts. A reviewed Mergify run becomes a baseline by copying its `outcome.json`
   there. After that, every run compares: on `queue-lab`, whether Mergify has changed; on
   `schlange-e2e` and `schlange-e2e-isolated`, whether Schlange behaves like Mergify (`sandbox.py compare`).
+  When an asynchronous GitHub fact has produced multiple reviewed Mergify outcomes, the baseline
+  may name complete `accepted_variants` and their source runs. A variant replaces the entire
+  outcome atomically; combinations that no reference run observed still fail. Accepted variants
+  cannot be combined with field-level `known_deviations`, and every source run is a numeric GitHub
+  Actions run ID, so review can trace each complete outcome back to its evidence.
 - **Schedule:** Sundays, all scenarios on `queue-lab` (about 3–4 hours; free in a public
   repo).
 - **Result:** table in the job summary. Artifacts retained for 90 days contain only `outcome.json`,
@@ -305,7 +310,10 @@ Review `run.json` for `timed_out: false` and the completed checkpoints before ac
 scenario's expected outcome. Run 45009661581 supplied reviewed, non-timeout S16, S17 and S18
 recordings: S16/S17 never entered the queue, while S18 was manually dequeued, requeued by an
 allowed sender and merged. Its S11 attempt timed out and remains provisional. Active and shadow
-runs still have to prove compatibility.
+runs still have to prove compatibility. Active run 45080482710 matched S16, S17 and S18; S13
+matched the reviewed "mergeability settled before queue entry" variant. The run initially failed
+only because the comparator could represent one reference outcome but not this asynchronous race;
+`accepted_variants` now keeps both reviewed S13 outcomes as indivisible records.
 
 With reviewed baselines committed, run the same scenarios on `schlange-e2e-isolated` after its
 idle fixture refresh, then rehearse shadow mode on the reference sandbox:

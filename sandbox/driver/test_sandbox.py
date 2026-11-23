@@ -279,6 +279,80 @@ class CheckpointTests(unittest.TestCase):
                                           'landed': [], 'batches': []}))
             self.assertEqual(driver.compare_outcomes(baseline, actual, strict_observation=True), 1)
 
+    def test_reviewed_reference_variants_are_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / 'baseline.json'
+            actual = Path(directory) / 'actual.json'
+            queued = {'end': 'open', 'queued': True, 'enter_count': 1,
+                      'dequeue_codes': ['PR_DEQUEUED']}
+            unqueued = {'end': 'open', 'queued': False, 'enter_count': 0,
+                        'dequeue_codes': []}
+            baseline.write_text(json.dumps({
+                'prs': {'a': queued}, 'landed': [], 'batches': [],
+                'accepted_variants': [{
+                    'name': 'mergeability settled before queue entry',
+                    'why': 'GitHub computes mergeability asynchronously',
+                    'source_runs': ['45070515103'],
+                    'prs': {'a': unqueued}, 'landed': [], 'batches': [],
+                }],
+            }))
+            actual.write_text(json.dumps({'repo': 'schlange-e2e', 'prs': {'a': unqueued},
+                                          'landed': [], 'batches': []}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 0)
+
+            impossible = {**unqueued, 'enter_count': 1}
+            actual.write_text(json.dumps({'repo': 'schlange-e2e', 'prs': {'a': impossible},
+                                          'landed': [], 'batches': []}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 1)
+
+            broken = json.loads(baseline.read_text())
+            broken['accepted_variants'][0]['source_runs'] = []
+            baseline.write_text(json.dumps(broken))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 1)
+
+            broken = json.loads(baseline.read_text())
+            broken['accepted_variants'][0]['source_runs'] = ['not-a-run']
+            baseline.write_text(json.dumps(broken))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 1)
+
+    def test_reference_variants_cannot_compose_with_known_deviations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / 'baseline.json'
+            actual = Path(directory) / 'actual.json'
+            queued = {'end': 'open', 'queued': True, 'enter_count': 1, 'dequeue_codes': []}
+            unqueued = {'end': 'open', 'queued': False, 'enter_count': 0, 'dequeue_codes': []}
+            baseline.write_text(json.dumps({
+                'prs': {'a': queued}, 'landed': [], 'batches': [],
+                'known_deviations': [{'pr': 'a', 'field': 'enter_count', 'observed': 1,
+                                      'why': 'would create an unobserved mixture'}],
+                'accepted_variants': [{
+                    'name': 'reviewed alternative', 'why': 'observed separately',
+                    'source_runs': ['45070515103'], 'prs': {'a': unqueued},
+                    'landed': [], 'batches': [],
+                }],
+            }))
+            actual.write_text(json.dumps({'repo': 'queue-lab',
+                                          'prs': {'a': {**unqueued, 'enter_count': 1}},
+                                          'landed': [], 'batches': []}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 1)
+
+    def test_direct_compare_rejects_incomplete_reference_variant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / 'baseline.json'
+            actual = Path(directory) / 'actual.json'
+            pr = {'end': 'open', 'queued': False, 'enter_count': 0, 'dequeue_codes': []}
+            baseline.write_text(json.dumps({
+                'prs': {'a': pr}, 'landed': [], 'batches': [],
+                'accepted_variants': [{
+                    'name': 'incomplete', 'why': 'must fail closed',
+                    'source_runs': ['45070515103'],
+                    'prs': {'a': {'end': 'open'}}, 'landed': [], 'batches': [],
+                }],
+            }))
+            actual.write_text(json.dumps({'repo': 'queue-lab', 'prs': {'a': pr},
+                                          'landed': [], 'batches': []}))
+            self.assertEqual(driver.compare_outcomes(baseline, actual), 1)
+
     def test_strict_batch_comparison_rejects_missing_batch_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             baseline = Path(directory) / 'baseline.json'
