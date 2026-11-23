@@ -17,6 +17,7 @@ use schlange_github_fake::{
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
 const AGENT: &str = "arztagent-bot";
 const HUMAN: &str = "karma-works";
+const QUEUE_PREFIX: &str = "mergify/merge-queue/";
 
 fn arztagent() -> Tester {
     Tester::new(ARZTAGENT)
@@ -352,6 +353,15 @@ fn a_push_racing_a_command_webhook_is_not_attributed_to_the_human() {
     t.shutdown();
 }
 
+fn wait_for_recovered_command_cleanup(t: &Running) {
+    // GitHub can expose the merge while the worker is still closing the draft and deleting
+    // its branch. With dropped webhooks, ingress idleness does not establish that I3 applies.
+    t.wait_until("the queue draft and branch are gone", |t| {
+        t.gh.open_queue_drafts().is_empty()
+            && !t.gh.branches().iter().any(|b| b.starts_with(QUEUE_PREFIX))
+    });
+}
+
 /// A recovered command on an unchanged head still works (recovery is not switched off).
 #[test]
 fn a_lost_command_on_an_unchanged_head_is_recovered() {
@@ -372,6 +382,7 @@ fn a_lost_command_on_an_unchanged_head_is_recovered() {
         run_queue(&t, 1);
     }
     t.pr(pr).wait_merged();
+    wait_for_recovered_command_cleanup(&t);
     t.assert_invariants();
     t.shutdown();
 }
@@ -403,6 +414,7 @@ fn a_lost_command_behind_many_newer_comments_is_recovered() {
         run_queue(&t, 1);
     }
     t.pr(pr).wait_merged();
+    wait_for_recovered_command_cleanup(&t);
     t.assert_invariants();
     t.shutdown();
 }
