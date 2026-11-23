@@ -105,7 +105,14 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.report['draft_observer'] = {
             'matching_queue_prefix': [80, 81],
             'matching_configured_author': [80, 81],
-            'structured_membership_parsed': []}
+            'structured_membership_parsed': [],
+            'structures': [{
+                'number': number,
+                'title_hash_references': [],
+                'title_pull_path_references': [],
+                'body_line_count': 0,
+                'body_reference_lines': [],
+            } for number in (80, 81)]}
         self.report['pull_requests'][0]['queue_entries'] = {
             'schlange': 0, 'mergify': 0, 'agree': True}
         result = self.check()
@@ -156,9 +163,16 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.report['draft_observer'] = copy.deepcopy(valid)
         self.assertEqual(self.check().returncode, 0)
 
+        parsed = copy.deepcopy(valid)
+        parsed['structured_membership_parsed'] = [80]
+        parsed['structures'] = []
+        self.report['draft_observer'] = parsed
+        self.assertEqual(self.check().returncode, 0)
+
         mutations = [
             lambda d: d['structures'][0].update(private='private prose'),
             lambda d: d['structures'][0].update(number=81),
+            lambda d: d.update(structured_membership_parsed=[80]),
             lambda d: d['structures'][0].update(body_line_count=513),
             lambda d: d['structures'][0].update(title_hash_references=list(range(1, 66))),
             lambda d: d['structures'][0].update(title_hash_references=[2, 1]),

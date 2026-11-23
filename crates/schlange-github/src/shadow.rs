@@ -189,7 +189,51 @@ fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
             return unique;
         }
     }
-    embarked(body, own)
+    let embarked = embarked(body, own);
+    if !embarked.is_empty() {
+        return embarked;
+    }
+    matching_reference_members(title, body, own).unwrap_or_default()
+}
+
+fn ordered_structural_numbers(text: &str, marker: &str, own: Option<u64>) -> Option<Vec<u64>> {
+    let mut numbers = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once(marker) {
+        let len = after.bytes().take_while(u8::is_ascii_digit).count();
+        if len > 0
+            && let Ok(number) = after[..len].parse::<u64>()
+            && number != 0
+            && Some(number) != own
+        {
+            if !seen.insert(number) || numbers.len() == DRAFT_REFERENCE_NUMBERS_MAX {
+                return None;
+            }
+            numbers.push(number);
+        }
+        rest = &after[len..];
+    }
+    Some(numbers)
+}
+
+/// A sandbox-observed queue draft repeats its ordered member list three ways: `#N` references
+/// in the title, then both `#N` labels and `/pull/N` targets on its first reference-bearing body
+/// line. Requiring all three views to agree keeps unrelated prose from becoming queue evidence.
+fn matching_reference_members(title: &str, body: &str, own: u64) -> Option<Vec<u64>> {
+    let title_members = ordered_structural_numbers(title, "#", Some(own))?;
+    if title_members.is_empty() {
+        return None;
+    }
+    for line in body.lines().take(DRAFT_BODY_LINES_MAX) {
+        let hashes = ordered_structural_numbers(line, "#", None)?;
+        let pull_paths = ordered_structural_numbers(line, "/pull/", None)?;
+        if hashes.is_empty() && pull_paths.is_empty() {
+            continue;
+        }
+        return (hashes == title_members && pull_paths == title_members).then_some(title_members);
+    }
+    None
 }
 
 fn structural_numbers(text: &str, marker: &str) -> (Vec<u64>, bool) {
@@ -948,12 +992,14 @@ impl Shadow {
             return true;
         }
         let number = structure.number;
-        let data = json!({
+        let mut data = json!({
             "matching_configured_author": author_matches,
             "matching_queue_prefix": prefix_matches,
             "structured_membership_parsed": membership_parsed,
-            "structure": structure,
         });
+        if !membership_parsed {
+            data["structure"] = serde_json::to_value(structure).unwrap_or_default();
+        }
         let persisted = if durable {
             self.durable_probe_fact(number, "draft_probe", now, data, false)
         } else {
@@ -1412,7 +1458,9 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     let mut structures_over = false;
     for structure in facts
         .iter()
-        .filter(|fact| fact.kind == "draft_probe")
+        .filter(|fact| {
+            fact.kind == "draft_probe" && fact.data["structured_membership_parsed"] != true
+        })
         .filter_map(|fact| {
             serde_json::from_value::<DraftStructure>(fact.data["structure"].clone()).ok()
         })
@@ -1794,6 +1842,72 @@ mod tests {
         assert_eq!(draft_members("Fix #412 (see #500)", body, 999), vec![42]);
         assert!(draft_members("Fix #412 (#500) continued", "", 999).is_empty());
         assert!(draft_members("Fix #412", "", 999).is_empty());
+    }
+
+    #[test]
+    fn matching_title_and_first_body_link_references_are_membership() {
+        assert_eq!(
+            draft_members(
+                "queue #270",
+                "heading\n\n- [#270](https://example.test/pull/270)",
+                271,
+            ),
+            vec![270]
+        );
+        assert_eq!(
+            draft_members(
+                "queue #173 #174",
+                "- [#173](https://example.test/pull/173), [#174](https://example.test/pull/174)",
+                175,
+            ),
+            vec![173, 174]
+        );
+        assert_eq!(
+            draft_members(
+                "queue #271 #270",
+                "- [#270](https://example.test/pull/270)",
+                271,
+            ),
+            vec![270],
+            "the draft's own number is not a member"
+        );
+    }
+
+    #[test]
+    fn structural_fallback_rejects_incidental_or_ambiguous_references() {
+        assert!(
+            draft_members(
+                "queue #173 #174",
+                "- [#174](https://example.test/pull/174), [#173](https://example.test/pull/173)",
+                175,
+            )
+            .is_empty()
+        );
+        assert!(
+            draft_members(
+                "queue #173 #174",
+                "- [#173](https://example.test/pull/173)",
+                175,
+            )
+            .is_empty()
+        );
+        assert!(draft_members("queue #173", "prose mentions #173", 175).is_empty());
+        assert!(
+            draft_members(
+                "queue #173 #173",
+                "- [#173](https://example.test/pull/173)",
+                175,
+            )
+            .is_empty()
+        );
+        assert!(
+            draft_members(
+                "incidental #99 then queue #173",
+                "- [#173](https://example.test/pull/173)",
+                175,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -2393,6 +2507,13 @@ mod tests {
             vec![70, 72]
         );
         assert_eq!(report.draft_observer.structured_membership_parsed, vec![72]);
+        assert!(
+            report
+                .draft_observer
+                .structures
+                .iter()
+                .all(|structure| structure.number != 72)
+        );
         let structure = report
             .draft_observer
             .structures
@@ -2417,5 +2538,35 @@ mod tests {
         assert!(!json.contains("private prefix-only body"));
         assert!(!json.contains("different-bot"));
         assert!(!json.contains("mergify[bot]"));
+    }
+
+    #[test]
+    fn parsed_historical_drafts_do_not_make_diagnostics_truncated() {
+        let structure = DraftStructure {
+            number: 211,
+            body_lines_truncated: true,
+            truncated: true,
+            ..Default::default()
+        };
+        let facts = [f(
+            "observer",
+            211,
+            "draft_probe",
+            1,
+            1,
+            json!({
+                "matching_configured_author": true,
+                "matching_queue_prefix": true,
+                "structured_membership_parsed": true,
+                "structure": structure,
+            }),
+        )];
+        let report = report("o/r", &facts);
+        assert_eq!(
+            report.draft_observer.structured_membership_parsed,
+            vec![211]
+        );
+        assert!(report.draft_observer.structures.is_empty());
+        assert!(!report.draft_observer.truncated);
     }
 }

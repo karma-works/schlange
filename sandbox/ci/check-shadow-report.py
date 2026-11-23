@@ -39,7 +39,11 @@ def _validate_draft_diagnostics(diagnostics):
     for field in candidate_fields:
         if not _bounded_numbers(diagnostics.get(field, []), DRAFT_CANDIDATES_MAX):
             raise ValueError('invalid structural draft observer diagnostics')
-    candidates = set().union(*(diagnostics.get(field, []) for field in candidate_fields))
+    observed_candidates = set(diagnostics.get('matching_queue_prefix', [])) | set(
+        diagnostics.get('matching_configured_author', []))
+    parsed_candidates = set(diagnostics.get('structured_membership_parsed', []))
+    if not parsed_candidates <= observed_candidates:
+        raise ValueError('invalid structural draft observer diagnostics')
     structures = diagnostics.get('structures', [])
     if not isinstance(structures, list) or len(structures) > DRAFT_CANDIDATES_MAX:
         raise ValueError('invalid structural draft observer diagnostics')
@@ -61,7 +65,7 @@ def _validate_draft_diagnostics(diagnostics):
                         'body_line_count', 'body_reference_lines'} <= set(structure)):
             raise ValueError('invalid structural draft observer diagnostics')
         number = structure['number']
-        if type(number) is not int or number <= 0 or number not in candidates:
+        if type(number) is not int or number <= 0 or number not in observed_candidates:
             raise ValueError('invalid structural draft observer diagnostics')
         structure_numbers.append(number)
         for field in ('title_hash_references', 'title_pull_path_references'):
@@ -107,6 +111,8 @@ def _validate_draft_diagnostics(diagnostics):
             raise ValueError('invalid structural draft observer diagnostics')
         any_nested_truncated |= nested_truncated
     if structure_numbers != sorted(set(structure_numbers)):
+        raise ValueError('invalid structural draft observer diagnostics')
+    if set(structure_numbers) != observed_candidates - parsed_candidates:
         raise ValueError('invalid structural draft observer diagnostics')
     truncated = _boolean(diagnostics, 'truncated')
     if any_nested_truncated and not truncated:

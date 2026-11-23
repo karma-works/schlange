@@ -276,6 +276,9 @@ report contains only the candidate PR numbers for those gates, never draft title
 author identities. Its optional candidate structure contains only numeric `#N` and `/pull/N`
 references, line indexes/counts, and Markdown/comment booleans. This is diagnostic evidence for
 choosing a clean-room structural adapter, not queue membership by itself.
+Detailed structure is retained only when membership remains unparsed. A parsed candidate needs
+no structure; every unparsed prefix/author candidate must have one, so rejected formats remain
+diagnosable and missing diagnostic evidence fails closed.
 Diagnostics retain at most 256 candidate drafts, inspect at most 512 body lines per candidate,
 retain at most 64 reference-bearing lines, and retain at most 64 unique numbers per reference
 list. These limits bound prefix-only pull requests and deliberately exceed the 100-pull-request
