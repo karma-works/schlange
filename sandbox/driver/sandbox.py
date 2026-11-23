@@ -69,6 +69,7 @@ DEQUEUE_CODES = (
     "PR_MANUALLY_DEQUEUED", "PR_WITH_HIGHER_PRIORITY_QUEUED",
     "PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE", "INTERMEDIATE_RESULTS_SKIPPED", "PR_CLOSED",
 )
+CHECK_START_TYPES = ("action.queue.checks_start",)
 REFERENCE_ACTIVITY_TYPES = (
     "action.queue.enter", "action.queue.leave", "action.queue.merged",
 )
@@ -435,19 +436,69 @@ def _activity_common_metadata(metadata, nullable_session=False):
         raise _ReferenceActivityError("event_invalid") from None
 
 
-def _public_activity_event(event, selected, start, end):
+def _public_check_start(event, selected):
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        raise _ReferenceActivityError("event_invalid")
+    members = metadata.get("pull_request_numbers")
+    if (not isinstance(members, list) or not 1 <= len(members) <= len(selected)
+            or any(type(number) is not int or number not in selected for number in members)
+            or len(set(members)) != len(members)
+            or event["pull_request"] is not None and event["pull_request"] not in members):
+        raise _ReferenceActivityError("event_invalid")
+    check = metadata.get("speculative_check_pull_request")
+    in_place = metadata.get("in_place")
+    if not isinstance(check, dict) or type(in_place) is not bool:
+        raise _ReferenceActivityError("event_invalid")
+    number = check.get("number")
+    sha = check.get("head_sha")
+    if (number is not None and (type(number) is not int or number <= 0)
+            or sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha))
+            or in_place and number is not None and members != [number]
+            or not in_place and number in selected):
+        raise _ReferenceActivityError("event_invalid")
+    batch_id = metadata.get("batch_id")
+    run_id = metadata.get("run_id")
+    parents = metadata.get("parent_batch_ids")
+    session_id = metadata.get("session_id")
+    if session_id is None:
+        raise _ReferenceActivityError("event_invalid")
+    if any(value is None for value in (number, sha, batch_id, run_id, parents)):
+        raise _ReferenceActivityError("check_identity_missing")
+    if not isinstance(parents, list) or len(parents) > REFERENCE_ACTIVITY_MAX_PRS:
+        raise _ReferenceActivityError("event_invalid")
+    for value in (batch_id, run_id, session_id, *parents):
+        if (not isinstance(value, str)
+                or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value)):
+            raise _ReferenceActivityError("event_invalid")
+    if len(set(parents)) != len(parents) or batch_id in parents:
+        raise _ReferenceActivityError("event_invalid")
+    return {
+        "kind": "checks_start", "pull_request_numbers": members, "in_place": in_place,
+        "draft_pull_request": None if in_place else number, "head_sha": sha,
+        "batch_id": batch_id, "run_id": run_id, "parent_batch_ids": parents, "session_id": session_id,
+    }
+
+
+def _public_activity_event(event, selected, start, end, event_types):
     if (not isinstance(event, dict) or type(event.get("id")) is not int or event["id"] <= 0
             or event.get("repository") not in {"queue-lab", "schlange-sandbox/queue-lab"}
-            or type(event.get("pull_request")) is not int or event["pull_request"] not in selected
-            or event.get("type") not in REFERENCE_ACTIVITY_TYPES):
+            or "pull_request" not in event or event.get("type") not in event_types):
         raise _ReferenceActivityError("event_invalid")
+    pull = event["pull_request"]
+    if not (pull is None and event_types == CHECK_START_TYPES):
+        if type(pull) is not int or pull not in selected:
+            raise _ReferenceActivityError("event_invalid")
     at = _activity_time(event.get("received_at"))
     if not start <= at <= end:
         raise _ReferenceActivityError("event_invalid")
-    metadata = event.get("metadata")
-    _activity_common_metadata(metadata, nullable_session=event["type"] == "action.queue.leave")
     public = {"id": event["id"], "received_at": event["received_at"],
               "pull_request": event["pull_request"]}
+    if event["type"] == "action.queue.checks_start":
+        public.update(_public_check_start(event, selected))
+        return public, at
+    metadata = event.get("metadata")
+    _activity_common_metadata(metadata, nullable_session=event["type"] == "action.queue.leave")
     if event["type"] == "action.queue.enter":
         public["kind"] = "enter"
     elif event["type"] == "action.queue.leave":
@@ -468,7 +519,16 @@ def _public_activity_event(event, selected, start, end):
 
 
 def capture_reference_activity(state, client, recorded_at, environ=None):
-    """A bounded, prose-free Activity Log diagnostic; never an outcome or verifier input."""
+    return _capture_reference_activity(state, client, recorded_at, environ, REFERENCE_ACTIVITY_TYPES)
+
+
+def capture_reference_check_starts(state, client, recorded_at, environ=None):
+    """Record observed checks starts. A start gives no evidence that checks passed."""
+    return _capture_reference_activity(state, client, recorded_at, environ, CHECK_START_TYPES)
+
+
+def _capture_reference_activity(state, client, recorded_at, environ, event_types):
+    """Read one bounded, prose-free Activity Log stream for this scenario."""
     environ = os.environ if environ is None else environ
     state = state if isinstance(state, dict) else {}
     raw_prs = state.get("prs") if isinstance(state.get("prs"), dict) else {}
@@ -486,7 +546,7 @@ def capture_reference_activity(state, client, recorded_at, environ=None):
         "source": {"workflow_run_id": None, "workflow_run_attempt": None,
                    "workflow_commit": None, "workflow_repository": None},
         "query": {"received_from": None, "received_to": None,
-                  "pull_requests": prs, "event_types": list(REFERENCE_ACTIVITY_TYPES)},
+                  "pull_requests": prs, "event_types": list(event_types)},
         "complete": False, "incomplete_reason": None, "events": [],
     }
 
@@ -527,9 +587,10 @@ def capture_reference_activity(state, client, recorded_at, environ=None):
     fixed_query = [("per_page", "100"), ("received_from", state["started"]),
                    ("received_to", state["finished"])]
     fixed_query.extend(("pull_request", str(number)) for number in prs)
-    fixed_query.extend(("event_type", kind) for kind in REFERENCE_ACTIVITY_TYPES)
+    fixed_query.extend(("event_type", kind) for kind in event_types)
     url = f"{MERGIFY_API}/repos/schlange-sandbox/queue-lab/logs?{urllib.parse.urlencode(fixed_query)}"
     seen_urls, seen_cursors, seen_ids, public = set(), set(), set(), []
+    selected = set(prs)
     try:
         for page_number in range(REFERENCE_ACTIVITY_MAX_PAGES):
             cursor = _validate_activity_url(url, fixed_query, cursor_required=page_number > 0)
@@ -552,7 +613,7 @@ def capture_reference_activity(state, client, recorded_at, environ=None):
             if len(public) + len(page["events"]) > REFERENCE_ACTIVITY_MAX_EVENTS:
                 raise _ReferenceActivityError("bound_exceeded")
             for event in page["events"]:
-                item, at = _public_activity_event(event, set(prs), start, finish_time)
+                item, at = _public_activity_event(event, selected, start, finish_time, event_types)
                 if item["id"] in seen_ids:
                     raise _ReferenceActivityError("pagination_invalid")
                 seen_ids.add(item["id"])
@@ -565,12 +626,23 @@ def capture_reference_activity(state, client, recorded_at, environ=None):
         else:
             raise _ReferenceActivityError("bound_exceeded")
     except _ReferenceActivityError as error:
-        reason = error.args[0] if error.args and error.args[0] in REFERENCE_INCOMPLETE_REASONS else "event_invalid"
-        return incomplete(reason)
-    public.sort(key=lambda pair: (pair[0], pair[1]["id"]))
-    time_pr = [(at, item["pull_request"]) for at, item in public]
-    if len(time_pr) != len(set(time_pr)):
+        reason = error.args[0]
+        if reason in REFERENCE_INCOMPLETE_REASONS or (
+                event_types == CHECK_START_TYPES and reason == "check_identity_missing"):
+            return incomplete(reason)
         return incomplete("event_invalid")
+    public.sort(key=lambda pair: (pair[0], pair[1]["id"]))
+    if event_types == CHECK_START_TYPES:
+        runs = {}
+        for _, item in public:
+            identity = (item["batch_id"], item["pull_request_numbers"], item["draft_pull_request"],
+                        item["head_sha"], item["in_place"])
+            if runs.setdefault(item["run_id"], identity) != identity:
+                return incomplete("event_invalid")
+    else:
+        time_pr = [(at, item["pull_request"]) for at, item in public]
+        if len(time_pr) != len(set(time_pr)):
+            return incomplete("event_invalid")
     result.update({"events": [item for _, item in public], "complete": True})
     return result
 
@@ -1195,23 +1267,26 @@ def write_reference_activity(out):
     if not reference_activity_enabled(state):
         return
     recorded = now_iso()
-    try:
-        activity = capture_reference_activity(state, mergify_client(), recorded)
-    except Exception:
-        # Experimental evidence never changes the established sandbox result. It still emits
-        # an atomic, bounded marker rather than a partial history or exception text.
-        activity = {
-            "schema": 1, "repository": "schlange-sandbox/queue-lab",
-            "scenario_run_id": None, "scenario_finished_at": None,
-            "collected_at": None,
-            "source": {"workflow_run_id": None, "workflow_run_attempt": None,
-                       "workflow_commit": None, "workflow_repository": None},
-            "query": {"received_from": None, "received_to": None,
-                      "pull_requests": [], "event_types": list(REFERENCE_ACTIVITY_TYPES)},
-            "complete": False, "incomplete_reason": "transport", "events": [],
-        }
-    (out / "reference-activity.json").write_text(
-        json.dumps(activity, indent=2, ensure_ascii=False) + "\n")
+    for filename, capture, event_types in (
+            ("reference-activity.json", capture_reference_activity, REFERENCE_ACTIVITY_TYPES),
+            ("reference-check-starts.json", capture_reference_check_starts, CHECK_START_TYPES)):
+        try:
+            activity = capture(state, mergify_client(), recorded)
+        except Exception:
+            # Leave a bounded marker without publishing transport errors or partial history.
+            activity = {
+                "schema": 1, "repository": "schlange-sandbox/queue-lab",
+                "scenario_run_id": None, "scenario_finished_at": None,
+                "collected_at": None,
+                "source": {"workflow_run_id": None, "workflow_run_attempt": None,
+                           "workflow_commit": None, "workflow_repository": None},
+                "query": {"received_from": None, "received_to": None,
+                          "pull_requests": [], "event_types": list(event_types)},
+                "complete": False, "incomplete_reason": "transport", "events": [],
+            }
+        temporary = out / (filename + ".tmp")
+        temporary.write_text(json.dumps(activity, indent=2, ensure_ascii=False) + "\n")
+        temporary.replace(out / filename)
 
 
 # --- Outcome and comparison -------------------------------------------------------------
