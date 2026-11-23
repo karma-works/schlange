@@ -1779,6 +1779,12 @@ impl FakeGithub {
         self.with(|s| s.outbox.is_empty() && s.sending == 0)
     }
 
+    /// No webhook request is currently in flight. Queued deliveries do not count: without a
+    /// target they remain buffered until ingress is routed to a ready worker.
+    pub fn hook_sends_idle(&self) -> bool {
+        self.with(|s| s.sending == 0)
+    }
+
     /// The queue's own check run on a pull request's head (newest), if any.
     pub fn queue_check(&self, n: u64) -> Option<FakeRun> {
         self.with(|s| {

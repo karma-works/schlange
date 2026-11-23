@@ -660,22 +660,35 @@ impl Running {
 
     /// Stops `serve` (as a crash would: in-memory state is lost).
     pub fn stop_service(&mut self) {
+        // Stop routing ingress before the listener goes away. Deliveries emitted while the
+        // process is down stay in the fake's outbox, like a leader-aware ingress buffer.
+        self.gh.set_webhook_target(None);
+        let deadline = Instant::now() + WAIT;
+        while !self.gh.hook_sends_idle() {
+            assert!(
+                Instant::now() < deadline,
+                "in-flight webhook did not finish before service shutdown"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if let Some(s) = self.service.take() {
             s.shutdown();
         }
-        self.gh.set_webhook_target(None);
     }
 
     /// Starts `serve` again; it recovers from GitHub's state by reconciliation.
     pub fn start_service(&mut self) {
         let service =
             Service::start(self.serve_cfg.clone(), self.clock.clone()).expect("serve starts");
-        self.gh.set_webhook_target(Some(service.webhook_url()));
         self.service = Some(service);
         self.wait_until("start-up reconciliation", |r| {
             r.status()
                 .is_some_and(|s| s.reconciliations > 0 || s.config_error.is_some())
         });
+        // Route buffered ingress only after the new worker is ready. A known follower or a
+        // starting leader intentionally returns 503, and GitHub does not retry that response.
+        let target = self.service.as_ref().expect("service").webhook_url();
+        self.gh.set_webhook_target(Some(target));
     }
 
     /// Another `serve` process against the same fake GitHub, with its own client and clock
