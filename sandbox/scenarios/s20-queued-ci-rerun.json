@@ -1,0 +1,11 @@
+{
+  "id": "S20",
+  "title": "Re-run the named CI check while a pull request is queued at the same head",
+  "refs": ["MQ-14", "MQ-15", "MQ-45"],
+  "steps": [
+    {"open": "a", "flags": ["sleep 60", "sleep-full 240"], "as": "human"},
+    {"wait": "queued", "prs": ["a"], "timeout": 1200},
+    {"rerun_ci": "a", "timeout": 900},
+    {"wait": "quiet", "seconds": 600, "timeout": 2400}
+  ]
+}

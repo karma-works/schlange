@@ -29,6 +29,16 @@ fn start_with(config: &str) -> Running {
         .start()
 }
 
+fn start_persistent() -> Running {
+    Tester::new(ARZTAGENT)
+        .ci(CiRule::fails_on("ci-ok", CiOn::Queue, "BREAKS_FULL_SUITE"))
+        .fake(|c| {
+            c.permissions.insert("workflows".into(), "write".into());
+        })
+        .persistent()
+        .start()
+}
+
 fn green(t: &Running, n: u64, ki_review: bool) {
     t.pr(n).check("ci-ok").succeed();
     t.pr(n).check("Risk class and data protection").succeed();
@@ -448,6 +458,114 @@ fn a_settled_base_conflict_is_held_before_queue_entry() {
     });
     assert!(t.gh.open_queue_drafts().is_empty());
     assert!(t.dequeue_code(n).is_none());
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn characterize_pending_ci_restart_on_the_same_queued_head() {
+    let mut t = start_persistent();
+    t.permission("karma-works", "admin");
+    let n = t.open_pr(BOT).file("backend/rerun.py", "change\n").create();
+    let head = t.pr(n).get().head_sha;
+    green(&t, n, true);
+    t.pr(n).wait_queued();
+
+    let rerun = t.pr(n).check("ci-ok").start();
+    t.settle();
+    assert!(queued(&t, n), "the unchanged head keeps its queue entry");
+    assert!(holds(&t, n).contains("check-replacement-pending"));
+    t.advance("5m");
+    t.settle();
+    assert!(!t.pr(n).get().merged, "pending replacement cannot land");
+    assert!(
+        t.gh.open_queue_drafts().is_empty(),
+        "pending replacement cannot build"
+    );
+
+    t.stop_service();
+    t.start_service();
+    t.settle();
+    assert!(queued(&t, n), "the execution hold survives restart");
+    assert!(holds(&t, n).contains("check-replacement-pending"));
+
+    t.gh.complete_check(rerun, "success");
+    t.pr(n).wait_merged();
+    assert_eq!(t.pr(n).get().head_sha, head);
+    assert_eq!(t.dequeue_code(n), None);
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn terminal_replacement_failure_and_head_change_still_dequeue() {
+    for head_change in [false, true] {
+        let t = start();
+        let n = t.open_pr(BOT).file("backend/rerun.py", "change\n").create();
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+        let rerun = t.pr(n).check("ci-ok").start();
+        t.settle();
+        assert!(queued(&t, n));
+        if head_change {
+            t.pr(n).push("backend/rerun.py", "new head\n");
+        } else {
+            t.gh.complete_check(rerun, "failure");
+        }
+        t.wait_until("terminal change dequeues", |t| !queued(t, n));
+        assert_eq!(
+            t.dequeue_code(n).as_deref(),
+            Some(if head_change {
+                "PULL_REQUEST_UPDATED"
+            } else {
+                "PR_DEQUEUED"
+            })
+        );
+        t.assert_invariants();
+        t.shutdown();
+    }
+}
+
+#[test]
+fn pending_front_replacement_does_not_let_a_later_entry_bypass_it() {
+    let t = start();
+    let a = t.open_pr(BOT).file("backend/a.py", "a\n").create();
+    let b = t.open_pr(BOT).file("backend/b.py", "b\n").create();
+    for n in [a, b] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.pr(a).check("ci-ok").start();
+    t.settle();
+    assert!(queued(&t, a) && queued(&t, b));
+    t.advance("5m");
+    t.settle();
+    assert!(
+        t.gh.open_queue_drafts().is_empty(),
+        "the later entry must not bypass a pending front replacement"
+    );
+    t.assert_invariants();
+    t.shutdown();
+}
+
+#[test]
+fn pending_replacement_discards_a_started_multi_member_car_but_keeps_membership() {
+    let t = start();
+    let a = t.open_pr(BOT).file("backend/a.py", "a\n").create();
+    let b = t.open_pr(BOT).file("backend/b.py", "b\n").create();
+    for n in [a, b] {
+        green(&t, n, true);
+        t.pr(n).wait_queued();
+    }
+    t.advance("2m");
+    let draft = t.queue_pr().number;
+    t.pr(a).check("ci-ok").start();
+    t.wait_until("old batch retired and replacement held", |t| {
+        !t.gh.pr(draft).unwrap().open && holds(t, a).contains("check-replacement-pending")
+    });
+    assert!(queued(&t, a) && queued(&t, b));
+    assert!(holds(&t, a).contains("check-replacement-pending"));
+    assert!(t.gh.open_queue_drafts().is_empty());
     t.assert_invariants();
     t.shutdown();
 }

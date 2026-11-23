@@ -721,6 +721,7 @@ pub(crate) fn invalidate_verification(state: &mut State, number: u64) {
 /// A queued pull request merged by the queue: it leaves with outcome `merged`.
 pub(crate) fn record_merge(state: &mut State, number: u64, sha: &str, out: &mut Vec<Decision>) {
     state.unconfirmed_land.remove(&number);
+    state.check_replacement_gates.remove(&number);
     if let Some(pr) = state.pull_requests.get_mut(&number) {
         pr.merged = true;
         pr.closed = true;
@@ -2265,7 +2266,7 @@ fn preempt(state: &mut State, rules: &Rules, base: &str, out: &mut Vec<Decision>
     if state.pause.is_some() || train.bisection.is_some() {
         return;
     }
-    let order = waiting_order(state, rules, base);
+    let order = ready_waiting_order(state, rules, base);
     let Some(&first) = order.first() else {
         return;
     };
@@ -2443,11 +2444,26 @@ pub fn waiting_order(state: &State, rules: &Rules, base: &str) -> Vec<u64> {
     let mut w: Vec<(std::cmp::Reverse<u32>, usize, u64, u64)> = state
         .queued
         .iter()
-        .filter(|(_, e)| e.base == base && e.status == EntryStatus::Waiting)
+        .filter(|(_, e)| {
+            e.base == base
+                && matches!(
+                    e.status,
+                    EntryStatus::Waiting | EntryStatus::CheckReplacementPending
+                )
+        })
         .map(|(n, e)| (std::cmp::Reverse(e.priority), rank(&e.queue), e.seq, *n))
         .collect();
     w.sort();
     w.into_iter().map(|(_, _, _, n)| n).collect()
+}
+
+/// The ordered prefix that may start checks. A pending check replacement keeps its position and
+/// blocks every pull request behind it, but status/explain still use the full [`waiting_order`].
+fn ready_waiting_order(state: &State, rules: &Rules, base: &str) -> Vec<u64> {
+    waiting_order(state, rules, base)
+        .into_iter()
+        .take_while(|number| state.queued[number].status != EntryStatus::CheckReplacementPending)
+        .collect()
 }
 
 /// Whether Mergify's rule for checking in place holds for this queue rule.
@@ -2621,7 +2637,7 @@ fn fill(state: &mut State, rules: &Rules, base: &str, now: Time, out: &mut Vec<D
     if mode != Mode::Isolated && train.cars.iter().any(|c| c.barrier) {
         return;
     }
-    let order = waiting_order(state, rules, base);
+    let order = ready_waiting_order(state, rules, base);
     let Some(&first) = order.first() else {
         return;
     };
