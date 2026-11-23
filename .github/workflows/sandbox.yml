@@ -107,6 +107,13 @@ jobs:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
         run: python3 -I sandbox/driver/sandbox.py inspect-open --repo "$REPO"
+      - name: Inspect archived sandbox check-start row shapes
+        if: ${{ inputs.inspect_only && inputs.repo == 'queue-lab' }}
+        env:
+          SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/driver/replay_check_start_shape.py > "$RUNNER_TEMP/shadow-evidence/check-start-shapes.json"
       - name: Rust toolchain and cache (schlange-e2e)
         if: ${{ (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: rustup show active-toolchain || rustup toolchain install
