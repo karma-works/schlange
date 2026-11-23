@@ -259,6 +259,11 @@ completion is supplied by the other app, missing or ambiguous ordering is report
 inconclusive instead of being reconstructed from REST/webhook arrival order.
 If several drafts have no observed dequeue between them, the report infers one continuous
 cycle; only the independent sandbox event outcome can rule out a missed dequeue/re-entry.
+Mergify can admit and dequeue a pull request before opening a draft. In sandbox scenario
+S18, the activity log recorded the first entry, manual dequeue, and second entry before
+the only draft opened. The report observed one cycle, and the independent verifier
+rejected the comparison.
+[Sandbox recording](https://github.com/karma-works/schlange/actions/runs/45128253642)
 
 | Verdict | Meaning |
 |---|---|
