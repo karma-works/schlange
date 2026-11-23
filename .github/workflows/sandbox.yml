@@ -145,12 +145,21 @@ jobs:
         env:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
+          SANDBOX_REFERENCE_ACTIVITY: ${{ inputs.shadow_mode && '1' || '0' }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
           SCENARIOS: ${{ inputs.scenarios || 'all' }}
         # Several names become separate arguments.
         run: |
           read -ra names <<<"$SCENARIOS"
           bash sandbox/ci/run-scenarios.sh "$REPO" "${names[@]}"
+      - name: Check same-run reference histories
+        if: ${{ always() && inputs.shadow_mode && inputs.repo == 'queue-lab' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/ci/check-reference-history.py \
+            "$RUNNER_TEMP/sandbox-runs" \
+            "$RUNNER_TEMP/shadow-evidence/reference-history-check.json"
       - name: Verify shadow report against independent Mergify recordings
         if: ${{ always() && inputs.shadow_mode && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         run: |
@@ -180,6 +189,15 @@ jobs:
             sleep 5
           done
           exit 1
+      - name: Export structural Schlange dequeue causes
+        if: ${{ always() && inputs.shadow_mode && inputs.repo == 'queue-lab' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        # Optional structural diagnosis only: it does not feed the strict comparison.
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/ci/export-shadow-causes.py \
+            "$RUNNER_TEMP/schlange-data/schlange.db" \
+            "$RUNNER_TEMP/sandbox-runs" \
+            "$RUNNER_TEMP/shadow-evidence/schlange-dequeue-causes.json"
       - name: Stop schlange serve, show the end of its log
         if: ${{ always() && (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) }}
         run: |
@@ -199,6 +217,7 @@ jobs:
           path: |
             ${{ runner.temp }}/sandbox-runs/*/outcome.json
             ${{ runner.temp }}/sandbox-runs/*/queue-timing.json
+            ${{ runner.temp }}/sandbox-runs/*/reference-activity.json
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
             ${{ runner.temp }}/shadow-evidence/*.json
