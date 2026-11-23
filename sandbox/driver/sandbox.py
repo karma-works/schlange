@@ -745,25 +745,23 @@ def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_ob
     if not isinstance(exp, dict) or not isinstance(act, dict):
         print("DEVIATION\n  outcome is not an object")
         return 1
+    variants = exp.get("accepted_variants", [])
+    deviations = exp.get("known_deviations", [])
+    if (not isinstance(variants, list)
+            or not all(isinstance(v, dict) and isinstance(v.get("name"), str) and v["name"]
+                       and isinstance(v.get("why"), str) and v["why"]
+                       and isinstance(v.get("source_runs"), list) and v["source_runs"]
+                       and all(isinstance(run, str) and re.fullmatch(r"[1-9][0-9]*", run)
+                               for run in v["source_runs"])
+                       and isinstance(v.get("prs"), dict) and isinstance(v.get("landed"), list)
+                       and isinstance(v.get("batches"), list) for v in variants)
+            or len({v["name"] for v in variants}) != len(variants)):
+        print("DEVIATION\n  accepted reference variants are missing or invalid")
+        return 1
+    if variants and deviations:
+        print("DEVIATION\n  accepted reference variants cannot be combined with known deviations")
+        return 1
     strict_observation = strict_observation or act.get("repo") in ACTIVE_REPOS
-    if strict_observation:
-        if exp.get("reference_quality", "verified") != "verified":
-            print("DEVIATION\n  reference evidence is provisional; a fresh baseline is required")
-            return 1
-        if (act.get("repo") not in ACTIVE_REPOS or not isinstance(exp.get("prs"), dict)
-                or not exp["prs"] or not isinstance(act.get("prs"), dict) or not act["prs"]
-                or not all(isinstance(k, str) and isinstance(v, dict)
-                           for prs in (exp["prs"], act["prs"]) for k, v in prs.items())
-                or not all(isinstance(x, list) and all(isinstance(k, str) for k in x)
-                           for x in (exp.get("landed"), act.get("landed")))):
-            print("DEVIATION\n  compatibility evidence is missing or invalid")
-            return 1
-        if expected_prs is not None and (set(exp["prs"]) != expected_prs or set(act["prs"]) != expected_prs):
-            print("DEVIATION\n  pull request evidence does not match the scenario")
-            return 1
-    diffs, known = [], []
-    # Documented deviations of Schlange from the baseline: {"pr", "field", "observed", "why"}.
-    allowed = {(d["pr"], d["field"]): d for d in exp.get("known_deviations", [])}
     def valid(field, value):
         return {
             "end": lambda v: v in ("open", "closed", "merged"),
@@ -771,42 +769,110 @@ def compare_outcomes(expected_path, actual_path, strict_batches=False, strict_ob
             "enter_count": lambda v: type(v) is int and v >= 0,
             "dequeue_codes": lambda v: isinstance(v, list) and all(isinstance(c, str) for c in v),
         }[field](value)
-    for k in sorted(set(exp["prs"]) | set(act["prs"])):
-        e, a = exp["prs"].get(k, {}), act["prs"].get(k, {})
-        for field in ("end", "queued", "enter_count", "dequeue_codes"):
-            if strict_observation and (not valid(field, e.get(field)) or not valid(field, a.get(field))):
-                diffs.append(f"PR {k}.{field}: compatibility evidence is missing or invalid")
-                continue
-            # None means: this side cannot observe the field.
-            if e.get(field) is not None and a.get(field) is not None and e.get(field) != a.get(field):
-                line = f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}"
-                d = allowed.get((k, field))
-                if d and type(d.get("observed")) is type(a.get(field)) and d.get("observed") == a.get(field):
-                    known.append(f"{line} ({d['why']})")
-                else:
-                    diffs.append(line)
-    if exp["landed"] != act["landed"]:
-        line = f"Landing order: expected {exp['landed']}, observed {act['landed']}"
-        d = allowed.get(("*", "landed"))
-        if d and d.get("observed") == act["landed"]:
-            known.append(f"{line} ({d['why']})")
-        else:
-            diffs.append(line)
-    # Batches depend on timing (batch_max_wait_time); compare strictly only on request.
-    if strict_batches:
-        batches = (exp.get("batches"), act.get("batches"))
-        conclusions = {"success", "failure", "neutral", "cancelled", "skipped",
-                       "timed_out", "action_required", "stale"}
-        if not all(isinstance(bs, list) and all(isinstance(b, dict)
-                   and isinstance(b.get("prs"), list)
-                   and all(isinstance(pr, str) for pr in b["prs"])
-                   and isinstance(b.get("ci_ok"), str) and b["ci_ok"] in conclusions
-                   for b in bs) for bs in batches):
-            diffs.append("Batches: evidence is missing or invalid")
-        elif [(b["prs"], b["ci_ok"]) for b in batches[0]] != [(b["prs"], b["ci_ok"]) for b in batches[1]]:
-            diffs.append(f"Batches: expected {batches[0]}, observed {batches[1]}")
-        elif expected_batches is not None and [b["prs"] for b in batches[1]] != expected_batches:
-            diffs.append(f"Batches: scenario expected {expected_batches}, observed {batches[1]}")
+
+    conclusions = {"success", "failure", "neutral", "cancelled", "skipped",
+                   "timed_out", "action_required", "stale"}
+    canonical_prs = expected_prs if expected_prs is not None else (
+        set(exp.get("prs", {})) if isinstance(exp.get("prs"), dict) else set())
+
+    def valid_outcome(outcome, complete=False):
+        prs = outcome.get("prs")
+        landed = outcome.get("landed")
+        batches = outcome.get("batches")
+        if (not canonical_prs or not isinstance(prs, dict) or set(prs) != canonical_prs
+                or not isinstance(landed, list)
+                or not all(isinstance(k, str) and k in canonical_prs for k in landed)):
+            return False
+        if not all(isinstance(pr, dict)
+                   and all(valid(field, pr.get(field))
+                           for field in ("end", "queued", "enter_count", "dequeue_codes"))
+                   for pr in prs.values()):
+            return False
+        if complete or strict_batches:
+            if not isinstance(batches, list) or not all(
+                    isinstance(batch, dict) and isinstance(batch.get("prs"), list)
+                    and all(isinstance(pr, str) and pr in canonical_prs for pr in batch["prs"])
+                    and isinstance(batch.get("ci_ok"), str) and batch["ci_ok"] in conclusions
+                    for batch in batches):
+                return False
+            if (strict_batches and expected_batches is not None
+                    and [batch["prs"] for batch in batches] != expected_batches):
+                return False
+        return True
+
+    complete = bool(variants)
+    if (not valid_outcome(exp, complete) or not valid_outcome(act, complete)
+            or not all(valid_outcome(v, complete=True) for v in variants)):
+        print("DEVIATION\n  compatibility evidence is missing or invalid")
+        return 1
+
+    def compare_one(expected):
+        diffs, known = [], []
+        if strict_observation:
+            if exp.get("reference_quality", "verified") != "verified":
+                return ["reference evidence is provisional; a fresh baseline is required"], []
+            if (act.get("repo") not in ACTIVE_REPOS or not isinstance(expected.get("prs"), dict)
+                    or not expected["prs"] or not isinstance(act.get("prs"), dict) or not act["prs"]
+                    or not all(isinstance(k, str) and isinstance(v, dict)
+                               for prs in (expected["prs"], act["prs"]) for k, v in prs.items())
+                    or not all(isinstance(x, list) and all(isinstance(k, str) for k in x)
+                               for x in (expected.get("landed"), act.get("landed")))):
+                return ["compatibility evidence is missing or invalid"], []
+            if expected_prs is not None and (set(expected["prs"]) != expected_prs
+                                             or set(act["prs"]) != expected_prs):
+                return ["pull request evidence does not match the scenario"], []
+        # Documented deviations of Schlange from the baseline:
+        # {"pr", "field", "observed", "why"}.
+        allowed = {(d["pr"], d["field"]): d for d in deviations}
+        for k in sorted(set(expected["prs"]) | set(act["prs"])):
+            e, a = expected["prs"].get(k, {}), act["prs"].get(k, {})
+            for field in ("end", "queued", "enter_count", "dequeue_codes"):
+                if strict_observation and (not valid(field, e.get(field)) or not valid(field, a.get(field))):
+                    diffs.append(f"PR {k}.{field}: compatibility evidence is missing or invalid")
+                    continue
+                # None means: this side cannot observe the field.
+                if e.get(field) is not None and a.get(field) is not None and e.get(field) != a.get(field):
+                    line = f"PR {k}.{field}: expected {e.get(field)}, observed {a.get(field)}"
+                    d = allowed.get((k, field))
+                    if (d and type(d.get("observed")) is type(a.get(field))
+                            and d.get("observed") == a.get(field)):
+                        known.append(f"{line} ({d['why']})")
+                    else:
+                        diffs.append(line)
+        if expected["landed"] != act["landed"]:
+            line = f"Landing order: expected {expected['landed']}, observed {act['landed']}"
+            d = allowed.get(("*", "landed"))
+            if d and d.get("observed") == act["landed"]:
+                known.append(f"{line} ({d['why']})")
+            else:
+                diffs.append(line)
+        # Batches depend on timing (batch_max_wait_time); compare strictly only on request.
+        if strict_batches:
+            batches = (expected.get("batches"), act.get("batches"))
+            if not all(isinstance(bs, list) and all(isinstance(b, dict)
+                       and isinstance(b.get("prs"), list)
+                       and all(isinstance(pr, str) for pr in b["prs"])
+                       and isinstance(b.get("ci_ok"), str) and b["ci_ok"] in conclusions
+                       for b in bs) for bs in batches):
+                diffs.append("Batches: evidence is missing or invalid")
+            elif ([(b["prs"], b["ci_ok"]) for b in batches[0]]
+                  != [(b["prs"], b["ci_ok"]) for b in batches[1]]):
+                diffs.append(f"Batches: expected {batches[0]}, observed {batches[1]}")
+            elif expected_batches is not None and [b["prs"] for b in batches[1]] != expected_batches:
+                diffs.append(f"Batches: scenario expected {expected_batches}, observed {batches[1]}")
+        return diffs, known
+
+    diffs, known = compare_one(exp)
+    if diffs:
+        for variant in variants:
+            candidate = {**exp, "prs": variant.get("prs"), "landed": variant.get("landed"),
+                         "batches": variant.get("batches")}
+            variant_diffs, variant_known = compare_one(candidate)
+            if not variant_diffs:
+                if variant_known:
+                    print("KNOWN DEVIATION (documented)\n  " + "\n  ".join(variant_known))
+                print(f"SAME (accepted reference variant: {variant.get('name', 'unnamed')})")
+                return 0
     if known:
         print("KNOWN DEVIATION (documented)\n  " + "\n  ".join(known))
     if diffs:
