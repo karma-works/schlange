@@ -18,13 +18,13 @@
     "action": 18,
     "api": 132,
     "attr": 76,
-    "cli": 48,
+    "cli": 44,
     "cmd": 8,
     "config": 292,
     "default": 152,
-    "enum": 187
+    "enum": 188
   },
-  "total": 913,
+  "total": 910,
   "entries": [
     {
       "id": "action:assign",
@@ -1923,22 +1923,6 @@
     },
     {
       "id": "cli:mergify tests quarantines remove",
-      "kind": "cli"
-    },
-    {
-      "id": "cli:mergify tests retry off",
-      "kind": "cli"
-    },
-    {
-      "id": "cli:mergify tests retry on",
-      "kind": "cli"
-    },
-    {
-      "id": "cli:mergify tests retry set",
-      "kind": "cli"
-    },
-    {
-      "id": "cli:mergify tests retry show",
       "kind": "cli"
     },
     {
@@ -4424,6 +4408,10 @@
     },
     {
       "id": "enum:language:c",
+      "kind": "enum"
+    },
+    {
+      "id": "enum:language:cpp",
       "kind": "enum"
     },
     {
