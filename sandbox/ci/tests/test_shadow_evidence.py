@@ -84,6 +84,7 @@ class ShadowEvidenceTests(unittest.TestCase):
         row['differences'] = ['untrusted diagnostic text']
         result = self.check()
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {'complete': False})
         self.assertIn('PR #42', result.stderr)
         self.assertIn('verdict=disagree', result.stderr)
         self.assertIn('queued', result.stderr)

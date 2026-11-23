@@ -3,6 +3,7 @@ import io
 import unittest
 import json
 import tempfile
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -661,6 +662,308 @@ class CheckpointTests(unittest.TestCase):
                 return {'events': [{'type': 'action.queue.leave'}]}
         with self.assertRaises(RuntimeError):
             driver.fetch_events(MissingLeavePullRequest(), 'url', strict=True)
+
+    def test_reference_activity_exports_s18_lifecycle_in_stable_order(self):
+        started = '2026-11-23T07:50:17Z'
+        finished = '2026-11-23T08:12:36Z'
+        recorded = '2026-11-23T08:12:40Z'
+        session = '11111111-1111-4111-8111-111111111111'
+
+        def event(event_id, received_at, kind, metadata):
+            return {'id': event_id, 'received_at': received_at, 'repository': 'schlange-sandbox/queue-lab',
+                    'pull_request': 298, 'type': kind, 'metadata': metadata}
+
+        common = {'queue_name': 'default', 'branch': 'main', 'queued_at': started,
+                  'session_id': session}
+        events = [
+            event(4, '2026-11-23T08:02:19.268283Z', 'action.queue.leave',
+                  {**common, 'merged': True, 'dequeue_code': 'PR_MERGED'}),
+            event(3, '2026-11-23T07:52:27.771123Z', 'action.queue.enter', common),
+            event(2, '2026-11-23T07:51:59.864345Z', 'action.queue.leave',
+                  {**common, 'merged': False, 'dequeue_code': 'PR_MANUALLY_DEQUEUED'}),
+            event(1, '2026-11-23T07:51:33.998690Z', 'action.queue.enter', common),
+            event(5, '2026-11-23T08:02:19.300000Z', 'action.queue.merged',
+                  {**common, 'merge_commit_sha': 'a' * 40}),
+        ]
+
+        class Client:
+            def __init__(self):
+                self.urls = []
+
+            def activity_page(self, url):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    return ({'size': 2, 'per_page': 100, 'events': events[:2]},
+                            {'Link': f'<{url}&cursor=next%2F1>; rel="next"'})
+                return {'size': 3, 'per_page': 100, 'events': events[2:]}, {}
+
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-queue-lab-test',
+                 'started': started, 'finished': finished, 'timed_out': False,
+                 'prs': {'a': {'number': 298}}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '45129694411',
+                  'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_SHA': 'b' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        client = Client()
+        activity = driver.capture_reference_activity(state, client, recorded, source)
+        self.assertTrue(activity['complete'], activity)
+        self.assertIsNone(activity['incomplete_reason'])
+        self.assertEqual(activity['source'], {
+            'workflow_run_id': 45129694411, 'workflow_run_attempt': 2,
+            'workflow_commit': 'b' * 40, 'workflow_repository': 'karma-works/schlange'})
+        self.assertEqual(activity['scenario_finished_at'], finished)
+        self.assertEqual(activity['collected_at'], recorded)
+        self.assertEqual(activity['query']['received_to'], finished)
+        self.assertEqual(activity['query']['pull_requests'], [298])
+        self.assertEqual(activity['query']['event_types'], [
+            'action.queue.enter', 'action.queue.leave', 'action.queue.merged'])
+        self.assertEqual([(e['id'], e['kind']) for e in activity['events']], [
+            (1, 'enter'), (2, 'leave'), (3, 'enter'), (4, 'leave'), (5, 'merged')])
+        self.assertEqual(activity['events'][1]['reason_code'], 'PR_MANUALLY_DEQUEUED')
+        self.assertEqual(activity['events'][3]['merged'], True)
+        self.assertEqual(activity['events'][4]['merge_commit_sha'], 'a' * 40)
+        self.assertEqual(len(client.urls), 2)
+        self.assertNotIn('private', json.dumps(activity))
+
+    def test_reference_activity_accepts_documented_nullable_leave_session_and_repo_name(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                 'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 7}}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                  'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        event = {'id': 1, 'received_at': '2026-01-01T00:01:00Z',
+                 'repository': 'queue-lab', 'pull_request': 7,
+                 'type': 'action.queue.leave', 'metadata': {
+                     'queue_name': 'default', 'branch': 'main',
+                     'queued_at': '2026-01-01T00:00:30Z', 'session_id': None,
+                     'merged': False, 'dequeue_code': 'PR_MANUALLY_DEQUEUED'}}
+
+        class Client:
+            def activity_page(self, _):
+                return {'size': 1, 'per_page': 100, 'events': [event]}, {}
+
+        activity = driver.capture_reference_activity(
+            state, Client(), '2026-01-01T00:10:01Z', source)
+        self.assertTrue(activity['complete'], activity)
+        self.assertEqual(activity['events'][0]['reason_code'], 'PR_MANUALLY_DEQUEUED')
+
+    def test_reference_activity_fails_closed_on_scope_paging_and_event_errors(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                 'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 7}}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                  'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        event = {'id': 1, 'received_at': '2026-01-01T00:01:00Z',
+                 'repository': 'schlange-sandbox/queue-lab', 'pull_request': 7,
+                 'type': 'action.queue.leave', 'metadata': {
+                     'queue_name': 'default', 'branch': 'main',
+                     'queued_at': '2026-01-01T00:00:30Z',
+                     'session_id': '11111111-1111-4111-8111-111111111111',
+                     'merged': False, 'dequeue_code': 'PR_MANUALLY_DEQUEUED'}}
+
+        class Client:
+            def __init__(self, page, link=None):
+                self.page, self.link = page, link
+
+            def activity_page(self, url):
+                link = self.link(url) if callable(self.link) else self.link
+                return self.page, ({'Link': link} if link else {})
+
+        cases = {
+            'duplicate-id': ({'size': 2, 'per_page': 100, 'events': [event, event]}, None),
+            'unknown-reason': ({'size': 1, 'per_page': 100,
+                                'events': [{**event, 'metadata': {**event['metadata'],
+                                                                 'dequeue_code': 'PRIVATE_REASON'}}]}, None),
+            'unhashable-reason': ({'size': 1, 'per_page': 100,
+                                   'events': [{**event, 'metadata': {**event['metadata'],
+                                                                    'dequeue_code': []}}]}, None),
+            'missing-nonmerged-reason': ({'size': 1, 'per_page': 100,
+                                          'events': [{**event, 'metadata': {
+                                              **event['metadata'], 'dequeue_code': None}}]}, None),
+            'wrong-repository': ({'size': 1, 'per_page': 100,
+                                  'events': [{**event, 'repository': 'other/repo'}]}, None),
+            'size-mismatch': ({'size': 2, 'per_page': 100, 'events': [event]}, None),
+            'foreign-next': ({'size': 1, 'per_page': 100, 'events': [event]},
+                             lambda _: '<https://evil.invalid/v1/repos/schlange-sandbox/queue-lab/logs?cursor=x>; rel="next"'),
+            'changed-filter': ({'size': 1, 'per_page': 100, 'events': [event]},
+                               lambda url: f'<{url.replace("pull_request=7", "pull_request=8")}&cursor=x>; rel="next"'),
+            'extra-filter': ({'size': 1, 'per_page': 100, 'events': [event]},
+                             lambda url: f'<{url}&private=x&cursor=y>; rel="next"'),
+            'changed-path': ({'size': 1, 'per_page': 100, 'events': [event]},
+                             lambda url: f'<{url.replace("/logs?", "/logs/aggregate?")}&cursor=x>; rel="next"'),
+            'cursor-cycle': ({'size': 1, 'per_page': 100, 'events': [event]},
+                             lambda url: f'<{url}&cursor=x>; rel="next"'),
+            'duplicate-link': ({'size': 1, 'per_page': 100, 'events': [event]},
+                               lambda url: [f'<{url}&cursor=x>; rel="next"',
+                                            f'<{url}&cursor=y>; rel="next"']),
+            'oversize-page': ({'size': 101, 'per_page': 100, 'events': [event] * 101}, None),
+            'equal-time-ambiguous': ({'size': 2, 'per_page': 100, 'events': [
+                event, {**event, 'id': 2, 'type': 'action.queue.enter'}]}, None),
+            'post-finish-cleanup': ({'size': 1, 'per_page': 100, 'events': [
+                {**event, 'received_at': '2026-01-01T00:10:00.500000Z'}]}, None),
+        }
+        for name, (page, link) in cases.items():
+            with self.subTest(name=name):
+                activity = driver.capture_reference_activity(
+                    state, Client(page, link), '2026-01-01T00:10:01Z', source)
+                self.assertFalse(activity['complete'], activity)
+                self.assertIn(activity['incomplete_reason'], driver.REFERENCE_INCOMPLETE_REASONS)
+                self.assertEqual(activity['events'], [])
+
+    def test_reference_activity_requires_actions_provenance_and_exact_enablement(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                 'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 7}}}
+        self.assertTrue(driver.reference_activity_enabled(state, {
+            'GITHUB_ACTIONS': 'true', 'SANDBOX_REFERENCE_ACTIVITY': '1'}))
+        for changed in [
+                {**state, 'repo': 'schlange-e2e'},
+                state,
+        ]:
+            env = {'GITHUB_ACTIONS': 'true', 'SANDBOX_REFERENCE_ACTIVITY': '1'}
+            if changed is state:
+                env['GITHUB_ACTIONS'] = 'false'
+            self.assertFalse(driver.reference_activity_enabled(changed, env))
+
+        class UnusedClient:
+            def activity_page(self, _):
+                self.fail('must not query without provenance')
+
+        activity = driver.capture_reference_activity(
+            state, UnusedClient(), '2026-01-01T00:10:01Z', {'GITHUB_ACTIONS': 'true'})
+        self.assertFalse(activity['complete'])
+        self.assertEqual(activity['incomplete_reason'], 'source_missing')
+        self.assertEqual(activity['events'], [])
+
+        malformed = {**state, 'run_id': ['private'], 'started': {'private': True}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                  'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        activity = driver.capture_reference_activity(malformed, UnusedClient(),
+            '2026-01-01T00:10:01Z', source)
+        self.assertFalse(activity['complete'])
+        self.assertIsNone(activity['scenario_run_id'])
+        self.assertIsNone(activity['query']['received_from'])
+        self.assertNotIn('private', json.dumps(activity))
+
+    def test_reference_activity_rejects_reordered_repeat_cursor(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                 'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 7}}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                  'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+
+        class Client:
+            calls = 0
+
+            def activity_page(self, url):
+                self.calls += 1
+                parsed = driver.urllib.parse.urlsplit(url)
+                pairs = driver.urllib.parse.parse_qsl(parsed.query)
+                fixed = [(key, value) for key, value in pairs if key != 'cursor']
+                query = driver.urllib.parse.urlencode(list(reversed(fixed)) + [('cursor', 'same')])
+                next_url = driver.urllib.parse.urlunsplit((parsed.scheme, parsed.netloc,
+                                                           parsed.path, query, ''))
+                return {'size': 0, 'per_page': 100, 'events': []}, \
+                       {'Link': f'<{next_url}>; rel="next"'}
+
+        client = Client()
+        activity = driver.capture_reference_activity(
+            state, client, '2026-01-01T00:10:01Z', source)
+        self.assertFalse(activity['complete'])
+        self.assertEqual(activity['incomplete_reason'], 'pagination_invalid')
+        self.assertEqual(client.calls, 2)
+
+    def test_reference_activity_discards_valid_prefix_when_later_page_fails(self):
+        state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                 'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                 'timed_out': False, 'prs': {'a': {'number': 7}}}
+        source = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                  'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                  'GITHUB_REPOSITORY': 'karma-works/schlange'}
+        event = {'id': 1, 'received_at': '2026-01-01T00:01:00Z',
+                 'repository': 'schlange-sandbox/queue-lab', 'pull_request': 7,
+                 'type': 'action.queue.enter', 'metadata': {
+                     'queue_name': 'default', 'branch': 'main',
+                     'queued_at': '2026-01-01T00:00:30Z',
+                     'session_id': '11111111-1111-4111-8111-111111111111'}}
+
+        class Client:
+            calls = 0
+
+            def activity_page(self, url):
+                self.calls += 1
+                if self.calls == 1:
+                    return {'size': 1, 'per_page': 100, 'events': [event]}, \
+                           {'Link': f'<{url}&cursor=next>; rel="next"'}
+                raise RuntimeError('offline')
+
+        activity = driver.capture_reference_activity(
+            state, Client(), '2026-01-01T00:10:01Z', source)
+        self.assertFalse(activity['complete'])
+        self.assertEqual(activity['incomplete_reason'], 'transport')
+        self.assertEqual(activity['events'], [])
+
+    def test_record_writes_incomplete_reference_activity_without_changing_private_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            state = {'org': 'schlange-sandbox', 'repo': 'queue-lab', 'run_id': 's18-test',
+                     'started': '2026-01-01T00:00:00Z', 'finished': '2026-01-01T00:10:00Z',
+                     'timed_out': False, 'prs': {'a': {'number': 7}}}
+            (path / 'run.json').write_text(json.dumps(state))
+            human = unittest.mock.Mock()
+            human.call.return_value = {
+                'state': 'open', 'merged': False, 'merged_at': None, 'merged_by': None,
+                'merge_commit_sha': None, 'head': {'sha': 'a' * 40}, 'labels': []}
+            human.paged.return_value = []
+            reference = unittest.mock.Mock()
+            reference.activity_page.side_effect = RuntimeError('offline')
+            reference.call.return_value = {'events': []}
+            env = {'GITHUB_ACTIONS': 'true', 'SANDBOX_REFERENCE_ACTIVITY': '1',
+                   'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
+                   'GITHUB_SHA': 'b' * 40, 'GITHUB_REPOSITORY': 'karma-works/schlange'}
+            with patch.object(driver, 'human_client', return_value=human), \
+                 patch.object(driver, 'mergify_client', return_value=reference), \
+                 patch.object(driver, 'now_iso', return_value='2026-01-01T00:10:01Z'), \
+                 patch.dict(driver.os.environ, env, clear=True):
+                driver.record(path)
+                driver.write_outcome(path)
+                driver.write_reference_activity(path)
+            activity = json.loads((path / 'reference-activity.json').read_text())
+            self.assertFalse(activity['complete'])
+            self.assertEqual(activity['incomplete_reason'], 'transport')
+            self.assertEqual(activity['events'], [])
+            self.assertTrue((path / 'trace.json').exists())
+            self.assertTrue((path / 'outcome.json').exists())
+
+    def test_reference_activity_credentialed_read_refuses_redirects(self):
+        client = driver.Client(lambda: ('token', 100), 'mergify')
+        redirect = urllib.error.HTTPError('https://api.mergify.com/v1/repos/x/y/logs', 302,
+                                          'redirect', {'Location': 'https://evil.invalid/'}, io.BytesIO())
+        with patch.object(driver.NO_REDIRECT_OPENER, 'open', side_effect=redirect):
+            with self.assertRaises(RuntimeError):
+                client.activity_page('https://api.mergify.com/v1/repos/x/y/logs')
+
+        class Response:
+            headers = unittest.mock.Mock()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, amount):
+                self.amount = amount
+                return b'x' * amount
+
+        response = Response()
+        with patch.object(driver.NO_REDIRECT_OPENER, 'open', return_value=response):
+            with self.assertRaises(RuntimeError):
+                client.activity_page('https://api.mergify.com/v1/repos/x/y/logs')
+        self.assertEqual(response.amount, driver.REFERENCE_ACTIVITY_MAX_RESPONSE_BYTES + 1)
 
     def test_recording_rejects_malformed_reference_event_log(self):
         with tempfile.TemporaryDirectory() as directory:

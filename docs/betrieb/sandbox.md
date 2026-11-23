@@ -344,12 +344,33 @@ The workflow independently records Mergify events and checks every selected PR's
 merge, batch, order and dequeue reason against the shadow report. Empty, pending, inconclusive,
 unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
 `report.json` and `verification.json`, without upstream prose or private serve logs.
+A failed comparison writes `complete: false` to `verification.json` and exits nonzero.
+
+After either result, the workflow reads the local database in query-only mode and publishes
+`schlange-dequeue-causes.json`. It classifies selected Schlange `PR_DEQUEUED` occurrences by
+queue-condition index, base conflict, hold, closed pull request, or other cause. The export
+contains row IDs, PR numbers, timestamps, and cause codes. Invalid inputs produce an incomplete
+marker. The strict comparison uses its own evidence.
+
+`reference-history-check.json` is a separate same-run integrity check for the public Activity Log
+capture. It binds the workflow run, attempt, commit, repository, scenario interval and exact pull
+request set, then compares entry counts, ordered non-merge dequeue codes and terminal merges with
+the driver's `outcome.json`. A terminal merge requires both its merge leave and merged record.
+The workflow retains an incomplete result without making this diagnostic a gate. It validates only
+the captured reference history; it is not a shadow agreement verdict.
 
 Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
 closure, `ci-ok` and Mergify check completion times, member merge times, and the activity
 log's receipt times for queue entries and exits. Draft title references are hints limited to
 scenario PR numbers. Missing activity logs or malformed required observations set `complete`
 to `false`. Receipt times may lag the action. This artifact does not affect baseline comparison.
+
+Shadow runs on `queue-lab` also publish `reference-activity.json`. The export records Mergify
+queue entries, exits, and merges for the scenario PRs. It binds those events to the Actions
+run, attempt, commit, and scenario time window. The query ends at scenario completion so
+cleanup events stay outside the window. A failed, truncated, or ambiguous read produces
+`complete: false` and an empty event list. The existing outcome and shadow verifier use
+their own evidence.
 
 The shadow report stores queue-entry, batch and dequeue occurrences as append-only events and
 compares entry counts and ordered dequeue-code histories. The independent verifier therefore
