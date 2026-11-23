@@ -181,6 +181,15 @@ jobs:
             sleep 5
           done
           exit 1
+      - name: Export structural Schlange dequeue causes
+        if: ${{ always() && inputs.shadow_mode && inputs.repo == 'queue-lab' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        # Optional structural diagnosis only: it does not feed the strict comparison.
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-evidence"
+          python3 -I sandbox/ci/export-shadow-causes.py \
+            "$RUNNER_TEMP/schlange-data/schlange.db" \
+            "$RUNNER_TEMP/sandbox-runs" \
+            "$RUNNER_TEMP/shadow-evidence/schlange-dequeue-causes.json"
       - name: Stop schlange serve, show the end of its log
         if: ${{ always() && (inputs.repo == 'schlange-e2e' || inputs.repo == 'schlange-e2e-isolated' || inputs.shadow_mode) }}
         run: |

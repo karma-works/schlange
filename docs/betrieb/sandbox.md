@@ -346,6 +346,12 @@ unfinished or timed-out comparisons fail. The public artifact includes `service.
 `report.json` and `verification.json`, without upstream prose or private serve logs.
 A failed comparison writes `complete: false` to `verification.json` and exits nonzero.
 
+After either result, the workflow reads the local database in query-only mode and publishes
+`schlange-dequeue-causes.json`. It classifies selected Schlange `PR_DEQUEUED` occurrences by
+queue-condition index, base conflict, hold, closed pull request, or other cause. The export
+contains row IDs, PR numbers, timestamps, and cause codes. Invalid inputs produce an incomplete
+marker. The strict comparison uses its own evidence.
+
 Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
 closure, `ci-ok` and Mergify check completion times, member merge times, and the activity
 log's receipt times for queue entries and exits. Draft title references are hints limited to
