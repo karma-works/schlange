@@ -682,6 +682,7 @@ class CheckpointTests(unittest.TestCase):
                 driver.snapshot_shadow_report(path)
             snapshot = json.loads((path / 'shadow-report.json').read_text())
             self.assertTrue(snapshot['complete'], snapshot)
+            self.assertFalse((path / 'shadow-report.json.tmp').exists())
             self.assertEqual(snapshot['selected_pull_requests'], [41, 42])
             self.assertEqual(snapshot['scenario_run_id'], state['run_id'])
             self.assertEqual(snapshot['scenario_finished_at'], state['finished'])

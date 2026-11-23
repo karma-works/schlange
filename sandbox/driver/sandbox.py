@@ -1308,8 +1308,10 @@ def snapshot_shadow_report(out):
                             incomplete("selected_prs_missing")
                         if attempt + 1 < SHADOW_SNAPSHOT_MAX_ATTEMPTS:
                             time.sleep(5)
-    (out / "shadow-report.json").write_text(
-        json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    destination = out / "shadow-report.json"
+    temporary = out / "shadow-report.json.tmp"
+    temporary.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    temporary.replace(destination)
 
 
 def write_reference_activity(out):
