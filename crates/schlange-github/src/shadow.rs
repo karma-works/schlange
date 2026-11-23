@@ -43,14 +43,11 @@ use serde_json::json;
 
 use crate::client::Priority;
 use crate::forge::GithubForge;
-use crate::store::{ShadowFact, Store};
+use crate::store::{SHADOW_EVENTS_PER_STREAM_MAX, SHADOW_EVENTS_REPO_MAX, ShadowFact, Store};
 use crate::webhook::ShadowPull;
 
 /// Virtual draft numbers start here (far above any real pull request number).
 pub const VIRTUAL_DRAFTS: u64 = 1_000_000_000;
-/// A single pull request cannot grow one occurrence stream without bound. Reaching this
-/// limit records an explicit incomplete-history marker; reports then fail closed.
-const HISTORY_MAX: usize = 1_024;
 
 pub const SCHLANGE: &str = "schlange";
 pub const MERGIFY: &str = "mergify";
@@ -111,6 +108,8 @@ pub struct Shadow {
     event_keys: BTreeSet<String>,
     /// Counts from the complete durable event rows, never from the report's working set.
     event_counts: BTreeMap<(String, u64, String), usize>,
+    /// Complete repository event count from the bounded durable startup snapshot.
+    event_total: usize,
     seq: u64,
     /// Decisions answered or dropped here instead of being sent.
     pub suppressed: u64,
@@ -188,14 +187,23 @@ fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
 
 impl Shadow {
     pub fn new(cfg: ShadowConfig, repo: &str, store: Option<Store>) -> Self {
-        let facts = store
-            .as_ref()
-            .and_then(|s| s.shadow_facts(repo).ok())
-            .unwrap_or_default();
-        let events = store
-            .as_ref()
-            .and_then(|s| s.shadow_events(repo).ok())
-            .unwrap_or_default();
+        let facts_result = store.as_ref().map(|s| s.shadow_facts(repo));
+        let events_result = store.as_ref().map(|s| s.shadow_events(repo));
+        let load_failed = facts_result.as_ref().is_some_and(Result::is_err)
+            || events_result.as_ref().is_some_and(Result::is_err);
+        let mut facts = facts_result.and_then(Result::ok).unwrap_or_default();
+        let events = events_result.and_then(Result::ok).unwrap_or_default();
+        if load_failed {
+            facts.push(ShadowFact {
+                repo: repo.into(),
+                side: "observer".into(),
+                pr: 0,
+                kind: "history_incomplete".into(),
+                at: 0,
+                data: json!({ "reason": "storage", "durable": false }),
+                seq: 0,
+            });
+        }
         let mut event_keys: BTreeSet<String> = events
             .iter()
             .map(|(f, key)| format!("{}:{}:{}:{key}", f.side, f.pr, f.kind))
@@ -233,6 +241,7 @@ impl Shadow {
             seen_runs: BTreeSet::new(),
             event_keys,
             event_counts,
+            event_total: events.len(),
             seq,
             suppressed: 0,
         }
@@ -308,17 +317,30 @@ impl Shadow {
         if self.event_keys.contains(&identity) {
             return true;
         }
+        if self.has("observer", 0, "history_incomplete") {
+            return self.mark_history_incomplete(
+                "observer",
+                0,
+                at,
+                json!({ "reason": "repository_limit" }),
+            );
+        }
+        if self.event_total >= SHADOW_EVENTS_REPO_MAX {
+            return self.mark_history_incomplete(
+                "observer",
+                0,
+                at,
+                json!({ "reason": "repository_limit" }),
+            );
+        }
         let count_key = (side.to_string(), pr, kind.to_string());
-        if self.event_counts.get(&count_key).copied().unwrap_or(0) >= HISTORY_MAX {
-            self.fact(
+        if self.event_counts.get(&count_key).copied().unwrap_or(0) >= SHADOW_EVENTS_PER_STREAM_MAX {
+            return self.mark_history_incomplete(
                 side,
                 pr,
-                "history_incomplete",
                 at,
                 json!({ "stream": kind, "reason": "limit" }),
-                true,
             );
-            return true;
         }
         self.seq += 1;
         let f = ShadowFact {
@@ -336,21 +358,64 @@ impl Shadow {
                 Ok(false) | Err(_) => {
                     // Do not claim the source key or occurrence in memory. The durable inbox
                     // may replay it after storage recovers; meanwhile the report fails closed.
-                    self.fact(
+                    return self.mark_history_incomplete(
                         side,
                         pr,
-                        "history_incomplete",
                         at,
                         json!({ "stream": kind, "reason": "storage" }),
-                        true,
                     );
-                    return false;
                 }
             }
         }
         self.event_keys.insert(identity);
         *self.event_counts.entry(count_key).or_insert(0) += 1;
+        self.event_total += 1;
         self.facts.push(f);
+        true
+    }
+
+    /// The marker is part of the correctness boundary: only claim it in memory after the
+    /// singleton row is durable. With no store (unit-only shadow), memory is the authority.
+    fn mark_history_incomplete(
+        &mut self,
+        side: &str,
+        pr: u64,
+        at: Time,
+        data: serde_json::Value,
+    ) -> bool {
+        let existing = self
+            .facts
+            .iter()
+            .position(|f| f.side == side && f.pr == pr && f.kind == "history_incomplete");
+        if existing.is_some_and(|i| self.facts[i].data["durable"] != false) {
+            return true;
+        }
+        let mut f = ShadowFact {
+            repo: self.repo.clone(),
+            side: side.into(),
+            pr,
+            kind: "history_incomplete".into(),
+            at,
+            data,
+            seq: self.seq + 1,
+        };
+        if let Some(store) = &self.store
+            && store.shadow_record(&f, true).is_err()
+        {
+            // Visible immediately so a storage outage cannot look like zero-history
+            // agreement, but explicitly non-durable so replay still retries it.
+            f.data["durable"] = json!(false);
+            match existing {
+                Some(i) => self.facts[i] = f,
+                None => self.facts.push(f),
+            }
+            return false;
+        }
+        self.seq += 1;
+        match existing {
+            Some(i) => self.facts[i] = f,
+            None => self.facts.push(f),
+        }
         true
     }
 
@@ -718,15 +783,15 @@ impl Shadow {
     /// Records structured membership directly from a signed, durable pull-request webhook.
     /// The payload is evidence only for the observer; the engine still acts exclusively on
     /// fresh forge reads. Prefix, author and structured-member checks are identical to reads.
-    pub fn observe_pull_webhook(&mut self, p: &ShadowPull, now: Time) {
+    pub fn observe_pull_webhook(&mut self, p: &ShadowPull, now: Time) -> bool {
         if p.author != self.cfg.mergify_login
             || !p.head_ref.starts_with(&self.cfg.mergify_queue_prefix)
         {
-            return;
+            return true;
         }
         let prs = draft_members(&p.title, &p.body, p.number);
         if prs.is_empty() {
-            return;
+            return true;
         }
         self.drafts.insert(
             p.number,
@@ -735,8 +800,9 @@ impl Shadow {
                 prs: prs.clone(),
             },
         );
+        let mut durable = true;
         for n in prs.iter().copied() {
-            self.event(
+            durable &= self.event(
                 MERGIFY,
                 n,
                 "queued",
@@ -744,7 +810,7 @@ impl Shadow {
                 now,
                 json!({ "draft": p.number, "source": "webhook" }),
             );
-            self.event(
+            durable &= self.event(
                 MERGIFY,
                 n,
                 "batch",
@@ -753,6 +819,7 @@ impl Shadow {
                 json!({ "draft": p.number, "prs": prs, "source": "webhook" }),
             );
         }
+        durable
     }
 
     /// Reads what Mergify did since the last round: merges (who merged, when), drafts that
@@ -1021,6 +1088,8 @@ impl<'de> Deserialize<'de> for PrComparison {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowReport {
     pub repository: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_incomplete: bool,
     pub agreements: usize,
     pub disagreements: usize,
     pub inconclusive: usize,
@@ -1039,6 +1108,9 @@ fn list(v: &serde_json::Value) -> Vec<u64> {
 
 /// Compares the two sides' facts per pull request.
 pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
+    let repository_history_incomplete = facts
+        .iter()
+        .any(|f| f.pr == 0 && f.kind == "history_incomplete");
     let get = |side: &str, pr: u64, kind: &str| {
         facts
             .iter()
@@ -1058,7 +1130,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     };
     // A watched pull request with no queue event is explicit negative evidence. This is how
     // selected never-enqueued sandbox cases distinguish zero from a missing observation.
-    let prs: BTreeSet<u64> = facts.iter().map(|f| f.pr).collect();
+    let prs: BTreeSet<u64> = facts.iter().filter(|f| f.pr != 0).map(|f| f.pr).collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
     let mut ours: Vec<(u64, u64)> = facts
         .iter()
@@ -1252,6 +1324,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     let count = |v: &str| out.iter().filter(|p| p.verdict == v).count();
     ShadowReport {
         repository: repo.to_string(),
+        history_incomplete: repository_history_incomplete,
         agreements: count("agree"),
         disagreements: count("disagree"),
         inconclusive: count("inconclusive"),
@@ -1291,6 +1364,12 @@ impl ShadowReport {
             ));
         }
         let mut out = vec![head];
+        if self.history_incomplete {
+            out.push(
+                "repository occurrence history is incomplete; no acceptance claim is possible"
+                    .into(),
+            );
+        }
         for p in self
             .pull_requests
             .iter()
@@ -1719,13 +1798,8 @@ mod tests {
         };
         s.observe_pull_webhook(&pull, 1);
         assert!(!s.has(MERGIFY, 50, "queued"));
-        assert!(s.has(MERGIFY, 50, "history_incomplete"));
-
-        // Removing persistence simulates recovery for the retry: the same source ID was not
-        // claimed by the failed append and can still be observed.
-        s.store = None;
-        s.observe_pull_webhook(&pull, 2);
-        assert!(s.has(MERGIFY, 50, "queued"));
+        assert!(s.has("observer", 0, "history_incomplete"));
+        assert!(!s.event_keys.contains("mergify:50:queued:draft:80"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1733,7 +1807,7 @@ mod tests {
     fn occurrence_limit_marks_history_inconclusive_instead_of_false_agreement() {
         let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
         s.fact(SCHLANGE, 50, "seen", 0, json!({}), true);
-        for n in 0..=HISTORY_MAX {
+        for n in 0..=SHADOW_EVENTS_PER_STREAM_MAX {
             s.event(
                 SCHLANGE,
                 50,
@@ -1748,10 +1822,21 @@ mod tests {
                 .iter()
                 .filter(|f| f.side == SCHLANGE && f.pr == 50 && f.kind == "queued")
                 .count(),
-            HISTORY_MAX
+            SHADOW_EVENTS_PER_STREAM_MAX
         );
         let row = report("o/r", s.facts()).pull_requests.remove(0);
         assert_eq!(row.verdict, "inconclusive");
         assert!(row.history_incomplete);
+    }
+
+    #[test]
+    fn repository_occurrence_limit_marks_the_whole_report_incomplete() {
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        s.fact(SCHLANGE, 50, "seen", 0, json!({}), true);
+        s.event_total = SHADOW_EVENTS_REPO_MAX;
+        assert!(s.event(SCHLANGE, 50, "queued", "entry:1", 1, json!({})));
+        let report = report("o/r", s.facts());
+        assert!(report.history_incomplete);
+        assert_eq!(report.pull_requests[0].queue_entries.schlange, 0);
     }
 }

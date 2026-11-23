@@ -477,6 +477,65 @@ fn a_short_lived_queue_draft_is_captured_from_its_durable_webhook() {
 }
 
 #[test]
+fn shadow_storage_failure_leaves_webhook_pending_until_restart_recovers_it() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    assert!(store.inbox_pending().unwrap().is_empty());
+    rusqlite::Connection::open(t.serve_cfg.data_dir.as_ref().unwrap().join("schlange.db"))
+        .unwrap()
+        .execute_batch("DROP TABLE shadow_events; DROP TABLE shadow")
+        .unwrap();
+
+    t.gh.mergify_embark(&[n]);
+    t.wait_until("shadow observer exposes its non-durable failure", |t| {
+        report(t)["pull_requests"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["number"] == n && row["history_incomplete"] == true)
+        })
+    });
+    assert!(
+        store
+            .inbox_pending()
+            .unwrap()
+            .iter()
+            .any(|row| row.2 == "pull_request")
+    );
+    let failed = report(&t);
+    let row = failed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["verdict"], "inconclusive", "{failed:#}");
+    assert_eq!(row["history_incomplete"], true, "{failed:#}");
+
+    t.stop_service();
+    t.start_service(); // Store::open recreates both tables before inbox replay.
+    t.wait_until("pending shadow webhook is durably replayed", |_| {
+        store.inbox_pending().unwrap().is_empty()
+    });
+    let facts = Store::open(t.serve_cfg.data_dir.as_ref().unwrap())
+        .unwrap()
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap();
+    assert!(facts.iter().any(|f| {
+        f.pr == n && f.side == "mergify" && (f.kind == "queued" || f.kind == "history_incomplete")
+    }));
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
 fn a_closed_queued_pr_keeps_its_dequeue_reason_and_completed_runs_are_deduplicated() {
     use schlange_github::store::Store;
     // The engine currently calls a closed PR PR_DEQUEUED. Preserve any actual

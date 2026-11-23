@@ -339,6 +339,9 @@ acceptance; that still requires a reviewed sandbox run.
 Selected pull requests which never enter either queue appear as explicit zero-history agreement
 rows. An unfinished latest cycle remains pending. Per-PR streams are bounded; a storage failure
 or limit marks the history incomplete and the verifier refuses it rather than comparing a prefix.
+The repository-wide occurrence limit is 200,000 rows. Existing overflow is detected before
+event rows are loaded and produces a durable top-level incomplete marker. If the occurrence and
+marker writes both fail, the webhook inbox delivery remains pending for replay after recovery.
 
 ## Results of the first full comparison (2026-10-28)
 

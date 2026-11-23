@@ -175,6 +175,10 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.report['pull_requests'][0]['history_incomplete'] = True
         self.assertNotEqual(self.check().returncode, 0)
 
+    def test_repository_wide_incomplete_history_cannot_be_agreement(self):
+        self.report['history_incomplete'] = True
+        self.assertNotEqual(self.check().returncode, 0)
+
     def test_foreign_or_unknown_merge_cannot_prove_mergify_landing(self):
         for merger in (False, None, 'mergify[bot]'):
             with self.subTest(merger=merger):

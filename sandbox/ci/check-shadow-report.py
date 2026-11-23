@@ -10,6 +10,9 @@ from pathlib import Path
 
 
 def verify(report, recordings):
+    if (type(report.get('history_incomplete', False)) is not bool
+            or report.get('history_incomplete', False)):
+        raise ValueError('repository shadow occurrence history is incomplete')
     if report.get('repository') != 'schlange-sandbox/queue-lab':
         raise ValueError('shadow report is not for the reference sandbox')
     rows = report.get('pull_requests')

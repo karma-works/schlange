@@ -74,8 +74,12 @@ compares that with what Mergify did, per pull request.
   A watched pull request with no queue events is an explicit zero-entry/zero-dequeue agreement,
   rather than being omitted. Each per-PR occurrence stream is limited to 1,024 rows; reaching
   the limit or failing a durable append sets `history_incomplete` and makes the report
-  inconclusive instead of comparing a prefix. Only the literal dequeue code and check-run ID
-  are retained, not the upstream check title or summary.
+  inconclusive instead of comparing a prefix. A repository is additionally limited to 200,000
+  occurrence rows. Startup detects either pre-existing overflow before loading the event rows,
+  persists a repository-wide marker and exposes the top-level `history_incomplete` flag. Only
+  the literal dequeue code and check-run ID are retained, not the upstream check title or summary.
+  If neither an occurrence nor its incomplete-history marker can be stored, the worker leaves
+  the durable webhook inbox row pending; restart replays it after storage recovers.
 - `acceptance-run`: missing. Two weeks on Arztagent next to the real Mergify (KONZEPT.md,
   section 11) have not happened; only the fake GitHub's scripted other queue was compared.
   W-01/W-02 latency is not measured against Mergify yet.
@@ -97,6 +101,7 @@ Preconditions:
 - **Fake GitHub, report.** `cargo test -p schlange-github-fake --test shadow the_report_agrees_with_the_other_queue_and_names_each_difference`: two pull requests agree (queued, landed, order 1 and 2, batch `[a, b]`); a dequeue code differs (`CHECKS_FAILED` vs `CHECKS_TIMEOUT`) and a pull request only the other queue took are disagreements.
 - **Restart.** `cargo test -p schlange-github-fake --test shadow the_report_survives_a_restart_from_the_database`.
 - **Short-lived draft.** `cargo test -p schlange-github-fake --test shadow a_short_lived_queue_draft_is_captured_from_its_durable_webhook` closes the queue draft before reconciliation and verifies that replay preserves one entry.
+- **Observer storage failure.** `cargo test -p schlange-github-fake --test shadow shadow_storage_failure_leaves_webhook_pending_until_restart_recovers_it` removes both shadow tables, verifies that the delivery stays pending and the live report fails closed, then restarts and observes durable replay.
 
 ## Gotchas
 
