@@ -32,6 +32,7 @@ use schlange_core::model::Time;
 pub const DB_FILE: &str = "schlange.db";
 pub const SHADOW_EVENTS_PER_STREAM_MAX: usize = 1_024;
 pub const SHADOW_EVENTS_REPO_MAX: usize = 200_000;
+pub const SHADOW_DRAFT_PROBES_MAX: usize = 256;
 const SCHEMA_VERSION: i64 = 1;
 
 /// One webhook delivery still queued in the inbox: id, repository, event and raw body.
@@ -577,9 +578,10 @@ impl Store {
 
     /// Every shadow fact of a repository, in the order they were first written.
     pub fn shadow_facts(&self, repo: &str) -> rusqlite::Result<Vec<ShadowFact>> {
-        let mut facts: Vec<ShadowFact> = self.with(|c| {
+        let (mut facts, probes_over): (Vec<ShadowFact>, bool) = self.with(|c| {
             let mut st = c.prepare(
-                "SELECT repo, side, pr, kind, at, data, id FROM shadow WHERE repo = ?1 ORDER BY id",
+                "SELECT repo, side, pr, kind, at, data, id FROM shadow \
+                 WHERE repo = ?1 AND kind <> 'draft_probe' ORDER BY id",
             )?;
             let rows = st.query_map(params![repo], |r| {
                 let data: String = r.get(5)?;
@@ -593,8 +595,46 @@ impl Store {
                     seq: r.get::<_, i64>(6)? as u64,
                 })
             })?;
-            rows.collect()
+            let mut facts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut probes = c.prepare(
+                "SELECT repo, side, pr, kind, at, data, id FROM shadow \
+                 WHERE repo = ?1 AND kind = 'draft_probe' ORDER BY id LIMIT ?2",
+            )?;
+            let rows =
+                probes.query_map(params![repo, (SHADOW_DRAFT_PROBES_MAX + 1) as i64], |r| {
+                    let data: String = r.get(5)?;
+                    Ok(ShadowFact {
+                        repo: r.get(0)?,
+                        side: r.get(1)?,
+                        pr: r.get::<_, i64>(2)? as u64,
+                        kind: r.get(3)?,
+                        at: r.get::<_, i64>(4)? as u64,
+                        data: serde_json::from_str(&data).unwrap_or_default(),
+                        seq: r.get::<_, i64>(6)? as u64,
+                    })
+                })?;
+            let mut probe_rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            let probes_over = probe_rows.len() > SHADOW_DRAFT_PROBES_MAX;
+            probe_rows.truncate(SHADOW_DRAFT_PROBES_MAX);
+            facts.extend(probe_rows);
+            facts.sort_by_key(|fact| fact.seq);
+            Ok((facts, probes_over))
         })?;
+        if probes_over {
+            let marker = ShadowFact {
+                repo: repo.into(),
+                side: "observer".into(),
+                pr: 0,
+                kind: "draft_probe_truncated".into(),
+                at: crate::time::unix_now(),
+                data: serde_json::json!({ "reason": "candidate_limit" }),
+                seq: 0,
+            };
+            self.shadow_record(&marker, true)?;
+            if !facts.iter().any(|fact| fact.kind == marker.kind) {
+                facts.push(marker);
+            }
+        }
         let (events, incomplete) = self.shadow_event_snapshot(repo)?;
         facts.extend(events.into_iter().map(|(fact, _)| fact));
         if incomplete
@@ -1553,6 +1593,45 @@ mod tests {
         assert!(incomplete);
         assert!(
             s.shadow_has("o/s", "observer", 0, "history_incomplete")
+                .unwrap()
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn oversized_draft_probe_snapshot_is_bounded_and_durably_marked() {
+        let d = dir("shadow-probe-bound");
+        let s = Store::open(&d).unwrap();
+        for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 + 1 {
+            s.shadow_record(
+                &ShadowFact {
+                    repo: "o/r".into(),
+                    side: "observer".into(),
+                    pr: number,
+                    kind: "draft_probe".into(),
+                    at: number,
+                    data: serde_json::json!({}),
+                    seq: number,
+                },
+                false,
+            )
+            .unwrap();
+        }
+        let facts = s.shadow_facts("o/r").unwrap();
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| fact.kind == "draft_probe")
+                .count(),
+            SHADOW_DRAFT_PROBES_MAX
+        );
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.kind == "draft_probe_truncated")
+        );
+        assert!(
+            s.shadow_has("o/r", "observer", 0, "draft_probe_truncated")
                 .unwrap()
         );
         let _ = std::fs::remove_dir_all(d);
