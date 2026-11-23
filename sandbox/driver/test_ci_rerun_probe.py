@@ -41,7 +41,8 @@ class SameHeadRerunProbeTests(unittest.TestCase):
 
     def test_rerun_records_pending_and_green_on_the_same_head_and_attempt(self):
         run, client = self.probe()
-        with patch.object(driver, "workflow_check_identity", return_value=90),              patch.object(driver.time, "sleep"):
+        with patch.object(driver, "workflow_check_identity", return_value=90), \
+             patch.object(driver.time, "sleep"):
             run.step_rerun_ci({"rerun_ci": "a"})
         self.assertEqual([point["kind"] for point in run.checkpoints],
                          ["queued", "ci_rerun_requested", "ci_rerun_pending", "ci_rerun_green"])
@@ -70,7 +71,8 @@ class SameHeadRerunProbeTests(unittest.TestCase):
         client.call.side_effect = [
             pr, {"id": 90, "head_sha": self.head, "status": "completed", "run_attempt": 1}, None, moved,
         ]
-        with patch.object(driver, "workflow_check_identity", return_value=90),              self.assertRaisesRegex(RuntimeError, "head changed"):
+        with patch.object(driver, "workflow_check_identity", return_value=90), \
+             self.assertRaisesRegex(RuntimeError, "head changed"):
             run.step_rerun_ci({"rerun_ci": "a"})
         self.assertEqual([point["kind"] for point in run.checkpoints],
                          ["queued", "ci_rerun_requested"])
