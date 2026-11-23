@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use schlange_config::conditions::{Atom, Condition, Operator};
 use schlange_config::rules::{MergeMethod, Rules};
 
 pub use crate::control::PendingCommand;
@@ -384,6 +385,9 @@ pub enum Decision {
 pub enum EntryStatus {
     /// Waiting for a car.
     Waiting,
+    /// A newer run replaced a successful required pull-request check at the same head and is
+    /// still pending. The pull request keeps its queue position but cannot build or land.
+    CheckReplacementPending,
     /// Checked in a car.
     InCar { car: u64 },
     /// Part of a red batch that is being split.
@@ -485,6 +489,45 @@ pub struct BaseMoveContext {
     pub observed_tip: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckReplacementRun {
+    pub seq: u64,
+    pub name: String,
+    pub app: String,
+    pub app_id: u64,
+    pub workflow: String,
+    pub event: String,
+}
+
+impl CheckReplacementRun {
+    fn from_run(run: &CheckRun) -> Option<Self> {
+        Some(Self {
+            seq: run.seq,
+            name: run.name.clone(),
+            app: run.app.clone()?,
+            app_id: run.app_id?,
+            workflow: run.workflow.clone()?,
+            event: run.event.clone()?,
+        })
+    }
+
+    fn matches(&self, run: &CheckRun) -> bool {
+        !run.status
+            && run.name == self.name
+            && run.app.as_deref() == Some(&self.app)
+            && run.app_id == Some(self.app_id)
+            && run.workflow.as_deref() == Some(&self.workflow)
+            && run.event.as_deref() == Some(&self.event)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckReplacementGate {
+    pub head_sha: String,
+    pub base: String,
+    pub runs: Vec<CheckReplacementRun>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
@@ -496,6 +539,11 @@ pub struct State {
     /// S17 has not shown them entering the queue after the move.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub base_moved_heads: BTreeMap<u64, BaseMoveContext>,
+    /// Newer attempts which replaced successful, directly required pull-request checks at the
+    /// same head. The queue entry is retained, but no new car may build or land until these
+    /// exact identities (or newer attempts of them) are observed successful.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_replacement_gates: BTreeMap<u64, CheckReplacementGate>,
     /// Branch heads as last read from the forge.
     pub branches: BTreeMap<String, String>,
     /// One queue per base branch.
@@ -919,6 +967,7 @@ pub(crate) fn dequeue(
     let Some(entry) = state.queued.remove(&number) else {
         return;
     };
+    state.check_replacement_gates.remove(&number);
     if blocks_requeue(reason.code)
         && let Some(pr) = state.pull_requests.get(&number)
     {
@@ -951,6 +1000,7 @@ fn enqueue(
     now: Time,
     out: &mut Vec<Decision>,
 ) {
+    state.check_replacement_gates.remove(&number);
     let seq = state.next_id();
     let external_reset = state
         .base_moved_heads
@@ -1151,6 +1201,13 @@ fn evaluate_pull_request(
             // resolves it) decides.
             return;
         }
+        // Once this patch observed a replacement while a landing write was in flight, its
+        // durable gate also preserves the car which owns the irrevocable write's reply.
+        if state.check_replacement_gates.contains_key(&number)
+            && queue::landing_in_flight(state, number)
+        {
+            return;
+        }
         if pr.merged && state.unconfirmed_land.contains(&number) {
             // The queue's own landing, whose reply was lost or lied (MQ-35).
             let sha = pr.merge_commit_sha.clone().unwrap_or_default();
@@ -1194,7 +1251,99 @@ fn evaluate_pull_request(
                 Some(q) => {
                     let conds = crate::gates::queue_conditions(state, q, &entry.base);
                     let (ok, results) = eval::eval_list(&conds, pr, &ctx, &mut errors);
-                    if !ok {
+                    let bound_gate = state.check_replacement_gates.get(&number).is_some_and(|g| {
+                        g.head_sha == pr.head_sha
+                            && g.base == pr.base
+                            && g.head_sha == entry.head_sha
+                            && replacement_gate_is_required(g, &conds)
+                    });
+                    let continued_gate = bound_gate
+                        .then(|| {
+                            continue_replacement_gate(
+                                &state.check_replacement_gates[&number],
+                                &conds,
+                                pr,
+                                &ctx,
+                            )
+                        })
+                        .flatten();
+                    if ok
+                        && holds.is_empty()
+                        && bound_gate
+                        && !replacement_gate_settled(&state.check_replacement_gates[&number], pr)
+                    {
+                        queue::discard_containing(state, rules, &entry.base, number, out);
+                        if let Some(current) = state.queued.get_mut(&number) {
+                            current.status = EntryStatus::CheckReplacementPending;
+                        }
+                        state.holds.insert(
+                            number,
+                            vec![Hold::wait(
+                                "check-replacement-pending",
+                                "a newer run replaced a successful required check and is pending",
+                            )],
+                        );
+                        None
+                    } else if !ok
+                        && holds.is_empty()
+                        && let Some(runs) = continued_gate
+                    {
+                        state
+                            .check_replacement_gates
+                            .get_mut(&number)
+                            .expect("bound above")
+                            .runs = runs;
+                        queue::discard_containing(state, rules, &entry.base, number, out);
+                        if let Some(current) = state.queued.get_mut(&number) {
+                            current.status = EntryStatus::CheckReplacementPending;
+                        }
+                        state.holds.insert(
+                            number,
+                            vec![Hold::wait(
+                                "check-replacement-pending",
+                                "a newer run replaced a successful required check and is pending",
+                            )],
+                        );
+                        None
+                    } else if !ok
+                        && holds.is_empty()
+                        && let Some(runs) =
+                            pending_check_replacements(&conds, pr, &ctx, &results, &errors)
+                    {
+                        let landing_in_flight = queue::landing_in_flight(state, number);
+                        let gate =
+                            state
+                                .check_replacement_gates
+                                .entry(number)
+                                .or_insert_with(|| CheckReplacementGate {
+                                    head_sha: pr.head_sha.clone(),
+                                    base: pr.base.clone(),
+                                    runs: Vec::new(),
+                                });
+                        if gate.head_sha != pr.head_sha || gate.base != pr.base {
+                            *gate = CheckReplacementGate {
+                                head_sha: pr.head_sha.clone(),
+                                base: pr.base.clone(),
+                                runs: Vec::new(),
+                            };
+                        }
+                        merge_replacement_runs(&mut gate.runs, runs);
+                        if !landing_in_flight {
+                            queue::discard_containing(state, rules, &entry.base, number, out);
+                            if let Some(current) = state.queued.get_mut(&number) {
+                                current.status = EntryStatus::CheckReplacementPending;
+                            }
+                        }
+                        state.holds.insert(
+                            number,
+                            vec![Hold::wait(
+                                "check-replacement-pending",
+                                "a newer run replaced a successful required check and is pending",
+                            )],
+                        );
+                        None
+                    } else if !ok {
+                        state.check_replacement_gates.remove(&number);
                         // Sticky (observed on Mergify, sandbox s05 and s07): when the cause goes
                         // away (the label is removed, the draft is ready again) the pull request
                         // is not queued again at this head; a new head or a `queue` command
@@ -1208,6 +1357,16 @@ fn evaluate_pull_request(
                             ),
                         ))
                     } else {
+                        state.check_replacement_gates.remove(&number);
+                        if state
+                            .queued
+                            .get(&number)
+                            .is_some_and(|e| e.status == EntryStatus::CheckReplacementPending)
+                        {
+                            state.queued.get_mut(&number).expect("queued above").status =
+                                EntryStatus::Waiting;
+                            state.holds.remove(&number);
+                        }
                         holds.first().map(|h| {
                             DequeueReason::assumed(
                                 code::PR_DEQUEUED,
@@ -1299,6 +1458,207 @@ fn evaluate_pull_request(
     report_errors(state, number, errors, out);
 }
 
+/// A direct, named positive `check-success = …` requirement may temporarily read false when a
+/// newer GitHub Actions attempt replaces a successful run at the same head. This classifies the
+/// transition only; the prior success is never used to build or land a car.
+fn pending_check_replacements(
+    conditions: &[Condition],
+    pr: &PullRequest,
+    ctx: &Context,
+    results: &[bool],
+    errors: &[eval::EvalError],
+) -> Option<Vec<CheckReplacementRun>> {
+    if !errors.is_empty() || results.len() != conditions.len() {
+        return None;
+    }
+    let current = pr.current_checks();
+    let mut replacements = BTreeSet::new();
+    let mut failed = false;
+    for (condition, holds) in conditions.iter().zip(results) {
+        if *holds {
+            continue;
+        }
+        failed = true;
+        let Condition::Atom(atom) = condition else {
+            return None;
+        };
+        if !direct_named_check_success(atom) {
+            return None;
+        }
+        let run = current.iter().copied().find(|run| {
+            run.conclusion.is_none()
+                && !run.status
+                && run.app.as_deref() == Some("github-actions")
+                && run.app_id.is_some()
+                && run.workflow.is_some()
+                && run.event.is_some()
+                && atom.value.as_deref().is_some_and(|reference| {
+                    eval::check_matches(reference, run)
+                        && atom
+                            .integration_id
+                            .is_none_or(|expected| run.app_id == Some(expected))
+                })
+                && pr.checks.iter().any(|old| {
+                    old.seq < run.seq
+                        && old.conclusion == Some(crate::model::Conclusion::Success)
+                        && same_check_identity(old, run)
+                })
+        })?;
+        replacements.insert(run.seq);
+    }
+    if !failed || replacements.is_empty() {
+        return None;
+    }
+    let mut prior = pr.clone();
+    prior.checks.retain(|run| {
+        run.status || run.head_sha != pr.head_sha || !replacements.contains(&run.seq)
+    });
+    let mut prior_errors = Vec::new();
+    if !eval::eval_list(conditions, &prior, ctx, &mut prior_errors).0 || !prior_errors.is_empty() {
+        return None;
+    }
+    let mut runs: Vec<_> = current
+        .into_iter()
+        .filter(|run| replacements.contains(&run.seq))
+        .filter_map(CheckReplacementRun::from_run)
+        .collect();
+    runs.sort_by(|a, b| {
+        (&a.name, &a.app, a.app_id, &a.workflow, &a.event, a.seq).cmp(&(
+            &b.name,
+            &b.app,
+            b.app_id,
+            &b.workflow,
+            &b.event,
+            b.seq,
+        ))
+    });
+    runs.dedup();
+    (!runs.is_empty()).then_some(runs)
+}
+
+fn replacement_gate_settled(gate: &CheckReplacementGate, pr: &PullRequest) -> bool {
+    let current = pr.current_checks();
+    gate.runs.iter().all(|wanted| {
+        current.iter().any(|run| {
+            wanted.matches(run)
+                && run.seq >= wanted.seq
+                && run.conclusion == Some(crate::model::Conclusion::Success)
+        })
+    })
+}
+
+/// Keeps a durable gate through a lagging or incomplete read when making the exact gated runs
+/// successful would make every queue condition hold. A current terminal result is definitive;
+/// a missing run is not evidence that the newer attempt disappeared.
+fn continue_replacement_gate(
+    gate: &CheckReplacementGate,
+    conditions: &[Condition],
+    pr: &PullRequest,
+    ctx: &Context,
+) -> Option<Vec<CheckReplacementRun>> {
+    let mut view = pr.clone();
+    let mut runs = gate.runs.clone();
+    for wanted in &mut runs {
+        let current = view
+            .checks
+            .iter_mut()
+            .filter(|run| wanted.matches(run) && run.seq >= wanted.seq)
+            .max_by_key(|run| run.seq);
+        match current {
+            Some(run) if run.conclusion.is_none() => {
+                wanted.seq = run.seq;
+                run.conclusion = Some(crate::model::Conclusion::Success);
+            }
+            Some(run) if run.conclusion == Some(crate::model::Conclusion::Success) => {}
+            Some(_) => return None,
+            None => view.checks.push(CheckRun {
+                name: wanted.name.clone(),
+                app: Some(wanted.app.clone()),
+                app_id: Some(wanted.app_id),
+                head_sha: gate.head_sha.clone(),
+                conclusion: Some(crate::model::Conclusion::Success),
+                seq: wanted.seq,
+                workflow: Some(wanted.workflow.clone()),
+                event: Some(wanted.event.clone()),
+                ..Default::default()
+            }),
+        }
+    }
+    let mut errors = Vec::new();
+    let holds = eval::eval_list(conditions, &view, ctx, &mut errors).0;
+    (holds && errors.is_empty()).then_some(runs)
+}
+
+fn merge_replacement_runs(
+    current: &mut Vec<CheckReplacementRun>,
+    observed: Vec<CheckReplacementRun>,
+) {
+    for run in observed {
+        if let Some(old) = current.iter_mut().find(|old| {
+            old.name == run.name
+                && old.app == run.app
+                && old.app_id == run.app_id
+                && old.workflow == run.workflow
+                && old.event == run.event
+        }) {
+            old.seq = old.seq.max(run.seq);
+        } else {
+            current.push(run);
+        }
+    }
+    current.sort_by(|a, b| {
+        (&a.name, &a.app, a.app_id, &a.workflow, &a.event).cmp(&(
+            &b.name,
+            &b.app,
+            b.app_id,
+            &b.workflow,
+            &b.event,
+        ))
+    });
+}
+
+fn replacement_gate_is_required(gate: &CheckReplacementGate, conditions: &[Condition]) -> bool {
+    gate.runs.iter().all(|wanted| {
+        let run = CheckRun {
+            name: wanted.name.clone(),
+            app: Some(wanted.app.clone()),
+            app_id: Some(wanted.app_id),
+            head_sha: gate.head_sha.clone(),
+            workflow: Some(wanted.workflow.clone()),
+            event: Some(wanted.event.clone()),
+            ..Default::default()
+        };
+        conditions.iter().any(|condition| {
+            let Condition::Atom(atom) = condition else {
+                return false;
+            };
+            direct_named_check_success(atom)
+                && atom.value.as_deref().is_some_and(|reference| {
+                    eval::check_matches(reference, &run)
+                        && atom.integration_id.is_none_or(|id| id == wanted.app_id)
+                })
+        })
+    })
+}
+
+fn direct_named_check_success(atom: &Atom) -> bool {
+    !atom.negate
+        && !atom.length
+        && atom.attribute == "check-success"
+        && atom.operator == Some(Operator::Eq)
+        && atom.value.as_deref().is_some_and(|value| !value.is_empty())
+}
+
+fn same_check_identity(a: &CheckRun, b: &CheckRun) -> bool {
+    a.head_sha == b.head_sha
+        && a.status == b.status
+        && a.name == b.name
+        && a.app == b.app
+        && a.app_id == b.app_id
+        && a.workflow == b.workflow
+        && a.event == b.event
+}
+
 fn store_holds(state: &mut State, number: u64, holds: Vec<Hold>) {
     if holds.is_empty() {
         state.holds.remove(&number);
@@ -1356,6 +1716,163 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    fn actions_check(name: &str, conclusion: Option<Conclusion>, seq: u64) -> CheckRun {
+        CheckRun {
+            name: name.into(),
+            app: Some("github-actions".into()),
+            app_id: Some(15368),
+            head_sha: "s1".into(),
+            conclusion,
+            seq,
+            workflow: Some(format!(".github/workflows/{name}.yml")),
+            event: Some("pull_request".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pending_check_replacement_is_narrow_and_keeps_equal_id_status() {
+        let rules = Rules::from_yaml(
+            "queue_rules:\n  - name: default\n    queue_conditions:\n      - check-success = ci\n      - check-success = lint\n",
+        )
+        .unwrap();
+        let conditions = &rules.queue_rules[0].queue_conditions;
+        let mut p = pr(1, "bot");
+        p.checks = vec![
+            actions_check("ci", Some(Conclusion::Success), 7),
+            actions_check("ci", None, 8),
+            CheckRun {
+                name: "lint".into(),
+                head_sha: "s1".into(),
+                conclusion: Some(Conclusion::Success),
+                seq: 8,
+                status: true,
+                ..Default::default()
+            },
+        ];
+        let mut errors = Vec::new();
+        let (_, results) = eval::eval_list(conditions, &p, &Context::default(), &mut errors);
+        assert!(
+            pending_check_replacements(conditions, &p, &Context::default(), &results, &errors)
+                .is_some()
+        );
+
+        let nested = Rules::from_yaml(
+            "queue_rules:\n  - name: default\n    queue_conditions:\n      - or:\n          - check-success = ci\n          - label = override\n",
+        )
+        .unwrap();
+        let conditions = &nested.queue_rules[0].queue_conditions;
+        let mut errors = Vec::new();
+        let (_, results) = eval::eval_list(conditions, &p, &Context::default(), &mut errors);
+        assert!(
+            pending_check_replacements(conditions, &p, &Context::default(), &results, &errors)
+                .is_none()
+        );
+
+        p.checks[1].conclusion = Some(Conclusion::Failure);
+        let mut errors = Vec::new();
+        let (_, results) = eval::eval_list(conditions, &p, &Context::default(), &mut errors);
+        assert!(
+            pending_check_replacements(conditions, &p, &Context::default(), &results, &errors)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn replacement_gate_rejects_a_regressed_snapshot_until_the_observed_attempt_settles() {
+        let rules = Rules::from_yaml(CONFIG).unwrap();
+        let mut opened = pr(1, "bot");
+        opened.checks = vec![actions_check("ci", Some(Conclusion::Success), 7)];
+        let (state, _) = step(
+            &State::default(),
+            &rules,
+            &Event::PullRequestOpened {
+                pull_request: Box::new(opened.clone()),
+            },
+            0,
+        );
+        assert!(state.queued.contains_key(&1));
+
+        let (state, _) = step(
+            &state,
+            &rules,
+            &Event::CheckRun {
+                number: 1,
+                run: actions_check("ci", None, 8),
+            },
+            1,
+        );
+        assert_eq!(
+            state.queued[&1].status,
+            EntryStatus::CheckReplacementPending
+        );
+
+        let mut missing_checks = opened.clone();
+        missing_checks.checks.clear();
+        let (state, _) = step(
+            &state,
+            &rules,
+            &Event::Snapshot {
+                pull_requests: vec![missing_checks],
+                branches: BTreeMap::new(),
+                token: None,
+            },
+            2,
+        );
+        assert_eq!(
+            state.queued[&1].status,
+            EntryStatus::CheckReplacementPending
+        );
+
+        let mut newer_pending_only = opened.clone();
+        newer_pending_only.checks = vec![actions_check("ci", None, 9)];
+        let (state, _) = step(
+            &state,
+            &rules,
+            &Event::Snapshot {
+                pull_requests: vec![newer_pending_only],
+                branches: BTreeMap::new(),
+                token: None,
+            },
+            3,
+        );
+        assert_eq!(state.check_replacement_gates[&1].runs[0].seq, 9);
+
+        // A lagging read loses the newer run. It must not release the durable gate merely
+        // because the older success makes the condition look green again.
+        let (state, decisions) = step(
+            &state,
+            &rules,
+            &Event::Snapshot {
+                pull_requests: vec![opened],
+                branches: BTreeMap::new(),
+                token: None,
+            },
+            4,
+        );
+        assert_eq!(
+            state.queued[&1].status,
+            EntryStatus::CheckReplacementPending
+        );
+        assert!(
+            !decisions
+                .iter()
+                .any(|d| matches!(d, Decision::BuildCar { .. } | Decision::Land { .. }))
+        );
+
+        let (state, _) = step(
+            &state,
+            &rules,
+            &Event::CheckRun {
+                number: 1,
+                run: actions_check("ci", Some(Conclusion::Success), 9),
+            },
+            5,
+        );
+        assert_eq!(state.queued[&1].status, EntryStatus::Waiting);
+        assert!(!state.check_replacement_gates.contains_key(&1));
     }
 
     fn only_queue_decisions(d: Vec<Decision>) -> Vec<Decision> {
