@@ -1600,12 +1600,6 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .iter()
             .find(|f| f.side == side && f.pr == pr && f.kind == kind)
     };
-    let get_last = |side: &str, pr: u64, kind: &str| {
-        facts
-            .iter()
-            .rev()
-            .find(|f| f.side == side && f.pr == pr && f.kind == kind)
-    };
     let history = |side: &str, pr: u64, kind: &str| {
         facts
             .iter()
@@ -1722,28 +1716,35 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
         let s_land = get(SCHLANGE, pr, "landed");
         let m_land = get(MERGIFY, pr, "landed");
         let landed = cmp(s_land.is_some(), m_land.is_some());
-        let reasons = |side: &str| {
-            let mut facts = history(side, pr, "dequeued");
-            if side == MERGIFY && facts.iter().all(|f| f.data["source_at"].is_u64()) {
-                facts.sort_by_key(|f| f.data["source_at"].as_u64().unwrap_or_default());
-            }
+        let mut s_dequeue_facts = history(SCHLANGE, pr, "dequeued");
+        // A reference merge can close the real pull request before the shadow queue makes
+        // its own landing decision. Keep the recorded engine fact, but leave that terminal
+        // observation out of the comparison of queue exits.
+        let reference_merge = m_land.zip(s_dequeue_facts.last()).filter(|(_, last)| {
+            s_land.is_none()
+                && last.data["code"].as_str() == Some(schlange_core::reasons::PR_MANUALLY_MERGED)
+        });
+        let reference_merge_interrupted = reference_merge.is_some();
+        if reference_merge.is_some_and(|(merge, last)| last.at >= merge.at) {
+            s_dequeue_facts.pop();
+        }
+        let mut m_dequeue_facts = history(MERGIFY, pr, "dequeued");
+        if m_dequeue_facts.iter().all(|f| f.data["source_at"].is_u64()) {
+            m_dequeue_facts.sort_by_key(|f| f.data["source_at"].as_u64().unwrap_or_default());
+        }
+        let reasons = |facts: &[&ShadowFact]| {
             facts
-                .into_iter()
+                .iter()
                 .filter_map(|f| f.data["code"].as_str().map(str::to_string))
                 .collect::<Vec<_>>()
         };
-        let dequeue_reasons = cmp(reasons(SCHLANGE), reasons(MERGIFY));
-        let s_deq = get_last(SCHLANGE, pr, "dequeued")
+        let dequeue_reasons = cmp(reasons(&s_dequeue_facts), reasons(&m_dequeue_facts));
+        let s_deq = s_dequeue_facts
+            .last()
             .and_then(|f| f.data["code"].as_str().map(str::to_string));
-        let m_dequeue_facts = history(MERGIFY, pr, "dequeued");
-        let m_deq = if m_dequeue_facts.iter().all(|f| f.data["source_at"].is_u64()) {
-            m_dequeue_facts
-                .into_iter()
-                .max_by_key(|f| f.data["source_at"].as_u64().unwrap_or_default())
-        } else {
-            m_dequeue_facts.last().copied()
-        }
-        .and_then(|f| f.data["code"].as_str().map(str::to_string));
+        let m_deq = m_dequeue_facts
+            .last()
+            .and_then(|f| f.data["code"].as_str().map(str::to_string));
         let elsewhere = get(MERGIFY, pr, "merged_elsewhere").is_some();
         // Landing while the last observed membership cycle is inactive proves that at least
         // one transition was missed. Never turn that contradictory prefix into agreement.
@@ -1814,9 +1815,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             }
             batch = Some(b);
         } else if !landed.agree {
-            let raced = m_land.is_some()
-                && s_deq.as_deref() == Some(schlange_core::reasons::PR_MANUALLY_MERGED);
-            if raced {
+            if reference_merge_interrupted {
                 verdict = "inconclusive";
                 differences.push(
                     "landed: Mergify merged it before Schlange decided (it saw the merge first)"
@@ -2339,6 +2338,92 @@ mod tests {
         assert!(r.to_text().contains(
             "dequeue history: Schlange [\"CHECKS_FAILED\"], Mergify [\"CHECKS_TIMEOUT\"]"
         ));
+    }
+
+    #[test]
+    fn observed_mergify_merge_ends_the_prediction_without_adding_a_dequeue_reason() {
+        let facts = vec![
+            f(SCHLANGE, 1, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 1, "queued", 1, 2, json!({})),
+            f(
+                MERGIFY,
+                1,
+                "queued",
+                1,
+                3,
+                json!({ "draft": 10, "source_at": 1 }),
+            ),
+            f(
+                SCHLANGE,
+                1,
+                "dequeued",
+                2,
+                4,
+                json!({ "code": "PR_MANUALLY_DEQUEUED" }),
+            ),
+            f(
+                MERGIFY,
+                1,
+                "dequeued",
+                2,
+                5,
+                json!({ "code": "PR_MANUALLY_DEQUEUED", "run_id": 90, "source_at": 2 }),
+            ),
+            f(SCHLANGE, 1, "queued", 3, 6, json!({})),
+            f(
+                MERGIFY,
+                1,
+                "queued",
+                3,
+                7,
+                json!({ "draft": 11, "source_at": 3 }),
+            ),
+            f(MERGIFY, 1, "landed", 5, 8, json!({ "batch": [1] })),
+            f(
+                SCHLANGE,
+                1,
+                "dequeued",
+                6,
+                9,
+                json!({ "code": "PR_MANUALLY_MERGED" }),
+            ),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.dequeue_reasons.schlange, ["PR_MANUALLY_DEQUEUED"]);
+        assert_eq!(row.dequeue_reasons.mergify, ["PR_MANUALLY_DEQUEUED"]);
+        assert!(row.dequeue_reasons.agree);
+        assert_eq!(row.verdict, "inconclusive");
+        assert!(!row.landed.schlange);
+        assert!(row.landed.mergify);
+    }
+
+    #[test]
+    fn terminal_dequeue_before_the_reference_merge_remains_a_difference() {
+        let facts = vec![
+            f(SCHLANGE, 1, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 1, "queued", 1, 2, json!({})),
+            f(
+                MERGIFY,
+                1,
+                "queued",
+                1,
+                3,
+                json!({ "draft": 10, "source_at": 1 }),
+            ),
+            f(
+                SCHLANGE,
+                1,
+                "dequeued",
+                3,
+                4,
+                json!({ "code": "PR_MANUALLY_MERGED" }),
+            ),
+            f(MERGIFY, 1, "landed", 5, 5, json!({ "batch": [1] })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.dequeue_reasons.schlange, ["PR_MANUALLY_MERGED"]);
+        assert!(!row.dequeue_reasons.agree);
+        assert_eq!(row.verdict, "inconclusive");
     }
 
     #[test]
