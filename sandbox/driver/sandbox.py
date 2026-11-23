@@ -465,15 +465,16 @@ def _public_check_start(event, selected):
     metadata = event.get("metadata")
     if not isinstance(metadata, dict):
         raise _ReferenceActivityError("event_invalid")
-    members = metadata.get("pull_request_numbers")
-    if (not isinstance(members, list) or not 1 <= len(members) <= len(selected)
+    check = metadata.get("speculative_check_pull_request")
+    if not isinstance(check, dict):
+        raise _ReferenceActivityError("event_invalid")
+    members = check.get("pull_request_numbers")
+    in_place = check.get("in_place")
+    if (type(in_place) is not bool
+            or not isinstance(members, list) or not 1 <= len(members) <= len(selected)
             or any(type(number) is not int or number not in selected for number in members)
             or len(set(members)) != len(members)
             or event["pull_request"] is not None and event["pull_request"] not in members):
-        raise _ReferenceActivityError("event_invalid")
-    check = metadata.get("speculative_check_pull_request")
-    in_place = metadata.get("in_place")
-    if not isinstance(check, dict) or type(in_place) is not bool:
         raise _ReferenceActivityError("event_invalid")
     number = check.get("number")
     sha = check.get("head_sha")
