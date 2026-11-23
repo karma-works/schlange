@@ -440,8 +440,17 @@ fn arztagent_stress_scenario_lands_the_good_pull_requests() {
     drain(&t);
     let landed: Vec<u64> = t.gh.squashes().iter().map(|q| q.pr).collect();
     let v = t.gh.invariant_violations(true);
+    let refused: Vec<_> =
+        t.gh.deliveries()
+            .into_iter()
+            .filter(|d| d.status_code == 503)
+            .collect();
     t.shutdown();
     assert!(v.is_empty(), "{v:?}");
+    assert!(
+        refused.is_empty(),
+        "a clean restart routed ingress before the worker was ready: {refused:?}"
+    );
     for (i, kind) in kinds.iter().enumerate() {
         let n = prs[i];
         if *kind == 1 {

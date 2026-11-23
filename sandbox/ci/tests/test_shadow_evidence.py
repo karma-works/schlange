@@ -32,6 +32,8 @@ class ShadowEvidenceTests(unittest.TestCase):
                        'disagreements': 0, 'inconclusive': 0, 'pending': 0,
                        'pull_requests': [{'number': 42, 'verdict': 'agree',
                                           'queued': same(True), 'landed': same(True),
+                                          'queue_entries': same(1),
+                                          'dequeue_reasons': same([]),
                                           'order': same(1), 'batch': same([42]),
                                           'differences': []}]}
 
@@ -54,6 +56,20 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.outcome.update(landed=[], batches=[])
         self.report['pull_requests'] = []
         self.assertNotEqual(self.check().returncode, 0)
+
+    def test_selected_never_queued_pr_has_explicit_zero_history(self):
+        self.outcome['prs']['a'].update(
+            end='open', queued=False, enter_count=0, dequeue_codes=[])
+        self.outcome.update(landed=[], batches=[])
+        row = self.report['pull_requests'][0]
+        row.update(
+            queued={'schlange': False, 'mergify': False, 'agree': True},
+            queue_entries={'schlange': 0, 'mergify': 0, 'agree': True},
+            landed={'schlange': False, 'mergify': False, 'agree': True},
+            dequeue_reasons={'schlange': [], 'mergify': [], 'agree': True})
+        row.pop('order')
+        row.pop('batch')
+        self.assertEqual(self.check().returncode, 0)
 
     def test_pending_inconclusive_and_disagree_are_not_agreement(self):
         for verdict in ('pending', 'inconclusive', 'disagree'):
@@ -105,6 +121,9 @@ class ShadowEvidenceTests(unittest.TestCase):
         row.pop('batch')
         row['dequeue_reason'] = {'schlange': 'PR_MANUALLY_DEQUEUED',
                                  'mergify': 'PR_MANUALLY_DEQUEUED', 'agree': True}
+        row['dequeue_reasons'] = {
+            'schlange': ['PR_MANUALLY_DEQUEUED'],
+            'mergify': ['PR_MANUALLY_DEQUEUED'], 'agree': True}
         self.assertEqual(self.check().returncode, 0)
 
     def test_missing_independent_dequeue_codes_are_not_evidence(self):
@@ -124,6 +143,20 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.outcome['prs']['a']['enter_count'] = 2
         self.assertNotEqual(self.check().returncode, 0)
 
+    def test_requeue_then_merge_matches_complete_history(self):
+        self.outcome['prs']['a'].update(
+            enter_count=2, dequeue_codes=['PR_MANUALLY_DEQUEUED'])
+        row = self.report['pull_requests'][0]
+        row['queue_entries'] = {
+            'schlange': 2, 'mergify': 2, 'agree': True}
+        row['dequeue_reasons'] = {
+            'schlange': ['PR_MANUALLY_DEQUEUED'],
+            'mergify': ['PR_MANUALLY_DEQUEUED'], 'agree': True}
+        row['dequeue_reason'] = {
+            'schlange': 'PR_MANUALLY_DEQUEUED',
+            'mergify': 'PR_MANUALLY_DEQUEUED', 'agree': True}
+        self.assertEqual(self.check().returncode, 0)
+
     def test_inconsistent_or_missing_queue_entry_count_is_not_evidence(self):
         for count in (0, None, True):
             with self.subTest(count=count):
@@ -136,6 +169,14 @@ class ShadowEvidenceTests(unittest.TestCase):
 
     def test_closed_before_watching_cannot_be_agreement(self):
         self.report['pull_requests'][0]['before_watching'] = True
+        self.assertNotEqual(self.check().returncode, 0)
+
+    def test_incomplete_history_cannot_be_agreement(self):
+        self.report['pull_requests'][0]['history_incomplete'] = True
+        self.assertNotEqual(self.check().returncode, 0)
+
+    def test_repository_wide_incomplete_history_cannot_be_agreement(self):
+        self.report['history_incomplete'] = True
         self.assertNotEqual(self.check().returncode, 0)
 
     def test_foreign_or_unknown_merge_cannot_prove_mergify_landing(self):

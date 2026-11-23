@@ -244,7 +244,8 @@ docker exec schlange-shadow /usr/local/bin/schlange shadow report --repo <owner>
 docker run --rm -v /srv/schlange-shadow/data:/data schlange:shadow shadow report --repo <owner>/<repository> --data-dir /data
 ```
 
-Add `--json` for machines. Exit 0 without disagreements, 1 with. Pull requests that closed
+Add `--json` for machines. Exit 0 only when every row is a complete agreement and repository
+history is complete; disagreements, pending/inconclusive rows or incomplete history exit 1. Pull requests that closed
 before shadow mode watched appear only as a number in the first line; `--all` lists them
 (`--json` always has them, with `"before_watching": true`).
 
