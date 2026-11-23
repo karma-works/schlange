@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Read structural progress for one known in-flight queue-lab S06 fixture PR."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+
+spec = importlib.util.spec_from_file_location("sandbox_driver", Path(__file__).with_name("sandbox.py"))
+driver = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+
+REPOSITORY = "schlange-sandbox/queue-lab"
+PULL = 336
+CHECKS = ("ci-ok", "Risk class and data protection", "KI-Review")
+
+
+def inspect():
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return {"complete": False, "reason": "actions_required"}
+    report = {"complete": False, "repository": REPOSITORY, "pull_request": PULL}
+    try:
+        client = driver.human_client()
+        root = f"/repos/{REPOSITORY}"
+        pull = client.read_json(f"{root}/pulls/{PULL}")
+        head = pull.get("head") or {}
+        ref = head.get("ref")
+        sha = head.get("sha")
+        if (pull.get("number") != PULL or not re.fullmatch(r"sbx/s06-queue-lab-[0-9-]+/a", ref or "")
+                or (head.get("repo") or {}).get("full_name") != REPOSITORY
+                or (pull.get("base") or {}).get("ref") != "main"
+                or not re.fullmatch(r"[0-9a-f]{40}", sha or "")):
+            return {**report, "reason": "selected_pull_unconfirmed"}
+        page = client.read_json(f"{root}/commits/{sha}/check-runs?filter=all&per_page=100")
+        runs = page.get("check_runs")
+        if not isinstance(runs, list) or page.get("total_count") != len(runs) or len(runs) > 100:
+            return {**report, "reason": "check_history_incomplete"}
+        rows = {}
+        for name in CHECKS:
+            candidates = [run for run in runs if isinstance(run, dict) and run.get("name") == name
+                          and run.get("head_sha") == sha and type(run.get("id")) is int
+                          and (run.get("app") or {}).get("slug") == "github-actions"]
+            latest = max(candidates, key=lambda run: run["id"], default={})
+            status = latest.get("status")
+            conclusion = latest.get("conclusion")
+            rows[name] = {"present": bool(latest),
+                          "status": status if status in ("queued", "in_progress", "completed", "pending") else None,
+                          "conclusion": conclusion if conclusion in driver.CHECK_CONCLUSIONS else None}
+        stamped = driver.now_iso()
+        state = {"org": "schlange-sandbox", "repo": "queue-lab", "run_id": ref.split("/")[1],
+                 "started": "2026-11-23T10:24:09Z", "finished": stamped,
+                 "timed_out": False, "prs": {"a": {"number": PULL}}}
+        activity = driver.capture_reference_activity(state, driver.mergify_client(), stamped)
+        return {**report, "complete": activity["complete"], "observed_at": stamped,
+                "reference_incomplete_reason": activity["incomplete_reason"],
+                "open": pull.get("state") == "open", "merged": pull.get("merged") is True,
+                "checks_on_current_head": rows,
+                "lifecycle": [{key: event[key] for key in ("kind", "received_at", "reason_code") if key in event}
+                              for event in activity["events"]]}
+    except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return {**report, "reason": "read_failed"}
+
+
+if __name__ == "__main__":
+    print(json.dumps(inspect(), indent=2))
