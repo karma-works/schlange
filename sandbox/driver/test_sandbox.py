@@ -224,6 +224,46 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('private conclusion', rendered)
         self.assertIn('open', rendered)
 
+    def test_public_queue_timing_keeps_only_scenario_members_and_structured_times(self):
+        at = '2026-01-02T03:04:05Z'
+        trace = {
+            'run': {'repo': 'queue-lab'},
+            'prs': {'a': {'number': 2, 'merged_at': at, 'checks': [
+                {'id': 7, 'app': 'mergify', 'status': 'completed', 'conclusion': 'neutral',
+                 'completed_at': at, 'name': 'private check name'},
+                {'id': 8, 'app': 'other', 'status': 'completed', 'completed_at': at},
+                {'id': 9, 'app': 'mergify', 'status': 'completed', 'conclusion': 'private conclusion',
+                 'completed_at': 'private invalid timestamp'},
+                {'id': 10, 'app': 'mergify', 'status': 'in_progress', 'completed_at': None},
+            ]}},
+            'queue_prs': [{'number': 3, 'user': 'mergify[bot]', 'created_at': at,
+                           'closed_at': None, 'title': 'private #99 #2 #2', 'body': 'private body',
+                           'checks': [{'id': 4, 'name': 'ci-ok', 'app': 'github-actions',
+                                       'status': 'completed', 'conclusion': 'failure', 'completed_at': at}]}],
+            'mergify_events': [{'pull_request': 2, 'type': 'action.queue.enter',
+                                'received_at': at, 'metadata': {'message': 'private event'}},
+                               {'pull_request': 99, 'type': 'action.queue.leave', 'received_at': at}],
+        }
+        timing = driver.public_queue_timing(trace)
+        self.assertEqual(timing['drafts'], [{'number': 3, 'created_at': at, 'closed_at': None,
+                                            'title_member_refs': [2],
+                                            'ci_completed': [{'id': 4, 'completed_at': at,
+                                                              'conclusion': 'failure'}]}])
+        self.assertEqual(timing['pull_requests'], [{'number': 2, 'merged_at': at,
+                                                   'mergify_checks': [{'id': 7, 'completed_at': at,
+                                                                       'conclusion': 'neutral'}]}])
+        self.assertEqual(timing['queue_events'], [{'number': 2, 'kind': 'enter', 'received_at': at}])
+        self.assertFalse(timing['complete'])
+        trace['prs']['a']['checks'].pop(2)
+        self.assertTrue(driver.public_queue_timing(trace)['complete'])
+        completed = trace['prs']['a']['checks'][0]
+        for field, invalid in [('id', None), ('conclusion', 'private conclusion')]:
+            with self.subTest(field=field), patch.dict(completed, {field: invalid}):
+                self.assertFalse(driver.public_queue_timing(trace)['complete'])
+        del trace['mergify_events']
+        self.assertFalse(driver.public_queue_timing(trace)['complete'])
+        self.assertNotIn('private', json.dumps(timing))
+
     def test_compatibility_comparison_rejects_missing_queue_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             baseline = Path(directory) / 'baseline.json'

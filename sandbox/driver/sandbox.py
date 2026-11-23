@@ -619,15 +619,82 @@ class Run:
 
 # --- Recording -----------------------------------------------------------------------
 
+CHECK_CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out",
+                     "action_required", "stale", "startup_failure"}
+
+
 def public_record_summary(summary):
     """Print only structured facts; upstream text stays in the private local summary."""
-    conclusions = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"}
     return {"prs": {k: {"number": pr["number"], "end": pr["end"]}
                     for k, pr in summary["prs"].items()},
             "queue_prs": [{"number": q["number"], "commits": q["commits"],
-                           "ci_ok": q["ci_ok"] if q["ci_ok"] in conclusions else None}
+                           "ci_ok": q["ci_ok"] if q["ci_ok"] in CHECK_CONCLUSIONS else None}
                           for q in summary["queue_prs"]],
             "main_commit_count": len(summary["main_commits"])}
+
+
+def public_queue_timing(trace):
+    """Publish scenario chronology without upstream titles, check text, or event metadata."""
+    complete = trace.get("mergify_events") is not None
+
+    def timestamp(value, *, optional=False):
+        nonlocal complete
+        if optional and value is None:
+            return None
+        if isinstance(value, str) and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})",
+                value):
+            try:
+                datetime.fromisoformat(value)
+            except ValueError:
+                pass
+            else:
+                return value
+        complete = False
+        return None
+
+    def completions(checks, app, name=None):
+        nonlocal complete
+        results = []
+        for check in checks:
+            if check.get("app") != app or (name is not None and check.get("name") != name):
+                continue
+            if check.get("status") != "completed":
+                continue
+            at = timestamp(check.get("completed_at"))
+            check_id = check.get("id")
+            conclusion = check.get("conclusion")
+            if (at is None or type(check_id) is not int or check_id <= 0
+                    or not isinstance(conclusion, str) or conclusion not in CHECK_CONCLUSIONS):
+                complete = False
+                continue
+            results.append({"id": check_id, "completed_at": at, "conclusion": conclusion})
+        return results
+
+    prs = trace["prs"].values()
+    by_number = {str(pr["number"]): pr["number"] for pr in prs}
+    numbers = set(by_number.values())
+    drafts = []
+    for draft in reversed(trace["queue_prs"]):
+        if draft["user"] != "mergify[bot]":
+            continue
+        # Title references are hints. For instance, a speculative draft can name PRs ahead.
+        refs = re.findall(r"#([0-9]+)", draft["title"] or "")
+        members = list(dict.fromkeys(by_number[ref] for ref in refs if ref in by_number))
+        drafts.append({"number": draft["number"], "created_at": timestamp(draft["created_at"]),
+                       "closed_at": timestamp(draft["closed_at"], optional=draft.get("state") != "closed"),
+                       "title_member_refs": members,
+                       "ci_completed": completions(draft["checks"], "github-actions", "ci-ok")})
+    event_kinds = {"action.queue.enter": "enter", "action.queue.leave": "leave"}
+    events = [{"number": event["pull_request"], "kind": event_kinds[event["type"]],
+               "received_at": timestamp(event.get("received_at"))}
+              for event in trace.get("mergify_events") or []
+              if event.get("pull_request") in numbers and event["type"] in event_kinds]
+    members = [{"number": pr["number"],
+                "merged_at": timestamp(pr["merged_at"], optional=not pr.get("merged", False)),
+                "mergify_checks": completions(pr["checks"], "mergify")}
+               for pr in prs]
+    return {"complete": complete, "drafts": drafts, "queue_events": events, "pull_requests": members}
 
 
 def record(out):
@@ -641,12 +708,15 @@ def record(out):
         n = p["number"]
         pr = c.call("GET", f"{r}/pulls/{n}")
         timeline = c.paged(f"{r}/issues/{n}/timeline")
+        member_checks = f"{r}/commits/{pr['head']['sha']}/check-runs"
+        if state["repo"] == "queue-lab":
+            member_checks += "?filter=all"
         trace["prs"][key] = {
             "number": n, "state": pr["state"], "merged": pr["merged"], "merged_at": pr["merged_at"],
             "merged_by": (pr.get("merged_by") or {}).get("login"), "merge_commit_sha": pr["merge_commit_sha"],
             "head_sha": pr["head"]["sha"], "labels": [lb["name"] for lb in pr["labels"]],
             "timeline": [slim_event(e) for e in timeline],
-            "checks": [slim_check(x) for x in c.paged(f"{r}/commits/{pr['head']['sha']}/check-runs")],
+            "checks": [slim_check(x) for x in c.paged(member_checks)],
         }
     for pr in c.paged(f"{r}/pulls?state=all&sort=created&direction=desc"):
         if pr["created_at"] < state["started"]:
@@ -678,6 +748,8 @@ def record(out):
                f"&received_from={state['started']}")
         trace["queue_events"] = fetch_events(sc, url, strict=True)
     (out / "trace.json").write_text(json.dumps(trace, indent=2, ensure_ascii=False))
+    if state["repo"] == "queue-lab":
+        (out / "queue-timing.json").write_text(json.dumps(public_queue_timing(trace), indent=2) + "\n")
     summary = {
         "prs": {k: {"number": v["number"], "end": "merged" if v["merged"] else v["state"], "labels": v["labels"],
                     "bot_comments": [e["body"][:200] for e in v["timeline"]
@@ -897,7 +969,7 @@ def slim_event(e):
 
 
 def slim_check(x):
-    return {"name": x["name"], "status": x["status"], "conclusion": x["conclusion"],
+    return {"id": x.get("id"), "name": x["name"], "status": x["status"], "conclusion": x["conclusion"],
             "app": (x.get("app") or {}).get("slug"), "started_at": x["started_at"], "completed_at": x["completed_at"]}
 
 
