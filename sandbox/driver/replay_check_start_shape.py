@@ -50,6 +50,22 @@ class Probe:
                 "pr": pr if type(pr) is int and pr in selected else None,
                 "pr_outside": pr is not None and (type(pr) is not int or pr not in selected),
                 "member_list": isinstance(members, list),
+                "field_locations": {
+                    location: {
+                        field: type(fields[field]).__name__
+                        for field in ("pull_request_numbers", "pull_requests", "in_place", "kind", "type",
+                                      "checks", "checks_state", "batch", "queue_branch_name")
+                        if field in fields
+                    }
+                    for location, fields in (("event", row), ("metadata", meta), ("check", check),
+                                             ("check_state", meta.get("checks_state")))
+                    if isinstance(fields, dict)
+                },
+                "nested_selected_members": [
+                    n for n in check.get("pull_request_numbers", [])
+                    if type(n) is int and n in selected
+                ] if isinstance(check.get("pull_request_numbers"), list) else [],
+                "nested_in_place": check.get("in_place") if type(check.get("in_place")) is bool else None,
                 "selected_members": [n for n in members if type(n) is int and n in selected] if isinstance(members, list) else [],
                 "member_count": len(members) if isinstance(members, list) else 0,
                 "in_place": meta.get("in_place") if type(meta.get("in_place")) is bool else None,
