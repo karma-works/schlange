@@ -575,10 +575,13 @@ fn repo_route(
             st.next_issue += 1;
             let n = st.next_issue;
             let user = new_pr_body(st);
+            st.source_clock += 1;
+            let created_at = st.source_clock;
             st.prs.insert(
                 n,
                 FakePr {
                     number: n,
+                    created_at,
                     title: body["title"].as_str().unwrap_or("").into(),
                     body: body["body"].as_str().unwrap_or("").into(),
                     user,
@@ -1118,6 +1121,10 @@ fn repo_route(
             let id = st.id();
             let suite_id = st.id();
             let app = st.cfg.app_slug.clone();
+            let completed_at = body["conclusion"].as_str().map(|_| {
+                st.source_clock += 1;
+                st.source_clock
+            });
             st.runs.push(crate::FakeRun {
                 id,
                 suite_id,
@@ -1125,6 +1132,7 @@ fn repo_route(
                 head_sha: sha,
                 status: body["status"].as_str().unwrap_or("queued").into(),
                 conclusion: body["conclusion"].as_str().map(str::to_string),
+                completed_at,
                 app_slug: app,
                 output_title: body["output"]["title"].as_str().unwrap_or("").into(),
                 workflow: String::new(),
@@ -1139,6 +1147,10 @@ fn repo_route(
                 return err(404, "Not Found");
             };
             let app = st.cfg.app_slug.clone();
+            let completed_at = body["conclusion"].as_str().map(|_| {
+                st.source_clock += 1;
+                st.source_clock
+            });
             let Some(r) = st.runs.iter_mut().find(|r| r.id == id && r.app_slug == app) else {
                 return err(404, "Not Found");
             };
@@ -1148,6 +1160,7 @@ fn repo_route(
             if let Some(c) = body["conclusion"].as_str() {
                 r.conclusion = Some(c.into());
                 r.status = "completed".into();
+                r.completed_at = completed_at;
             }
             if let Some(t) = body["output"]["title"].as_str() {
                 r.output_title = t.into();

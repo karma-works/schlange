@@ -944,13 +944,17 @@ impl Shadow {
                 self.drafts.insert(p.number, d);
             }
             for n in &prs {
+                // Snapshot reads do not expose the draft creation time, but remain positive
+                // membership evidence if a webhook was lost or recent-pulls later fails. Use
+                // a separate source key so a timestamped observation can enrich this draft;
+                // cycle derivation prefers that timestamp and deduplicates the draft.
                 self.event(
                     MERGIFY,
                     *n,
                     "queued",
-                    format_args!("draft:{}", p.number),
+                    format_args!("snapshot-draft:{}", p.number),
                     now,
-                    json!({ "draft": p.number }),
+                    json!({ "draft": p.number, "source": "snapshot" }),
                 );
                 self.event(
                     MERGIFY,
@@ -1048,14 +1052,16 @@ impl Shadow {
         );
         let mut durable = true;
         for n in prs.iter().copied() {
-            durable &= self.event(
-                MERGIFY,
-                n,
-                "queued",
-                format_args!("draft:{}", p.number),
-                now,
-                json!({ "draft": p.number, "source": "webhook" }),
-            );
+            let mut queued = json!({ "draft": p.number, "source": "webhook" });
+            if let Some(source_at) = p.membership_at {
+                queued["source_at"] = json!(source_at);
+            }
+            let source_key = if p.membership_at.is_some() {
+                format!("draft:{}", p.number)
+            } else {
+                format!("webhook-snapshot-draft:{}", p.number)
+            };
+            durable &= self.event(MERGIFY, n, "queued", source_key, now, queued);
             durable &= self.event(
                 MERGIFY,
                 n,
@@ -1109,13 +1115,19 @@ impl Shadow {
                         },
                     );
                     for n in &prs {
+                        let mut queued = json!({ "draft": p.number, "source": "rest" });
+                        if let Some(created_at) = crate::time::parse_rfc3339(&p.created_at) {
+                            // A REST snapshot proves membership at read time, but creation is
+                            // only its lower bound: the draft may have been edited meanwhile.
+                            queued["created_at"] = json!(created_at);
+                        }
                         self.event(
                             MERGIFY,
                             *n,
                             "queued",
-                            format_args!("draft:{}", p.number),
+                            format_args!("rest-snapshot-draft:{}", p.number),
                             now,
-                            json!({ "draft": p.number }),
+                            queued,
                         );
                         self.event(
                             MERGIFY,
@@ -1229,13 +1241,21 @@ impl Shadow {
                             .any(|w| w == *c)
                     });
                 let recorded = code.is_none_or(|code| {
+                    let mut data = json!({ "code": code, "run_id": r.id });
+                    if let Some(source_at) = r
+                        .completed_at
+                        .as_deref()
+                        .and_then(crate::time::parse_rfc3339)
+                    {
+                        data["source_at"] = json!(source_at);
+                    }
                     self.event(
                         MERGIFY,
                         n,
                         "dequeued",
                         format_args!("run:{}", r.id),
                         now,
-                        json!({ "code": code, "run_id": r.id }),
+                        data,
                     )
                 });
                 if recorded {
@@ -1417,6 +1437,116 @@ fn list(v: &serde_json::Value) -> Vec<u64> {
     l
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct MembershipCycles {
+    entries: usize,
+    active: bool,
+    complete: bool,
+}
+
+/// Counts membership transitions in GitHub source time. A queue may replace or expand its
+/// draft without entering its members again. Arrival order is not evidence: REST replay and
+/// webhook delivery can be arbitrarily reordered.
+fn mergify_membership_cycles(facts: &[ShadowFact], pr: u64) -> MembershipCycles {
+    let queued: Vec<&ShadowFact> = facts
+        .iter()
+        .filter(|fact| fact.side == MERGIFY && fact.pr == pr && fact.kind == "queued")
+        .collect();
+    let dequeued: Vec<&ShadowFact> = facts
+        .iter()
+        .filter(|fact| fact.side == MERGIFY && fact.pr == pr && fact.kind == "dequeued")
+        .collect();
+    if queued.is_empty() {
+        return MembershipCycles {
+            complete: dequeued.is_empty(),
+            ..Default::default()
+        };
+    }
+    if dequeued.is_empty() {
+        return MembershipCycles {
+            entries: 1,
+            active: true,
+            complete: true,
+        };
+    }
+
+    let mut drafts: BTreeMap<u64, Option<u64>> = BTreeMap::new();
+    let mut runs: BTreeMap<u64, Option<u64>> = BTreeMap::new();
+    let mut observations = Vec::new();
+    for fact in queued {
+        let Some(draft) = fact.data["draft"].as_u64() else {
+            return MembershipCycles {
+                entries: 1,
+                ..Default::default()
+            };
+        };
+        let source_at = fact.data["source_at"].as_u64();
+        drafts
+            .entry(draft)
+            .and_modify(|known| {
+                if source_at.is_some() {
+                    *known = source_at;
+                }
+            })
+            .or_insert(source_at);
+    }
+    for fact in dequeued {
+        let Some(run) = fact.data["run_id"].as_u64() else {
+            return MembershipCycles {
+                entries: 1,
+                ..Default::default()
+            };
+        };
+        let source_at = fact.data["source_at"].as_u64();
+        runs.entry(run)
+            .and_modify(|known| {
+                if source_at.is_some() {
+                    *known = source_at;
+                }
+            })
+            .or_insert(source_at);
+    }
+    if drafts.values().any(Option::is_none) || runs.values().any(Option::is_none) {
+        return MembershipCycles {
+            entries: 1,
+            ..Default::default()
+        };
+    }
+    observations.extend(drafts.into_values().flatten().map(|at| (at, true)));
+    observations.extend(runs.into_values().flatten().map(|at| (at, false)));
+    observations.sort_unstable();
+    if observations
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
+    {
+        return MembershipCycles {
+            entries: 1,
+            ..Default::default()
+        };
+    }
+    let mut result = MembershipCycles {
+        complete: true,
+        ..Default::default()
+    };
+    for (_, queued) in observations {
+        if queued {
+            if !result.active {
+                result.entries += 1;
+                result.active = true;
+            }
+        } else {
+            // A second distinct dequeue without an observed membership in between may be an
+            // unobserved cycle. Keep the confirmed entry lower bound, but fail the comparison
+            // closed instead of claiming a complete history.
+            if !result.active {
+                result.complete = false;
+            }
+            result.active = false;
+        }
+    }
+    result
+}
+
 /// Compares the two sides' facts per pull request.
 pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     let repository_history_incomplete = facts
@@ -1537,19 +1667,24 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     };
     let mut out = Vec::new();
     for pr in prs {
+        let mergify_cycles = mergify_membership_cycles(facts, pr);
         let queued = cmp(
             get(SCHLANGE, pr, "queued").is_some(),
             get(MERGIFY, pr, "queued").is_some(),
         );
         let queue_entries = cmp(
             history(SCHLANGE, pr, "queued").len(),
-            history(MERGIFY, pr, "queued").len(),
+            mergify_cycles.entries,
         );
         let s_land = get(SCHLANGE, pr, "landed");
         let m_land = get(MERGIFY, pr, "landed");
         let landed = cmp(s_land.is_some(), m_land.is_some());
         let reasons = |side: &str| {
-            history(side, pr, "dequeued")
+            let mut facts = history(side, pr, "dequeued");
+            if side == MERGIFY && facts.iter().all(|f| f.data["source_at"].is_u64()) {
+                facts.sort_by_key(|f| f.data["source_at"].as_u64().unwrap_or_default());
+            }
+            facts
                 .into_iter()
                 .filter_map(|f| f.data["code"].as_str().map(str::to_string))
                 .collect::<Vec<_>>()
@@ -1557,9 +1692,20 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
         let dequeue_reasons = cmp(reasons(SCHLANGE), reasons(MERGIFY));
         let s_deq = get_last(SCHLANGE, pr, "dequeued")
             .and_then(|f| f.data["code"].as_str().map(str::to_string));
-        let m_deq = get_last(MERGIFY, pr, "dequeued")
-            .and_then(|f| f.data["code"].as_str().map(str::to_string));
+        let m_dequeue_facts = history(MERGIFY, pr, "dequeued");
+        let m_deq = if m_dequeue_facts.iter().all(|f| f.data["source_at"].is_u64()) {
+            m_dequeue_facts
+                .into_iter()
+                .max_by_key(|f| f.data["source_at"].as_u64().unwrap_or_default())
+        } else {
+            m_dequeue_facts.last().copied()
+        }
+        .and_then(|f| f.data["code"].as_str().map(str::to_string));
         let elsewhere = get(MERGIFY, pr, "merged_elsewhere").is_some();
+        // Landing while the last observed membership cycle is inactive proves that at least
+        // one transition was missed. Never turn that contradictory prefix into agreement.
+        let landed_after_unobserved_reentry =
+            m_land.is_some() && queued.mergify && !mergify_cycles.active;
         let mut differences = Vec::new();
         let mut order = None;
         let mut batch = None;
@@ -1590,7 +1736,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             }
         };
         let s_done = cycle_done(SCHLANGE, s_land.is_some());
-        let m_done = elsewhere || cycle_done(MERGIFY, m_land.is_some());
+        let m_done = elsewhere || m_land.is_some() || !mergify_cycles.active;
         let mut verdict = "agree";
         if !queue_entries.agree && s_done && m_done {
             differences.push(format!(
@@ -1665,7 +1811,9 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             verdict = "disagree";
         }
         let history_incomplete = get(SCHLANGE, pr, "history_incomplete").is_some()
-            || get(MERGIFY, pr, "history_incomplete").is_some();
+            || get(MERGIFY, pr, "history_incomplete").is_some()
+            || !mergify_cycles.complete
+            || landed_after_unobserved_reentry;
         if history_incomplete {
             verdict = "inconclusive";
             differences = vec!["shadow occurrence history is incomplete".into()];
@@ -1958,17 +2106,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(&dir).unwrap();
         let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store.clone()));
-        let pull = |number| ShadowPull {
+        let pull = |number, source_at| ShadowPull {
             number,
             author: "mergify[bot]".into(),
             base: "main".into(),
             head_ref: format!("mergify/merge-queue/{number:010x}"),
             title: "queue draft (#50)".into(),
             body: String::new(),
+            membership_at: Some(source_at),
         };
-        s.observe_pull_webhook(&pull(80), 1);
-        s.observe_pull_webhook(&pull(80), 2); // durable inbox replay
-        s.observe_pull_webhook(&pull(81), 3); // a later requeue
+        s.observe_pull_webhook(&pull(80, 10), 1);
+        s.observe_pull_webhook(&pull(80, 10), 2); // durable inbox replay
+        assert!(s.event(
+            MERGIFY,
+            50,
+            "dequeued",
+            format_args!("run:90"),
+            2,
+            json!({ "code": "PR_DEQUEUED", "run_id": 90, "source_at": 20 }),
+        ));
+        s.observe_pull_webhook(&pull(81, 30), 3); // a later requeue
         let before = report("o/r", s.facts());
         let row = before
             .pull_requests
@@ -2074,7 +2231,14 @@ mod tests {
             f(MERGIFY, 2, "landed", 7, 8, json!({ "batch": [1, 2] })),
             // #3: both queued; Schlange dequeues CHECKS_FAILED, Mergify CHECKS_TIMEOUT.
             f(SCHLANGE, 3, "queued", 1, 9, json!({})),
-            f(MERGIFY, 3, "queued", 1, 10, json!({})),
+            f(
+                MERGIFY,
+                3,
+                "queued",
+                1,
+                10,
+                json!({ "draft": 30, "source_at": 1 }),
+            ),
             f(
                 SCHLANGE,
                 3,
@@ -2089,7 +2253,7 @@ mod tests {
                 "dequeued",
                 9,
                 12,
-                json!({ "code": "CHECKS_TIMEOUT" }),
+                json!({ "code": "CHECKS_TIMEOUT", "run_id": 30, "source_at": 9 }),
             ),
             // #4: only Mergify queued it, and landed it.
             f(MERGIFY, 4, "queued", 1, 13, json!({})),
@@ -2139,7 +2303,14 @@ mod tests {
         let facts = vec![
             f(SCHLANGE, 8, "seen", 0, 1, json!({})),
             f(SCHLANGE, 8, "queued", 1, 2, json!({})),
-            f(MERGIFY, 8, "queued", 1, 3, json!({ "draft": 80 })),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                1,
+                3,
+                json!({ "draft": 80, "source_at": 1 }),
+            ),
             f(
                 SCHLANGE,
                 8,
@@ -2154,10 +2325,19 @@ mod tests {
                 "dequeued",
                 2,
                 5,
-                json!({ "code": "PR_MANUALLY_DEQUEUED" }),
+                json!({
+                    "code": "PR_MANUALLY_DEQUEUED", "run_id": 80, "source_at": 2
+                }),
             ),
             f(SCHLANGE, 8, "queued", 3, 6, json!({})),
-            f(MERGIFY, 8, "queued", 3, 7, json!({ "draft": 81 })),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                3,
+                7,
+                json!({ "draft": 81, "source_at": 3 }),
+            ),
             f(SCHLANGE, 8, "landed", 4, 8, json!({ "batch": [8] })),
             f(MERGIFY, 8, "landed", 4, 9, json!({ "batch": [8] })),
         ];
@@ -2171,6 +2351,205 @@ mod tests {
                 vec!["PR_MANUALLY_DEQUEUED".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn draft_rebuilds_are_one_entry_but_a_later_cycle_is_another() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                30,
+                2,
+                json!({ "draft": 82, "source_at": 30 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                10,
+                3,
+                json!({ "draft": 80, "source_at": 10 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                15,
+                4,
+                json!({ "draft": 81, "source_at": 15 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                20,
+                5,
+                json!({
+                    "code": "PR_MANUALLY_DEQUEUED", "run_id": 90, "source_at": 20
+                }),
+            ),
+            // A later snapshot of the same draft has no exact membership timestamp; the
+            // signed opened observation above still supplies it.
+            f(MERGIFY, 8, "queued", 10, 6, json!({ "draft": 80 })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.queue_entries.mergify, 2);
+        assert!(!row.history_incomplete);
+    }
+
+    #[test]
+    fn source_time_orders_dequeue_history_independently_of_observation_order() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 8, "queued", 1, 2, json!({})),
+            f(SCHLANGE, 8, "dequeued", 2, 3, json!({ "code": "FIRST" })),
+            f(SCHLANGE, 8, "queued", 3, 4, json!({})),
+            f(SCHLANGE, 8, "dequeued", 4, 5, json!({ "code": "SECOND" })),
+            // Replay observes the second cycle before the first one.
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                4,
+                6,
+                json!({ "code": "SECOND", "run_id": 82, "source_at": 40 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                3,
+                7,
+                json!({ "draft": 82, "source_at": 30 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                8,
+                json!({ "code": "FIRST", "run_id": 80, "source_at": 20 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                1,
+                9,
+                json!({ "draft": 80, "source_at": 10 }),
+            ),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.verdict, "agree");
+        assert_eq!(row.queue_entries, cmp(2, 2));
+        assert_eq!(
+            row.dequeue_reasons,
+            cmp(
+                vec!["FIRST".to_string(), "SECOND".to_string()],
+                vec!["FIRST".to_string(), "SECOND".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_rebuilds_without_a_dequeue_keep_the_confirmed_entry_lower_bound() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(MERGIFY, 8, "queued", 1, 2, json!({ "draft": 80 })),
+            f(MERGIFY, 8, "queued", 2, 3, json!({ "draft": 81 })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.queue_entries.mergify, 1);
+        assert!(!row.history_incomplete);
+    }
+
+    #[test]
+    fn two_dequeues_without_observed_reentry_are_inconclusive() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                1,
+                2,
+                json!({ "draft": 80, "source_at": 10 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                3,
+                json!({ "code": "FIRST", "run_id": 80, "source_at": 20 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                3,
+                4,
+                json!({ "code": "SECOND", "run_id": 81, "source_at": 30 }),
+            ),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.queue_entries.mergify, 1);
+        assert_eq!(row.verdict, "inconclusive");
+        assert!(row.history_incomplete);
+    }
+
+    #[test]
+    fn landing_after_the_last_observed_dequeue_requires_a_reentry() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 8, "queued", 1, 2, json!({})),
+            f(SCHLANGE, 8, "dequeued", 2, 3, json!({ "code": "FIRST" })),
+            f(SCHLANGE, 8, "landed", 4, 4, json!({ "batch": [8] })),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                1,
+                5,
+                json!({ "draft": 80, "source_at": 10 }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                6,
+                json!({ "code": "FIRST", "run_id": 80, "source_at": 20 }),
+            ),
+            f(MERGIFY, 8, "landed", 4, 7, json!({ "batch": [8] })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.verdict, "inconclusive");
+        assert!(row.history_incomplete);
+    }
+
+    #[test]
+    fn unknown_source_order_around_a_dequeue_is_inconclusive() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(MERGIFY, 8, "queued", 1, 2, json!({ "draft": 80 })),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                3,
+                json!({ "code": "PR_MANUALLY_DEQUEUED", "run_id": 90 }),
+            ),
+            f(MERGIFY, 8, "queued", 3, 4, json!({ "draft": 81 })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.queue_entries.mergify, 1);
+        assert_eq!(row.verdict, "inconclusive");
+        assert!(row.history_incomplete);
     }
 
     #[test]
@@ -2189,9 +2568,23 @@ mod tests {
         let facts = vec![
             f(SCHLANGE, 8, "seen", 0, 1, json!({})),
             f(SCHLANGE, 8, "queued", 1, 2, json!({})),
-            f(MERGIFY, 8, "queued", 1, 3, json!({})),
+            f(
+                MERGIFY,
+                8,
+                "queued",
+                1,
+                3,
+                json!({ "draft": 80, "source_at": 1 }),
+            ),
             f(SCHLANGE, 8, "dequeued", 2, 4, json!({ "code": "RED" })),
-            f(MERGIFY, 8, "dequeued", 2, 5, json!({ "code": "RED" })),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                5,
+                json!({ "code": "RED", "run_id": 80, "source_at": 2 }),
+            ),
             f(SCHLANGE, 8, "queued", 3, 6, json!({})),
         ];
         let row = report("o/r", &facts).pull_requests.remove(0);
@@ -2308,6 +2701,7 @@ mod tests {
             head_ref: "mergify/merge-queue/0000000050".into(),
             title: "queue draft (#50)".into(),
             body: String::new(),
+            membership_at: Some(10),
         };
         s.observe_pull_webhook(&pull, 1);
         assert!(!s.has(MERGIFY, 50, "queued"));
@@ -2337,6 +2731,7 @@ mod tests {
             head_ref: "mergify/merge-queue/0000000050".into(),
             title: "queue draft (#50)".into(),
             body: String::new(),
+            membership_at: Some(10),
         };
         assert!(!s.observe_pull_webhook(&pull, 1));
         assert!(!s.has("observer", 80, "draft_probe"));
@@ -2386,6 +2781,7 @@ mod tests {
             head_ref: "mergify/merge-queue/0000000050".into(),
             title: "queue draft (#50)".into(),
             body: String::new(),
+            membership_at: Some(10),
         };
         assert!(!s.observe_pull_webhook(&pull, 258));
         assert!(

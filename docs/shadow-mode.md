@@ -249,8 +249,16 @@ history is complete; disagreements, pending/inconclusive rows or incomplete hist
 before shadow mode watched appear only as a number in the first line; `--all` lists them
 (`--json` always has them, with `"before_watching": true`).
 
-Per pull request it compares: queued or not, landed or not, landing order (among the pull
-requests both landed), the batch it landed in, and the dequeue reason.
+Per pull request it compares: queued or not, queue-entry cycles, landed or not, landing order
+(among the pull requests both landed), the batch it landed in, and ordered dequeue reasons.
+Batch draft rebuilds remain evidence but do not count as fresh entries. The observer orders
+membership and dequeue transitions by creation time from signed draft-opened payloads and
+check-run completion timestamps. REST and later webhook membership snapshots retain draft
+creation only as a lower bound because their membership may have been edited. Because check
+completion is supplied by the other app, missing or ambiguous ordering is reported as
+inconclusive instead of being reconstructed from REST/webhook arrival order.
+If several drafts have no observed dequeue between them, the report infers one continuous
+cycle; only the independent sandbox event outcome can rule out a missed dequeue/re-entry.
 
 | Verdict | Meaning |
 |---|---|
