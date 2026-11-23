@@ -344,6 +344,7 @@ The workflow independently records Mergify events and checks every selected PR's
 merge, batch, order and dequeue reason against the shadow report. Empty, pending, inconclusive,
 unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
 `report.json` and `verification.json`, without upstream prose or private serve logs.
+A failed comparison writes `complete: false` to `verification.json` and exits nonzero.
 
 Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
 closure, `ci-ok` and Mergify check completion times, member merge times, and the activity

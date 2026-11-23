@@ -246,6 +246,7 @@ def main():
         report = json.loads(Path(sys.argv[1]).read_text())
         summary = verify(report, Path(sys.argv[2]))
     except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+        print(json.dumps({'complete': False}))
         print(f'Shadow evidence incomplete: {error}', file=sys.stderr)
         return 1
     print(json.dumps(summary, indent=2))
