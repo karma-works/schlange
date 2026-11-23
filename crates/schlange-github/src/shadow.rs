@@ -364,13 +364,13 @@ impl Shadow {
         at: Time,
         data: serde_json::Value,
         first: bool,
-    ) -> bool {
+    ) {
         let exists = self
             .facts
             .iter()
             .position(|f| f.side == side && f.pr == pr && f.kind == kind);
         if first && exists.is_some() {
-            return true;
+            return;
         }
         self.seq += 1;
         let f = ShadowFact {
@@ -382,14 +382,50 @@ impl Shadow {
             data,
             seq: self.seq,
         };
-        if let Some(s) = &self.store
-            && s.shadow_record(&f, first).is_err()
-        {
-            return false;
+        if let Some(s) = &self.store {
+            let _ = s.shadow_record(&f, first);
         }
         match exists {
             Some(i) => self.facts[i] = f,
             None => self.facts.push(f),
+        }
+    }
+
+    /// Records a fact only after SQLite accepts it. Signed webhook observation uses this path
+    /// so the durable inbox can replay the delivery after a storage failure.
+    fn durable_probe_fact(
+        &mut self,
+        pr: u64,
+        kind: &str,
+        at: Time,
+        data: serde_json::Value,
+        first: bool,
+    ) -> bool {
+        let exists = self
+            .facts
+            .iter()
+            .position(|fact| fact.side == "observer" && fact.pr == pr && fact.kind == kind);
+        if first && exists.is_some() {
+            return true;
+        }
+        let fact = ShadowFact {
+            repo: self.repo.clone(),
+            side: "observer".into(),
+            pr,
+            kind: kind.into(),
+            at,
+            data,
+            seq: self.seq + 1,
+        };
+        if let Some(store) = &self.store
+            && store.shadow_record(&fact, first).is_err()
+        {
+            return false;
+        }
+        self.seq += 1;
+        match exists {
+            Some(index) => self.facts[index] = fact,
+            None => self.facts.push(fact),
         }
         true
     }
@@ -853,6 +889,7 @@ impl Shadow {
             prefix_matches,
             !prs.is_empty(),
             now,
+            false,
         );
         if author_matches && prefix_matches {
             if prs.is_empty() {
@@ -896,6 +933,7 @@ impl Shadow {
         prefix_matches: bool,
         membership_parsed: bool,
         now: Time,
+        durable: bool,
     ) -> bool {
         if !(author_matches || prefix_matches) {
             return true;
@@ -905,28 +943,26 @@ impl Shadow {
             .iter()
             .any(|fact| fact.kind == "draft_probe" && fact.pr == structure.number);
         if !exists && self.draft_probe_count >= SHADOW_DRAFT_PROBES_MAX {
-            return self.fact(
-                "observer",
-                0,
-                "draft_probe_truncated",
-                now,
-                json!({ "reason": "candidate_limit" }),
-                true,
-            );
+            let data = json!({ "reason": "candidate_limit" });
+            if durable {
+                return self.durable_probe_fact(0, "draft_probe_truncated", now, data, true);
+            }
+            self.fact("observer", 0, "draft_probe_truncated", now, data, true);
+            return true;
         }
-        let persisted = self.fact(
-            "observer",
-            structure.number,
-            "draft_probe",
-            now,
-            json!({
-                "matching_configured_author": author_matches,
-                "matching_queue_prefix": prefix_matches,
-                "structured_membership_parsed": membership_parsed,
-                "structure": structure,
-            }),
-            false,
-        );
+        let number = structure.number;
+        let data = json!({
+            "matching_configured_author": author_matches,
+            "matching_queue_prefix": prefix_matches,
+            "structured_membership_parsed": membership_parsed,
+            "structure": structure,
+        });
+        let persisted = if durable {
+            self.durable_probe_fact(number, "draft_probe", now, data, false)
+        } else {
+            self.fact("observer", number, "draft_probe", now, data, false);
+            true
+        };
         if persisted && !exists {
             self.draft_probe_count += 1;
         }
@@ -950,6 +986,7 @@ impl Shadow {
             prefix_matches,
             !prs.is_empty(),
             now,
+            true,
         ) {
             return false;
         }
@@ -1014,6 +1051,7 @@ impl Shadow {
                 prefix_matches,
                 !prs.is_empty(),
                 now,
+                false,
             );
             if author_matches {
                 if !prefix_matches {
@@ -2120,7 +2158,14 @@ mod tests {
     fn candidate_limit_is_explicit_in_the_report() {
         let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
         for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 + 1 {
-            s.note_draft_probe(draft_structure(number, "", ""), true, false, false, number);
+            s.note_draft_probe(
+                draft_structure(number, "", ""),
+                true,
+                false,
+                false,
+                number,
+                false,
+            );
         }
         let report = report("o/r", s.facts());
         assert_eq!(
@@ -2185,6 +2230,29 @@ mod tests {
         assert!(!s.observe_pull_webhook(&pull, 1));
         assert!(!s.has("observer", 80, "draft_probe"));
         assert!(!s.has(MERGIFY, 50, "queued"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_singleton_persistence_still_updates_the_live_report() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-singleton-failure-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        rusqlite::Connection::open(dir.join("schlange.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE shadow")
+            .unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        s.fact(SCHLANGE, 50, "seen", 1, json!({}), true);
+        s.fact(MERGIFY, 50, "landed", 2, json!({ "batch": [50] }), true);
+        assert!(s.has(MERGIFY, 50, "landed"));
+        let row = report("o/r", s.facts()).pull_requests.remove(0);
+        assert_eq!(row.verdict, "disagree");
+        assert_eq!(row.landed, cmp(false, true));
         let _ = std::fs::remove_dir_all(dir);
     }
 
