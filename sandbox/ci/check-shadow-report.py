@@ -5,7 +5,10 @@ Only synthetic sandbox recordings are accepted. A CLI exit of zero alone is insu
 an empty, pending or inconclusive comparison is not evidence of parity.
 """
 import json
+import os
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 DRAFT_CANDIDATES_MAX = 256
@@ -121,7 +124,7 @@ def _validate_draft_diagnostics(diagnostics):
         raise ValueError('structural draft observer diagnostics are truncated')
 
 
-def verify(report, recordings):
+def verify(report, recordings, directories=None):
     if (type(report.get('history_incomplete', False)) is not bool
             or report.get('history_incomplete', False)):
         raise ValueError('repository shadow occurrence history is incomplete')
@@ -144,7 +147,7 @@ def verify(report, recordings):
         by_number[number] = row
     selected = set()
     groups = []
-    for directory in sorted(recordings.iterdir()):
+    for directory in sorted(recordings.iterdir() if directories is None else directories):
         if not directory.is_dir():
             continue
         state = json.loads((directory / 'run.json').read_text())
@@ -241,10 +244,94 @@ def verify(report, recordings):
     return {'repository': report['repository'], 'compared_prs': len(selected), 'recordings': groups}
 
 
+def _actions_source(environ):
+    values = (environ.get('GITHUB_RUN_ID'), environ.get('GITHUB_RUN_ATTEMPT'),
+              environ.get('GITHUB_SHA'), environ.get('GITHUB_REPOSITORY'))
+    run_id, attempt, commit, repository = values
+    if (not all(isinstance(value, str) for value in values)
+            or not run_id.isdigit() or int(run_id) <= 0
+            or not attempt.isdigit() or int(attempt) <= 0
+            or not re.fullmatch(r'[0-9a-f]{40}', commit)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)):
+        raise ValueError('workflow provenance is missing')
+    return {'workflow_run_id': int(run_id), 'workflow_run_attempt': int(attempt),
+            'workflow_commit': commit, 'workflow_repository': repository}
+
+
+def _timestamp(value):
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError('invalid snapshot timestamp')
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise ValueError('invalid snapshot timestamp') from None
+    if parsed.tzinfo is None:
+        raise ValueError('invalid snapshot timestamp')
+    return parsed
+
+
+def verify_snapshots(recordings, environ=None):
+    """Verify each run only against the shadow rows captured before its cleanup."""
+    environ = os.environ if environ is None else environ
+    expected_source = _actions_source(environ)
+    groups, seen_runs, seen_prs = [], set(), set()
+    directories = sorted(directory for directory in recordings.iterdir() if directory.is_dir())
+    if not directories:
+        raise ValueError('no scenario recordings')
+    for directory in directories:
+        state = json.loads((directory / 'run.json').read_text())
+        snapshot = json.loads((directory / 'shadow-report.json').read_text())
+        if (state.get('org'), state.get('repo')) != ('schlange-sandbox', 'queue-lab'):
+            raise ValueError('recording is not from the reference sandbox')
+        run_id = state.get('run_id')
+        if not isinstance(run_id, str) or not run_id or run_id in seen_runs:
+            raise ValueError('invalid or repeated scenario run id')
+        seen_runs.add(run_id)
+        prs = state.get('prs')
+        if not isinstance(prs, dict) or not prs:
+            raise ValueError('recording has incomplete PR evidence')
+        selected = sorted(pr.get('number') for pr in prs.values() if isinstance(pr, dict))
+        if (len(selected) != len(prs) or any(type(number) is not int or number <= 0
+                                            or number in seen_prs for number in selected)
+                or selected != sorted(set(selected))):
+            raise ValueError('recording has invalid or repeated PR numbers')
+        seen_prs.update(selected)
+        expected_fields = {
+            'schema', 'repository', 'scenario_run_id', 'scenario_finished_at', 'captured_at',
+            'selected_pull_requests', 'source', 'complete', 'incomplete_reason', 'report'}
+        if (not isinstance(snapshot, dict) or set(snapshot) != expected_fields
+                or snapshot.get('schema') != 1
+                or snapshot.get('repository') != 'schlange-sandbox/queue-lab'
+                or snapshot.get('scenario_run_id') != run_id
+                or snapshot.get('scenario_finished_at') != state.get('finished')
+                or snapshot.get('selected_pull_requests') != selected
+                or snapshot.get('source') != expected_source
+                or snapshot.get('complete') is not True
+                or snapshot.get('incomplete_reason') is not None):
+            raise ValueError('pre-cleanup shadow snapshot is incomplete or unbound')
+        if _timestamp(snapshot['captured_at']) < _timestamp(state.get('finished')):
+            raise ValueError('pre-cleanup shadow snapshot predates scenario completion')
+        report = snapshot.get('report')
+        if not isinstance(report, dict) or set(report) != {
+                'repository', 'history_incomplete', 'draft_observer', 'pull_requests'}:
+            raise ValueError('pre-cleanup shadow report is malformed')
+        report_numbers = [row.get('number') for row in report['pull_requests']
+                          if isinstance(row, dict)] if isinstance(report.get('pull_requests'), list) else []
+        if report_numbers != selected:
+            raise ValueError('pre-cleanup shadow report does not contain the selected PRs')
+        summary = verify(report, recordings, directories=[directory])
+        groups.extend(summary['recordings'])
+    return {'repository': 'schlange-sandbox/queue-lab',
+            'compared_prs': len(seen_prs), 'recordings': groups}
+
+
 def main():
     try:
-        report = json.loads(Path(sys.argv[1]).read_text())
-        summary = verify(report, Path(sys.argv[2]))
+        if len(sys.argv) == 3 and sys.argv[1] == '--snapshots':
+            summary = verify_snapshots(Path(sys.argv[2]))
+        else:
+            report = json.loads(Path(sys.argv[1]).read_text())
+            summary = verify(report, Path(sys.argv[2]))
     except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
         print(json.dumps({'complete': False}))
         print(f'Shadow evidence incomplete: {error}', file=sys.stderr)
