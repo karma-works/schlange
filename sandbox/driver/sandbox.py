@@ -32,6 +32,7 @@ Scenario format (JSON), steps in order:
   {"dispatch_workflow": "name.yml", "pr": "a", "ref": "pr"|"main", "inputs": {"pr": "{pr}"}}
   {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "app": "github-actions", "after_checkpoint": true}
   {"assert_check_pair": "a", "name": "ci-ok", "distinct_suites": true}
+  {"rerun_ci": "a", "timeout": 900}                   observe the queued same-head CI attempt pending, then green
 Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
 
