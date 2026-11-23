@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read structural progress for one known in-flight queue-lab S06 fixture PR."""
+from collections import Counter
 import importlib.util
 import json
 import os
@@ -46,6 +47,23 @@ def inspect():
             rows[name] = {"present": bool(latest),
                           "status": status if status in ("queued", "in_progress", "completed", "pending") else None,
                           "conclusion": conclusion if conclusion in driver.CHECK_CONCLUSIONS else None}
+        counts = Counter()
+        for run in runs:
+            if isinstance(run, dict) and run.get("head_sha") == sha:
+                slug = (run.get("app") or {}).get("slug")
+                app = slug if slug in ("github-actions", "mergify") else "other"
+                conclusion = run.get("conclusion")
+                if conclusion not in driver.CHECK_CONCLUSIONS:
+                    conclusion = "pending_or_unknown"
+                counts[f"{app}/{conclusion}"] += 1
+        status_page = client.read_json(f"{root}/commits/{sha}/status?per_page=100")
+        statuses = status_page.get("statuses")
+        status_complete = isinstance(statuses, list) and status_page.get("total_count") == len(statuses)
+        status_counts = Counter()
+        if status_complete:
+            for status in statuses:
+                mode = status.get("state") if isinstance(status, dict) else None
+                status_counts[mode if mode in ("pending", "success", "failure", "error") else "other"] += 1
         stamped = driver.now_iso()
         state = {"org": "schlange-sandbox", "repo": "queue-lab", "run_id": ref.split("/")[1],
                  "started": "2026-11-23T10:24:09Z", "finished": stamped,
@@ -54,7 +72,11 @@ def inspect():
         return {**report, "complete": activity["complete"], "observed_at": stamped,
                 "reference_incomplete_reason": activity["incomplete_reason"],
                 "open": pull.get("state") == "open", "merged": pull.get("merged") is True,
+                "mergeable": pull.get("mergeable") if type(pull.get("mergeable")) is bool else None,
                 "checks_on_current_head": rows,
+                "check_conclusion_counts": counts,
+                "commit_statuses_complete": status_complete,
+                "commit_status_counts": status_counts,
                 "lifecycle": [{key: event[key] for key in ("kind", "received_at", "reason_code") if key in event}
                               for event in activity["events"]]}
     except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
