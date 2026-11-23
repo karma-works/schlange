@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 import urllib.error
 import urllib.parse
@@ -32,6 +34,8 @@ def read_json(path, token):
         raw = response.read(LIMIT + 1)
         if len(raw) > LIMIT:
             raise ValueError("oversize")
+        if path == "/app/installations?per_page=2" and 'rel="next"' in response.headers.get("Link", ""):
+            raise ValueError("installation_scope_unverified")
         return json.loads(raw)
 
 
@@ -55,6 +59,10 @@ def inspect():
         "workflow_commit": os.environ.get("GITHUB_SHA"),
         "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
+    if (not re.fullmatch(r"[1-9][0-9]{0,31}", report["workflow_run_id"] or "")
+            or not re.fullmatch(r"[1-9][0-9]{0,15}", report["workflow_run_attempt"] or "")
+            or not re.fullmatch(r"[0-9a-f]{40}", report["workflow_commit"] or "")):
+        return {"schema": 1, "complete": False, "reason": "source_invalid"}
     try:
         token = driver.app_jwt("queue")
         expected = driver.app_meta("queue")["id"]
@@ -88,10 +96,10 @@ def inspect():
             "verifies_tls": config.get("insecure_ssl") in ("0", 0),
             "subscribes_issue_comment": "issue_comment" in events,
             "subscribes_pull_request": "pull_request" in events,
-            "recent_sandbox_delivery_count": len(selected),
-            "recent_sandbox_delivery_successes": sum(200 <= code < 300 for code in statuses),
+            "listed_sandbox_delivery_count": len(selected),
+            "listed_sandbox_delivery_successes": sum(200 <= code < 300 for code in statuses),
         })
-    except (AttributeError, KeyError, OSError, TypeError, ValueError, urllib.error.URLError):
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError):
         report["reason"] = "readonly_request_failed"
     return report
 
