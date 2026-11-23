@@ -8,8 +8,8 @@ use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, Tester};
 
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
-// The source fixture is unchanged. Informational Journeys needs this explicit derivative
-// because regex matching also sees @github-actions/<name> (observed in PR #24).
+// The simulator scenario carries a dedicated copy so its path remains stable; its semantics
+// must stay identical to the current golden source fixture.
 const INFORMATIONAL_JOURNEYS: &str =
     include_str!("../../../scenarios/configs/arztagent-journeys-informational.yml");
 const DEPENDABOT: &str = "dependabot[bot]";
@@ -181,10 +181,10 @@ fn a_partial_batch_waits_exactly_two_minutes() {
     t.shutdown();
 }
 
-/// With an exemption that explicitly covers GitHub Actions-qualified names, a red Journeys
-/// check neither blocks entry nor dequeues; unrelated red checks still block entry.
+/// Current Arztagent semantics exempt the umbrella and numbered shards 1–4 from GitHub Actions,
+/// including a late failure, while another app, a near miss and an ordinary red check block.
 #[test]
-fn an_explicit_app_qualified_journeys_exemption_keeps_the_check_informational() {
+fn current_journeys_umbrella_and_shards_are_informational_only_for_github_actions() {
     let without_comments = |text: &str| {
         text.lines()
             .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
@@ -193,72 +193,54 @@ fn an_explicit_app_qualified_journeys_exemption_keeps_the_check_informational() 
     };
     assert_eq!(
         without_comments(INFORMATIONAL_JOURNEYS),
-        without_comments(&ARZTAGENT.replace(
-            "^(?!verify-arztagent journeys$)",
-            "^(?!(?:@github-actions/)?verify-arztagent journeys$)"
-        )),
-        "the test derivative must differ only in the Journeys regex"
+        without_comments(ARZTAGENT),
+        "the scenario copy must match the current golden configuration"
     );
-    let t = start_with(INFORMATIONAL_JOURNEYS);
-    let journeys = t.open_pr(BOT).file("a.py", "a\n").create();
-    let red_later = t.open_pr(BOT).file("b.py", "b\n").create();
-    let scanners = t.open_pr(BOT).file("c.py", "c\n").create();
-    let both = t.open_pr(BOT).file("d.py", "d\n").create();
-    t.pr(journeys).check("verify-arztagent journeys").fail();
+    let t = start();
+    let umbrella = t.open_pr(BOT).file("a.py", "a\n").create();
+    let shard = t.open_pr(BOT).file("b.py", "b\n").create();
+    let foreign = t.open_pr(BOT).file("c.py", "c\n").create();
+    let near_miss = t.open_pr(BOT).file("d.py", "d\n").create();
+    let scanners = t.open_pr(BOT).file("e.py", "e\n").create();
+    t.pr(umbrella).check("verify-arztagent journeys").fail();
+    t.pr(shard).check("verify-arztagent journeys (1/4)").fail();
+    t.gh.report_check_as(
+        foreign,
+        "verify-arztagent journeys (2/4)",
+        Some("failure"),
+        "other-app",
+    );
+    t.pr(near_miss)
+        .check("verify-arztagent journeys (5/4)")
+        .fail();
     t.pr(scanners).check("Scanners").fail();
-    t.pr(both).check("verify-arztagent journeys").fail();
-    t.pr(both).check("Scanners").fail();
-    for n in [journeys, red_later, scanners, both] {
+    for n in [umbrella, shard, foreign, near_miss, scanners] {
         green(&t, n, true);
     }
-    t.pr(journeys).wait_queued();
-    t.pr(red_later).wait_queued();
-    t.pr(red_later).check("verify-arztagent journeys").fail();
+    t.pr(umbrella).wait_queued();
+    t.pr(shard).wait_queued();
+    t.pr(umbrella)
+        .check("verify-arztagent journeys (4/4)")
+        .fail();
     t.settle();
     assert!(
-        queued(&t, red_later),
-        "a red Journeys check does not dequeue it"
+        queued(&t, umbrella),
+        "a late red numbered shard does not dequeue it"
     );
-    for n in [scanners, both] {
-        assert!(!queued(&t, n), "#{n}: a red Scanners check keeps it out");
+    for n in [foreign, near_miss, scanners] {
+        assert!(!queued(&t, n), "#{n}: a non-exempt red check keeps it out");
     }
     t.advance("2m");
     let draft = t.queue_pr().get();
     let tree = t.gh.tree_of(&draft.head_sha);
     assert!(tree.contains_key("a.py") && tree.contains_key("b.py"));
-    assert!(!tree.contains_key("c.py") && !tree.contains_key("d.py"));
+    assert!(!tree.contains_key("c.py") && !tree.contains_key("d.py") && !tree.contains_key("e.py"));
     t.queue_pr().check("ci-ok").succeed();
-    t.pr(journeys).wait_merged();
-    t.pr(red_later).wait_merged();
-    for n in [scanners, both] {
+    t.pr(umbrella).wait_merged();
+    t.pr(shard).wait_merged();
+    for n in [foreign, near_miss, scanners] {
         assert!(!queued(&t, n));
     }
-    t.assert_invariants();
-    t.shutdown();
-}
-
-/// The actual source snapshot exempts only the bare check name. A GitHub Actions run also
-/// matches as @github-actions/<name>, so its failure blocks entry and dequeues an existing PR.
-#[test]
-fn the_actual_bare_journeys_exemption_still_blocks_an_app_qualified_failure() {
-    let t = start();
-    let red_first = t.open_pr(BOT).file("first.py", "a\n").create();
-    let red_later = t.open_pr(BOT).file("later.py", "b\n").create();
-    t.pr(red_first).check("verify-arztagent journeys").fail();
-    for pr in [red_first, red_later] {
-        green(&t, pr, true);
-    }
-    t.pr(red_later).wait_queued();
-    t.settle();
-    assert!(
-        !queued(&t, red_first),
-        "the real regex does not exempt the qualified form"
-    );
-    t.pr(red_later).check("verify-arztagent journeys").fail();
-    t.wait_until("qualified failure dequeued", |t| !queued(t, red_later));
-    assert_eq!(t.dequeue_code(red_later).as_deref(), Some("PR_DEQUEUED"));
-    assert!(!t.gh.pr(red_first).unwrap().merged);
-    assert!(!t.gh.pr(red_later).unwrap().merged);
     t.assert_invariants();
     t.shutdown();
 }

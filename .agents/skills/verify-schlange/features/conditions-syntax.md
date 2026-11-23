@@ -15,9 +15,8 @@ source: "https://docs.mergify.com/configuration/conditions"
 
 A condition is a string of the form `[-][#]attribute [operator value]`, plus the combinators
 `and`, `or` and `not` as lists. For list attributes one matching element is enough, except for
-`!=`. Arztagent uses `=`, `~=`, negation (`-check-failure ~= ^(?!verify-arztagent journeys$)`),
-and `or`. That bare-name exemption does not exempt an app-qualified Journeys failure; see
-`conditions-checks` (`regex-app-forms`).
+`!=`. Arztagent uses `=`, `~=`, negation (including an app-qualified exception for the Journeys
+umbrella and shards 1–4), and `or`; see `conditions-checks` (`regex-app-forms`).
 
 ## Sub-features
 

@@ -18,10 +18,9 @@ queue_rules:
       - base = main
       - -draft
       - -label = halt
-      # Kein roter Check außer den Journeys (journeys.yml, Job "verify-arztagent journeys"):
-      # Sie sind informativ und für das Mergen nicht erforderlich; jeder andere rote Check hält
-      # den PR an.
-      - "-check-failure ~= ^(?!verify-arztagent journeys$)"
+      # No red check except the informational Journeys umbrella and numbered shards 1–4.
+      # Both bare and GitHub Actions-qualified names are exempt; other apps are not.
+      - '-check-failure ~= ^(?!(?:@github-actions/)?verify-arztagent journeys(?: \([1-4]/4\))?$)'
       - check-success = ci-ok
       - check-success = Risk class and data protection
       # Dependabot bekommt im KI-Review keine Secrets; Major-Updates reiht ein Mensch ein.
