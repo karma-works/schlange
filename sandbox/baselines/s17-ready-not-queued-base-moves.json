@@ -10,5 +10,26 @@
     }
   },
   "landed": [],
-  "batches": []
+  "batches": [],
+  "accepted_variants": [
+    {
+      "name": "mergeability still pending at queue entry",
+      "why": "The run recorded one queue entry after hold removal, followed by PR_DEQUEUED for the unchanged head. This is consistent with asynchronous mergeability.",
+      "source_runs": [
+        "45070515103"
+      ],
+      "prs": {
+        "a": {
+          "end": "open",
+          "queued": true,
+          "enter_count": 1,
+          "dequeue_codes": [
+            "PR_DEQUEUED"
+          ]
+        }
+      },
+      "landed": [],
+      "batches": []
+    }
+  ]
 }
