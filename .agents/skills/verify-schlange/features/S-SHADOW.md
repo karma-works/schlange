@@ -46,7 +46,9 @@ compares that with what Mergify did, per pull request.
   lost; replay is deduplicated by draft PR number. The JSON report's `draft_observer` section
   lists only candidate PR numbers at the three structural gates: matching queue prefix,
   matching configured author and parsed membership. It retains no title, body or author
-  identity, and its probe rows never become parity rows. Missing codes are not inferred from prose.
+  identity, and its probe rows never become parity rows. Candidate structures retain only
+  numeric `#N` and `/pull/N` references, body line indexes/counts, and booleans for list/link
+  starts and HTML-comment delimiters. Missing codes are not inferred from prose.
 - `compare`: built. Per pull request: queue-entry count, landed, landing order (rank among the pull
   requests both landed; Mergify's merges in one second keep their batch's order), the batch
   it landed in, and the ordered dequeue-code history. The legacy queued boolean and latest

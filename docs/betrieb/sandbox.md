@@ -273,7 +273,9 @@ interpreted observer values is therefore insufficient.
 When queue-entry history differs, the verifier also prints prose-free counts from the report's
 `draft_observer` gates (matching prefix, configured author and parsed membership). The public
 report contains only the candidate PR numbers for those gates, never draft titles, bodies or
-author identities.
+author identities. Its optional candidate structure contains only numeric `#N` and `/pull/N`
+references, line indexes/counts, and Markdown/comment booleans. This is diagnostic evidence for
+choosing a clean-room structural adapter, not queue membership by itself.
 
 Both sandbox modes currently poll by reconciliation, not webhooks. A successful rehearsal is
 evidence for reading/reporting decisions, not for webhook ingress or full two-week acceptance.

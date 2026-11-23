@@ -185,6 +185,60 @@ fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
     embarked(body, own)
 }
 
+fn structural_numbers(text: &str, marker: &str) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once(marker) {
+        let len = after.bytes().take_while(u8::is_ascii_digit).count();
+        if len > 0
+            && let Ok(number) = after[..len].parse::<u64>()
+            && number > 0
+            && !out.contains(&number)
+        {
+            out.push(number);
+        }
+        rest = &after[len..];
+    }
+    out
+}
+
+fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
+    let lines: Vec<&str> = body.lines().collect();
+    let body_reference_lines = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(line, text)| {
+            let hash_references = structural_numbers(text, "#");
+            let pull_path_references = structural_numbers(text, "/pull/");
+            if hash_references.is_empty() && pull_path_references.is_empty() {
+                return None;
+            }
+            let trimmed = text.trim_start();
+            let without_list = ["- ", "* ", "+ "]
+                .iter()
+                .find_map(|marker| trimmed.strip_prefix(marker))
+                .unwrap_or(trimmed)
+                .trim_start();
+            Some(DraftReferenceLine {
+                line,
+                hash_references,
+                pull_path_references,
+                starts_with_list_marker: without_list.len() != trimmed.len(),
+                starts_with_hash_reference: without_list.starts_with('#'),
+                starts_with_markdown_link: without_list.starts_with('['),
+                contains_html_comment_delimiter: text.contains("<!--") || text.contains("-->"),
+            })
+        })
+        .collect();
+    DraftStructure {
+        number,
+        title_hash_references: structural_numbers(title, "#"),
+        title_pull_path_references: structural_numbers(title, "/pull/"),
+        body_line_count: lines.len(),
+        body_reference_lines,
+    }
+}
+
 impl Shadow {
     pub fn new(cfg: ShadowConfig, repo: &str, store: Option<Store>) -> Self {
         let facts_result = store.as_ref().map(|s| s.shadow_facts(repo));
@@ -749,7 +803,7 @@ impl Shadow {
             Vec::new()
         };
         self.note_draft_probe(
-            p.number,
+            draft_structure(p.number, &p.title, &p.body),
             author_matches,
             prefix_matches,
             !prs.is_empty(),
@@ -792,7 +846,7 @@ impl Shadow {
 
     fn note_draft_probe(
         &mut self,
-        number: u64,
+        structure: DraftStructure,
         author_matches: bool,
         prefix_matches: bool,
         membership_parsed: bool,
@@ -803,13 +857,14 @@ impl Shadow {
         }
         self.fact(
             "observer",
-            number,
+            structure.number,
             "draft_probe",
             now,
             json!({
                 "matching_configured_author": author_matches,
                 "matching_queue_prefix": prefix_matches,
                 "structured_membership_parsed": membership_parsed,
+                "structure": structure,
             }),
             false,
         );
@@ -827,7 +882,7 @@ impl Shadow {
             Vec::new()
         };
         self.note_draft_probe(
-            p.number,
+            draft_structure(p.number, &p.title, &p.body),
             author_matches,
             prefix_matches,
             !prs.is_empty(),
@@ -889,7 +944,7 @@ impl Shadow {
                 Vec::new()
             };
             self.note_draft_probe(
-                p.number,
+                draft_structure(p.number, &p.title, p.body.as_deref().unwrap_or_default()),
                 author_matches,
                 prefix_matches,
                 !prs.is_empty(),
@@ -1145,11 +1200,32 @@ impl<'de> Deserialize<'de> for PrComparison {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftReferenceLine {
+    pub line: usize,
+    pub hash_references: Vec<u64>,
+    pub pull_path_references: Vec<u64>,
+    pub starts_with_list_marker: bool,
+    pub starts_with_hash_reference: bool,
+    pub starts_with_markdown_link: bool,
+    pub contains_html_comment_delimiter: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftStructure {
+    pub number: u64,
+    pub title_hash_references: Vec<u64>,
+    pub title_pull_path_references: Vec<u64>,
+    pub body_line_count: usize,
+    pub body_reference_lines: Vec<DraftReferenceLine>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftObserverDiagnostics {
     /// Candidate pull request numbers only; no title, body or author identity is retained.
     pub matching_queue_prefix: Vec<u64>,
     pub matching_configured_author: Vec<u64>,
     pub structured_membership_parsed: Vec<u64>,
+    pub structures: Vec<DraftStructure>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1206,10 +1282,17 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .into_iter()
             .collect::<Vec<_>>()
     };
+    let mut structures: Vec<DraftStructure> = facts
+        .iter()
+        .filter(|f| f.kind == "draft_probe")
+        .filter_map(|f| serde_json::from_value(f.data["structure"].clone()).ok())
+        .collect();
+    structures.sort_by_key(|structure| structure.number);
     let draft_observer = DraftObserverDiagnostics {
         matching_queue_prefix: probe_numbers("matching_queue_prefix"),
         matching_configured_author: probe_numbers("matching_configured_author"),
         structured_membership_parsed: probe_numbers("structured_membership_parsed"),
+        structures,
     };
     // A watched pull request with no queue event is explicit negative evidence. This is how
     // selected never-enqueued sandbox cases distinguish zero from a missing observation.
@@ -1938,7 +2021,8 @@ mod tests {
     fn draft_observer_diagnostics_are_structural_and_not_comparison_rows() {
         let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
         let mut author_only = PullRequest::new(70, "mergify[bot]", "main", "other", "a");
-        author_only.title = "private author-only title".into();
+        author_only.title = "private author-only #51 /pull/52 title".into();
+        author_only.body = "- #53: private\n[private](/pull/54)\nprivate only".into();
         s.note_other(&author_only, 1);
 
         let mut prefix_only = PullRequest::new(
@@ -1974,8 +2058,27 @@ mod tests {
             vec![70, 72]
         );
         assert_eq!(report.draft_observer.structured_membership_parsed, vec![72]);
+        let structure = report
+            .draft_observer
+            .structures
+            .iter()
+            .find(|structure| structure.number == 70)
+            .unwrap();
+        assert_eq!(structure.title_hash_references, vec![51]);
+        assert_eq!(structure.title_pull_path_references, vec![52]);
+        assert_eq!(structure.body_line_count, 3);
+        assert_eq!(structure.body_reference_lines.len(), 2);
+        assert_eq!(structure.body_reference_lines[0].line, 0);
+        assert_eq!(structure.body_reference_lines[0].hash_references, vec![53]);
+        assert!(structure.body_reference_lines[0].starts_with_list_marker);
+        assert!(structure.body_reference_lines[0].starts_with_hash_reference);
+        assert_eq!(
+            structure.body_reference_lines[1].pull_path_references,
+            vec![54]
+        );
+        assert!(structure.body_reference_lines[1].starts_with_markdown_link);
         let json = serde_json::to_string(&report).unwrap();
-        assert!(!json.contains("private author-only title"));
+        assert!(!json.contains("private author-only"));
         assert!(!json.contains("private prefix-only body"));
         assert!(!json.contains("different-bot"));
         assert!(!json.contains("mergify[bot]"));
