@@ -198,6 +198,7 @@ jobs:
           name: sandbox-runs-${{ inputs.repo || 'queue-lab' }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/sandbox-runs/*/outcome.json
+            ${{ runner.temp }}/sandbox-runs/*/queue-timing.json
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
             ${{ runner.temp }}/shadow-evidence/*.json

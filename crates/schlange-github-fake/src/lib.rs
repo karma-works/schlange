@@ -93,6 +93,7 @@ impl FakeConfig {
 #[derive(Clone, Debug)]
 pub struct FakePr {
     pub number: u64,
+    pub created_at: u64,
     pub title: String,
     pub body: String,
     pub user: String,
@@ -146,6 +147,7 @@ pub struct FakeRun {
     pub head_sha: Sha,
     pub status: String,
     pub conclusion: Option<String>,
+    pub completed_at: Option<u64>,
     pub app_slug: String,
     pub output_title: String,
     /// Workflow file and triggering event (`github-actions` runs only).
@@ -364,6 +366,8 @@ pub(crate) struct St {
     pub reactions: Vec<(u64, String, String)>,
     /// Comment timestamps (seconds), increasing with every write.
     pub comment_clock: u64,
+    /// Source timestamps for pull-request creation and check-run completion.
+    pub source_clock: u64,
     /// Who made each commit (login), for `GET /pulls/{n}/commits`.
     pub commit_authors: BTreeMap<Sha, String>,
     /// The repository's squash body setting (`COMMIT_MESSAGES`, `PR_BODY`, `BLANK`).
@@ -819,6 +823,7 @@ impl St {
         };
         Some(json!({
             "number": pr.number,
+            "created_at": format_rfc3339(pr.created_at),
             "title": pr.title,
             "body": pr.body,
             "state": if pr.open { "open" } else { "closed" },
@@ -850,6 +855,7 @@ impl St {
         json!({
             "id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status,
             "conclusion": r.conclusion, "app": { "slug": r.app_slug, "id": if r.app_slug == "github-actions" { 15368 } else { 900 } },
+            "completed_at": r.completed_at.map(format_rfc3339),
             "check_suite": { "id": r.suite_id },
             "output": { "title": r.output_title },
             "pull_requests": prs,
@@ -956,6 +962,10 @@ impl St {
         let id = self.id();
         let suite_id = self.id();
         let completed = conclusion.is_some();
+        let completed_at = completed.then(|| {
+            self.source_clock += 1;
+            self.source_clock
+        });
         self.runs.push(FakeRun {
             id,
             suite_id,
@@ -968,6 +978,7 @@ impl St {
             }
             .into(),
             conclusion,
+            completed_at,
             app_slug: app.into(),
             output_title: String::new(),
             workflow: workflow.into(),
@@ -1143,6 +1154,7 @@ impl FakeGithub {
             collaborators: BTreeMap::new(),
             violations: Vec::new(),
             comment_clock: 1_800_000_000,
+            source_clock: 1_900_000_000,
             commit_authors: BTreeMap::new(),
             squash_message_setting: "COMMIT_MESSAGES".into(),
             files_cap: 3000,
@@ -1340,10 +1352,13 @@ impl FakeGithub {
                 // A fork's branch lives in another repository's activity log.
                 s.record_push(&head_ref, "", &head, author);
             }
+            s.source_clock += 1;
+            let created_at = s.source_clock;
             s.prs.insert(
                 n,
                 FakePr {
                     number: n,
+                    created_at,
                     title: title.into(),
                     body: body.into(),
                     user: author.into(),
@@ -1634,9 +1649,23 @@ impl FakeGithub {
     /// Completes a check run that is in progress.
     pub fn complete_check(&self, id: u64, conclusion: &str) {
         self.with(|s| {
+            s.source_clock += 1;
+            let completed_at = s.source_clock;
             if let Some(r) = s.runs.iter_mut().find(|r| r.id == id) {
                 r.status = "completed".into();
                 r.conclusion = Some(conclusion.into());
+                r.completed_at = Some(completed_at);
+            }
+            s.emit_run("completed", id);
+        });
+    }
+
+    /// Updates the output title of an existing check run without changing its identity or
+    /// completion time, as GitHub's check-run update endpoint permits.
+    pub fn update_check_output(&self, id: u64, title: &str) {
+        self.with(|s| {
+            if let Some(r) = s.runs.iter_mut().find(|r| r.id == id) {
+                r.output_title = title.into();
             }
             s.emit_run("completed", id);
         });
