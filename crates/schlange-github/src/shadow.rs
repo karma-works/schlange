@@ -1240,24 +1240,53 @@ impl Shadow {
                         text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
                             .any(|w| w == *c)
                     });
-                let recorded = code.is_none_or(|code| {
-                    let mut data = json!({ "code": code, "run_id": r.id });
-                    if let Some(source_at) = r
-                        .completed_at
-                        .as_deref()
-                        .and_then(crate::time::parse_rfc3339)
-                    {
-                        data["source_at"] = json!(source_at);
-                    }
+                let Some(code) = code else {
+                    // A completed check run can be updated in place. Keep inspecting this
+                    // GitHub ID until it contains durable, recognized observer evidence. The
+                    // marker also prevents a restart from dating a later output update at the
+                    // run's earlier completion time.
                     self.event(
                         MERGIFY,
                         n,
-                        "dequeued",
+                        "dequeue_code_pending",
                         format_args!("run:{}", r.id),
                         now,
-                        data,
-                    )
+                        json!({ "run_id": r.id }),
+                    );
+                    continue;
+                };
+                let mut data = json!({ "code": code, "run_id": r.id });
+                let output_was_code_free = self.facts.iter().any(|fact| {
+                    fact.side == MERGIFY
+                        && fact.pr == n
+                        && fact.kind == "dequeue_code_pending"
+                        && fact.data["run_id"].as_u64() == Some(r.id)
                 });
+                let code_free_marker_was_not_durable = self.facts.iter().any(|fact| {
+                    fact.side == MERGIFY
+                        && fact.pr == n
+                        && fact.kind == "history_incomplete"
+                        && fact.data["stream"] == "dequeue_code_pending"
+                        && fact.data["reason"] == "storage"
+                        && fact.data["durable"] == false
+                });
+                if !output_was_code_free
+                    && !code_free_marker_was_not_durable
+                    && let Some(source_at) = r
+                        .completed_at
+                        .as_deref()
+                        .and_then(crate::time::parse_rfc3339)
+                {
+                    data["source_at"] = json!(source_at);
+                }
+                let recorded = self.event(
+                    MERGIFY,
+                    n,
+                    "dequeued",
+                    format_args!("run:{}", r.id),
+                    now,
+                    data,
+                );
                 if recorded {
                     self.seen_runs.insert(r.id);
                 }

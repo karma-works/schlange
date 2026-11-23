@@ -1660,6 +1660,17 @@ impl FakeGithub {
         });
     }
 
+    /// Updates the output title of an existing check run without changing its identity or
+    /// completion time, as GitHub's check-run update endpoint permits.
+    pub fn update_check_output(&self, id: u64, title: &str) {
+        self.with(|s| {
+            if let Some(r) = s.runs.iter_mut().find(|r| r.id == id) {
+                r.output_title = title.into();
+            }
+            s.emit_run("completed", id);
+        });
+    }
+
     /// Sets a commit status on pull request `n`'s head.
     pub fn report_status(&self, n: u64, context: &str, state: &str) {
         self.with(|s| {
