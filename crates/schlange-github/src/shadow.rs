@@ -43,7 +43,10 @@ use serde_json::json;
 
 use crate::client::Priority;
 use crate::forge::GithubForge;
-use crate::store::{SHADOW_EVENTS_PER_STREAM_MAX, SHADOW_EVENTS_REPO_MAX, ShadowFact, Store};
+use crate::store::{
+    SHADOW_DRAFT_PROBES_MAX, SHADOW_EVENTS_PER_STREAM_MAX, SHADOW_EVENTS_REPO_MAX, ShadowFact,
+    Store,
+};
 use crate::webhook::ShadowPull;
 
 /// Virtual draft numbers start here (far above any real pull request number).
@@ -51,6 +54,9 @@ pub const VIRTUAL_DRAFTS: u64 = 1_000_000_000;
 
 pub const SCHLANGE: &str = "schlange";
 pub const MERGIFY: &str = "mergify";
+const DRAFT_REFERENCE_NUMBERS_MAX: usize = 64;
+const DRAFT_BODY_LINES_MAX: usize = 512;
+const DRAFT_REFERENCE_LINES_MAX: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct ShadowConfig {
@@ -110,6 +116,7 @@ pub struct Shadow {
     event_counts: BTreeMap<(String, u64, String), usize>,
     /// Complete repository event count from the bounded durable startup snapshot.
     event_total: usize,
+    draft_probe_count: usize,
     seq: u64,
     /// Decisions answered or dropped here instead of being sent.
     pub suppressed: u64,
@@ -185,6 +192,90 @@ fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
     embarked(body, own)
 }
 
+fn structural_numbers(text: &str, marker: &str) -> (Vec<u64>, bool) {
+    let mut out = BTreeSet::new();
+    let mut truncated = false;
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once(marker) {
+        let len = after.bytes().take_while(u8::is_ascii_digit).count();
+        if len > 0
+            && let Ok(number) = after[..len].parse::<u64>()
+            && number > 0
+        {
+            out.insert(number);
+            if out.len() > DRAFT_REFERENCE_NUMBERS_MAX {
+                out.pop_last();
+                truncated = true;
+                break;
+            }
+        }
+        rest = &after[len..];
+    }
+    (out.into_iter().collect(), truncated)
+}
+
+fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
+    let mut lines = body.lines();
+    let inspected: Vec<&str> = lines.by_ref().take(DRAFT_BODY_LINES_MAX).collect();
+    let body_lines_truncated = lines.next().is_some();
+    let mut body_reference_lines_truncated = false;
+    let mut body_reference_lines: Vec<DraftReferenceLine> = inspected
+        .iter()
+        .enumerate()
+        .filter_map(|(line, text)| {
+            let (hash_references, hash_references_truncated) = structural_numbers(text, "#");
+            let (pull_path_references, pull_path_references_truncated) =
+                structural_numbers(text, "/pull/");
+            if hash_references.is_empty() && pull_path_references.is_empty() {
+                return None;
+            }
+            let trimmed = text.trim_start();
+            let without_list = ["- ", "* ", "+ "]
+                .iter()
+                .find_map(|marker| trimmed.strip_prefix(marker))
+                .unwrap_or(trimmed)
+                .trim_start();
+            Some(DraftReferenceLine {
+                line,
+                hash_references,
+                hash_references_truncated,
+                pull_path_references,
+                pull_path_references_truncated,
+                starts_with_list_marker: without_list.len() != trimmed.len(),
+                starts_with_hash_reference: without_list.starts_with('#'),
+                starts_with_markdown_link: without_list.starts_with('['),
+                contains_html_comment_delimiter: text.contains("<!--") || text.contains("-->"),
+            })
+        })
+        .collect();
+    if body_reference_lines.len() > DRAFT_REFERENCE_LINES_MAX {
+        body_reference_lines.truncate(DRAFT_REFERENCE_LINES_MAX);
+        body_reference_lines_truncated = true;
+    }
+    let (title_hash_references, title_hash_references_truncated) = structural_numbers(title, "#");
+    let (title_pull_path_references, title_pull_path_references_truncated) =
+        structural_numbers(title, "/pull/");
+    let truncated = title_hash_references_truncated
+        || title_pull_path_references_truncated
+        || body_lines_truncated
+        || body_reference_lines_truncated
+        || body_reference_lines
+            .iter()
+            .any(|line| line.hash_references_truncated || line.pull_path_references_truncated);
+    DraftStructure {
+        number,
+        title_hash_references,
+        title_hash_references_truncated,
+        title_pull_path_references,
+        title_pull_path_references_truncated,
+        body_line_count: inspected.len(),
+        body_lines_truncated,
+        body_reference_lines,
+        body_reference_lines_truncated,
+        truncated,
+    }
+}
+
 impl Shadow {
     pub fn new(cfg: ShadowConfig, repo: &str, store: Option<Store>) -> Self {
         let facts_result = store.as_ref().map(|s| s.shadow_facts(repo));
@@ -230,6 +321,10 @@ impl Shadow {
             }
         }
         let seq = facts.iter().map(|f| f.seq).max().unwrap_or(0);
+        let draft_probe_count = facts
+            .iter()
+            .filter(|fact| fact.kind == "draft_probe")
+            .count();
         Shadow {
             cfg,
             repo: repo.to_string(),
@@ -242,6 +337,7 @@ impl Shadow {
             event_keys,
             event_counts,
             event_total: events.len(),
+            draft_probe_count,
             seq,
             suppressed: 0,
         }
@@ -293,6 +389,42 @@ impl Shadow {
             Some(i) => self.facts[i] = f,
             None => self.facts.push(f),
         }
+    }
+
+    /// Records a fact only after SQLite accepts it. Signed webhook observation uses this path
+    /// so the durable inbox can replay the delivery after a storage failure.
+    fn durable_probe_fact(
+        &mut self,
+        pr: u64,
+        kind: &str,
+        at: Time,
+        data: serde_json::Value,
+        first: bool,
+    ) -> bool {
+        let exists = self
+            .facts
+            .iter()
+            .position(|fact| fact.side == "observer" && fact.pr == pr && fact.kind == kind);
+        let fact = ShadowFact {
+            repo: self.repo.clone(),
+            side: "observer".into(),
+            pr,
+            kind: kind.into(),
+            at,
+            data,
+            seq: self.seq + 1,
+        };
+        if let Some(store) = &self.store
+            && store.shadow_record(&fact, first).is_err()
+        {
+            return false;
+        }
+        self.seq += 1;
+        match exists {
+            Some(index) => self.facts[index] = fact,
+            None => self.facts.push(fact),
+        }
+        true
     }
 
     fn has(&self, side: &str, pr: u64, kind: &str) -> bool {
@@ -749,11 +881,12 @@ impl Shadow {
             Vec::new()
         };
         self.note_draft_probe(
-            p.number,
+            draft_structure(p.number, &p.title, &p.body),
             author_matches,
             prefix_matches,
             !prs.is_empty(),
             now,
+            false,
         );
         if author_matches && prefix_matches {
             if prs.is_empty() {
@@ -792,27 +925,45 @@ impl Shadow {
 
     fn note_draft_probe(
         &mut self,
-        number: u64,
+        structure: DraftStructure,
         author_matches: bool,
         prefix_matches: bool,
         membership_parsed: bool,
         now: Time,
-    ) {
+        durable: bool,
+    ) -> bool {
         if !(author_matches || prefix_matches) {
-            return;
+            return true;
         }
-        self.fact(
-            "observer",
-            number,
-            "draft_probe",
-            now,
-            json!({
-                "matching_configured_author": author_matches,
-                "matching_queue_prefix": prefix_matches,
-                "structured_membership_parsed": membership_parsed,
-            }),
-            false,
-        );
+        let exists = self
+            .facts
+            .iter()
+            .any(|fact| fact.kind == "draft_probe" && fact.pr == structure.number);
+        if !exists && self.draft_probe_count >= SHADOW_DRAFT_PROBES_MAX {
+            let data = json!({ "reason": "candidate_limit" });
+            if durable {
+                return self.durable_probe_fact(0, "draft_probe_truncated", now, data, true);
+            }
+            self.fact("observer", 0, "draft_probe_truncated", now, data, true);
+            return true;
+        }
+        let number = structure.number;
+        let data = json!({
+            "matching_configured_author": author_matches,
+            "matching_queue_prefix": prefix_matches,
+            "structured_membership_parsed": membership_parsed,
+            "structure": structure,
+        });
+        let persisted = if durable {
+            self.durable_probe_fact(number, "draft_probe", now, data, false)
+        } else {
+            self.fact("observer", number, "draft_probe", now, data, false);
+            true
+        };
+        if persisted && !exists {
+            self.draft_probe_count += 1;
+        }
+        persisted
     }
 
     /// Records structured membership directly from a signed, durable pull-request webhook.
@@ -826,13 +977,16 @@ impl Shadow {
         } else {
             Vec::new()
         };
-        self.note_draft_probe(
-            p.number,
+        if !self.note_draft_probe(
+            draft_structure(p.number, &p.title, &p.body),
             author_matches,
             prefix_matches,
             !prs.is_empty(),
             now,
-        );
+            true,
+        ) {
+            return false;
+        }
         if !(author_matches && prefix_matches) {
             return true;
         }
@@ -889,11 +1043,12 @@ impl Shadow {
                 Vec::new()
             };
             self.note_draft_probe(
-                p.number,
+                draft_structure(p.number, &p.title, p.body.as_deref().unwrap_or_default()),
                 author_matches,
                 prefix_matches,
                 !prs.is_empty(),
                 now,
+                false,
             );
             if author_matches {
                 if !prefix_matches {
@@ -1145,11 +1300,52 @@ impl<'de> Deserialize<'de> for PrComparison {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftReferenceLine {
+    pub line: usize,
+    pub hash_references: Vec<u64>,
+    #[serde(default)]
+    pub hash_references_truncated: bool,
+    pub pull_path_references: Vec<u64>,
+    #[serde(default)]
+    pub pull_path_references_truncated: bool,
+    pub starts_with_list_marker: bool,
+    pub starts_with_hash_reference: bool,
+    pub starts_with_markdown_link: bool,
+    pub contains_html_comment_delimiter: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftStructure {
+    pub number: u64,
+    pub title_hash_references: Vec<u64>,
+    #[serde(default)]
+    pub title_hash_references_truncated: bool,
+    pub title_pull_path_references: Vec<u64>,
+    #[serde(default)]
+    pub title_pull_path_references_truncated: bool,
+    pub body_line_count: usize,
+    #[serde(default)]
+    pub body_lines_truncated: bool,
+    pub body_reference_lines: Vec<DraftReferenceLine>,
+    #[serde(default)]
+    pub body_reference_lines_truncated: bool,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftObserverDiagnostics {
     /// Candidate pull request numbers only; no title, body or author identity is retained.
+    #[serde(default)]
     pub matching_queue_prefix: Vec<u64>,
+    #[serde(default)]
     pub matching_configured_author: Vec<u64>,
+    #[serde(default)]
     pub structured_membership_parsed: Vec<u64>,
+    #[serde(default)]
+    pub structures: Vec<DraftStructure>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1198,24 +1394,65 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .collect::<Vec<_>>()
     };
     let probe_numbers = |field: &str| {
-        facts
+        let mut numbers = BTreeSet::new();
+        let mut truncated = false;
+        for fact in facts
             .iter()
-            .filter(|f| f.kind == "draft_probe" && f.data[field] == true)
-            .map(|f| f.pr)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
+            .filter(|fact| fact.kind == "draft_probe" && fact.data[field] == true)
+        {
+            if !numbers.contains(&fact.pr) && numbers.len() == SHADOW_DRAFT_PROBES_MAX {
+                truncated = true;
+                continue;
+            }
+            numbers.insert(fact.pr);
+        }
+        (numbers.into_iter().collect::<Vec<_>>(), truncated)
     };
+    let mut structures_by_number = BTreeMap::new();
+    let mut structures_over = false;
+    for structure in facts
+        .iter()
+        .filter(|fact| fact.kind == "draft_probe")
+        .filter_map(|fact| {
+            serde_json::from_value::<DraftStructure>(fact.data["structure"].clone()).ok()
+        })
+    {
+        if !structures_by_number.contains_key(&structure.number)
+            && structures_by_number.len() == SHADOW_DRAFT_PROBES_MAX
+        {
+            structures_over = true;
+            continue;
+        }
+        structures_by_number.insert(structure.number, structure);
+    }
+    let structures: Vec<_> = structures_by_number
+        .values_mut()
+        .take(SHADOW_DRAFT_PROBES_MAX)
+        .map(std::mem::take)
+        .collect();
+    let (matching_queue_prefix, prefix_over) = probe_numbers("matching_queue_prefix");
+    let (matching_configured_author, author_over) = probe_numbers("matching_configured_author");
+    let (structured_membership_parsed, parsed_over) = probe_numbers("structured_membership_parsed");
+    let diagnostics_truncated = facts
+        .iter()
+        .any(|fact| fact.kind == "draft_probe_truncated")
+        || prefix_over
+        || author_over
+        || parsed_over
+        || structures_over
+        || structures.iter().any(|structure| structure.truncated);
     let draft_observer = DraftObserverDiagnostics {
-        matching_queue_prefix: probe_numbers("matching_queue_prefix"),
-        matching_configured_author: probe_numbers("matching_configured_author"),
-        structured_membership_parsed: probe_numbers("structured_membership_parsed"),
+        matching_queue_prefix,
+        matching_configured_author,
+        structured_membership_parsed,
+        structures,
+        truncated: diagnostics_truncated,
     };
     // A watched pull request with no queue event is explicit negative evidence. This is how
     // selected never-enqueued sandbox cases distinguish zero from a missing observation.
     let prs: BTreeSet<u64> = facts
         .iter()
-        .filter(|f| f.pr != 0 && f.kind != "draft_probe")
+        .filter(|f| f.pr != 0 && f.kind != "draft_probe" && f.kind != "draft_probe_truncated")
         .map(|f| f.pr)
         .collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
@@ -1869,6 +2106,74 @@ mod tests {
     }
 
     #[test]
+    fn prior_diagnostic_report_without_structures_deserializes() {
+        let old = json!({
+            "repository": "o/r",
+            "draft_observer": {
+                "matching_queue_prefix": [80],
+                "matching_configured_author": [80],
+                "structured_membership_parsed": []
+            },
+            "agreements": 0,
+            "disagreements": 0,
+            "inconclusive": 0,
+            "pending": 0,
+            "pull_requests": []
+        });
+        let report: ShadowReport = serde_json::from_value(old).unwrap();
+        assert!(report.draft_observer.structures.is_empty());
+        assert!(!report.draft_observer.truncated);
+    }
+
+    #[test]
+    fn draft_structure_is_bounded_and_marks_truncation() {
+        let references = (1..=DRAFT_REFERENCE_NUMBERS_MAX + 1)
+            .map(|number| format!("#{number}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body = std::iter::repeat_n(references.as_str(), DRAFT_BODY_LINES_MAX + 1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let structure = draft_structure(1, &references, &body);
+        assert_eq!(
+            structure.title_hash_references.len(),
+            DRAFT_REFERENCE_NUMBERS_MAX
+        );
+        assert_eq!(structure.body_line_count, DRAFT_BODY_LINES_MAX);
+        assert_eq!(
+            structure.body_reference_lines.len(),
+            DRAFT_REFERENCE_LINES_MAX
+        );
+        assert!(structure.title_hash_references_truncated);
+        assert!(structure.body_lines_truncated);
+        assert!(structure.body_reference_lines_truncated);
+        assert!(structure.body_reference_lines[0].hash_references_truncated);
+        assert!(structure.truncated);
+    }
+
+    #[test]
+    fn candidate_limit_is_explicit_in_the_report() {
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 + 1 {
+            s.note_draft_probe(
+                draft_structure(number, "", ""),
+                true,
+                false,
+                false,
+                number,
+                false,
+            );
+        }
+        let report = report("o/r", s.facts());
+        assert_eq!(
+            report.draft_observer.structures.len(),
+            SHADOW_DRAFT_PROBES_MAX
+        );
+        assert!(report.draft_observer.truncated);
+        assert!(s.has("observer", 0, "draft_probe_truncated"));
+    }
+
+    #[test]
     fn failed_event_append_does_not_claim_the_source_key_in_memory() {
         let dir = std::env::temp_dir().join(format!(
             "schlange-shadow-store-failure-{}-{}",
@@ -1894,6 +2199,119 @@ mod tests {
         assert!(!s.has(MERGIFY, 50, "queued"));
         assert!(s.has("observer", 0, "history_incomplete"));
         assert!(!s.event_keys.contains("mergify:50:queued:draft:80"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_draft_probe_persistence_refuses_webhook_completion() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-probe-failure-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        rusqlite::Connection::open(dir.join("schlange.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE shadow")
+            .unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        let pull = ShadowPull {
+            number: 80,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: "mergify/merge-queue/0000000050".into(),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        assert!(!s.observe_pull_webhook(&pull, 1));
+        assert!(!s.has("observer", 80, "draft_probe"));
+        assert!(!s.has(MERGIFY, 50, "queued"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn signed_capped_probe_persists_a_reconciliation_only_marker_before_acknowledging() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-marker-recovery-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store.clone()));
+        for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 {
+            assert!(s.note_draft_probe(
+                draft_structure(number, "", ""),
+                true,
+                false,
+                false,
+                number,
+                false,
+            ));
+        }
+        let connection = rusqlite::Connection::open(dir.join("schlange.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_shadow_insert BEFORE INSERT ON shadow \
+                 BEGIN SELECT RAISE(FAIL, 'test storage failure'); END;",
+            )
+            .unwrap();
+
+        assert!(s.note_draft_probe(draft_structure(257, "", ""), true, false, false, 257, false,));
+        assert!(s.has("observer", 0, "draft_probe_truncated"));
+        assert!(
+            !store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
+        let pull = ShadowPull {
+            number: 258,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: "mergify/merge-queue/0000000050".into(),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        assert!(!s.observe_pull_webhook(&pull, 258));
+        assert!(
+            !store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER reject_shadow_insert")
+            .unwrap();
+        assert!(s.observe_pull_webhook(&pull, 259));
+        assert!(
+            store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_singleton_persistence_still_updates_the_live_report() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-singleton-failure-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        rusqlite::Connection::open(dir.join("schlange.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE shadow")
+            .unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        s.fact(SCHLANGE, 50, "seen", 1, json!({}), true);
+        s.fact(MERGIFY, 50, "landed", 2, json!({ "batch": [50] }), true);
+        assert!(s.has(MERGIFY, 50, "landed"));
+        let row = report("o/r", s.facts()).pull_requests.remove(0);
+        assert_eq!(row.verdict, "disagree");
+        assert_eq!(row.landed, cmp(false, true));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1938,7 +2356,8 @@ mod tests {
     fn draft_observer_diagnostics_are_structural_and_not_comparison_rows() {
         let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
         let mut author_only = PullRequest::new(70, "mergify[bot]", "main", "other", "a");
-        author_only.title = "private author-only title".into();
+        author_only.title = "private author-only #51 /pull/52 title".into();
+        author_only.body = "- #53: private\n[private](/pull/54)\nprivate only".into();
         s.note_other(&author_only, 1);
 
         let mut prefix_only = PullRequest::new(
@@ -1974,8 +2393,27 @@ mod tests {
             vec![70, 72]
         );
         assert_eq!(report.draft_observer.structured_membership_parsed, vec![72]);
+        let structure = report
+            .draft_observer
+            .structures
+            .iter()
+            .find(|structure| structure.number == 70)
+            .unwrap();
+        assert_eq!(structure.title_hash_references, vec![51]);
+        assert_eq!(structure.title_pull_path_references, vec![52]);
+        assert_eq!(structure.body_line_count, 3);
+        assert_eq!(structure.body_reference_lines.len(), 2);
+        assert_eq!(structure.body_reference_lines[0].line, 0);
+        assert_eq!(structure.body_reference_lines[0].hash_references, vec![53]);
+        assert!(structure.body_reference_lines[0].starts_with_list_marker);
+        assert!(structure.body_reference_lines[0].starts_with_hash_reference);
+        assert_eq!(
+            structure.body_reference_lines[1].pull_path_references,
+            vec![54]
+        );
+        assert!(structure.body_reference_lines[1].starts_with_markdown_link);
         let json = serde_json::to_string(&report).unwrap();
-        assert!(!json.contains("private author-only title"));
+        assert!(!json.contains("private author-only"));
         assert!(!json.contains("private prefix-only body"));
         assert!(!json.contains("different-bot"));
         assert!(!json.contains("mergify[bot]"));

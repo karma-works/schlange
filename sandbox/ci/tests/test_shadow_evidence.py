@@ -114,6 +114,74 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.assertIn('author=2', result.stderr)
         self.assertIn('parsed=0', result.stderr)
 
+    def test_structural_diagnostics_reject_unbounded_or_untrusted_top_level_data(self):
+        invalid = [
+            {'unexpected': 'private prose'},
+            {'matching_queue_prefix': list(range(1, 258))},
+            {'matching_queue_prefix': [2, 1]},
+            {'matching_queue_prefix': [1, 1]},
+            {'matching_queue_prefix': [True]},
+            {'structures': 'private prose'},
+            {'truncated': True},
+            {'truncated': 'false'},
+        ]
+        for diagnostics in invalid:
+            with self.subTest(diagnostics=diagnostics):
+                self.report['draft_observer'] = diagnostics
+                result = self.check()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('private prose', result.stderr)
+
+    def test_structural_diagnostics_validate_nested_shape_bounds_and_indexes(self):
+        valid = {
+            'matching_queue_prefix': [80],
+            'matching_configured_author': [],
+            'structured_membership_parsed': [],
+            'structures': [{
+                'number': 80,
+                'title_hash_references': [42],
+                'title_pull_path_references': [],
+                'body_line_count': 1,
+                'body_reference_lines': [{
+                    'line': 0,
+                    'hash_references': [42],
+                    'pull_path_references': [],
+                    'starts_with_list_marker': True,
+                    'starts_with_hash_reference': True,
+                    'starts_with_markdown_link': False,
+                    'contains_html_comment_delimiter': False,
+                }],
+            }],
+        }
+        self.report['draft_observer'] = copy.deepcopy(valid)
+        self.assertEqual(self.check().returncode, 0)
+
+        mutations = [
+            lambda d: d['structures'][0].update(private='private prose'),
+            lambda d: d['structures'][0].update(number=81),
+            lambda d: d['structures'][0].update(body_line_count=513),
+            lambda d: d['structures'][0].update(title_hash_references=list(range(1, 66))),
+            lambda d: d['structures'][0].update(title_hash_references=[2, 1]),
+            lambda d: d['structures'][0]['body_reference_lines'][0].update(line=1),
+            lambda d: d['structures'][0]['body_reference_lines'][0].update(
+                starts_with_list_marker='private prose'),
+            lambda d: d['structures'][0]['body_reference_lines'][0].update(
+                hash_references=[1, 1]),
+            lambda d: d['structures'][0].update(
+                body_reference_lines=d['structures'][0]['body_reference_lines'] * 65),
+            lambda d: d['structures'][0].update(
+                body_lines_truncated=True, truncated=False),
+            lambda d: d.update(structures=d['structures'] * 257),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                diagnostics = copy.deepcopy(valid)
+                mutate(diagnostics)
+                self.report['draft_observer'] = diagnostics
+                result = self.check()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('private prose', result.stderr)
+
     def test_shared_dequeue_reason_not_in_recording_does_not_pass(self):
         self.outcome['prs']['a'].update(end='open', queued=False, enter_count=0, dequeue_codes=[])
         self.outcome.update(landed=[], batches=[])
