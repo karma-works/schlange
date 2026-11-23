@@ -489,11 +489,9 @@ pub struct BaseMoveContext {
 pub struct State {
     pub pull_requests: BTreeMap<u64, PullRequest>,
     pub queued: BTreeMap<u64, QueueEntry>,
-    /// Draft pull request heads that were already observed when their base tip changed. If one
-    /// of these heads later becomes ready, enters the queue and no longer applies, Mergify
-    /// reports the generic `PR_DEQUEUED` code rather than the code for a pre-existing base
-    /// conflict (sandbox S13). Ready pull requests waiting on checks are deliberately excluded;
-    /// S17 has not shown them entering the queue after the move.
+    /// Unqueued pull request heads observed before their base tip changed. A subsequent
+    /// speculative build can discover a conflict before GitHub has computed mergeability.
+    /// Mergify reported `PR_DEQUEUED` for that sequence in sandbox S13 and S17.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub base_moved_heads: BTreeMap<u64, BaseMoveContext>,
     /// Branch heads as last read from the forge.
@@ -738,8 +736,13 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                         && old.base_tip.is_some()
                         && p.base_tip.is_some()
                         && old.base_tip != p.base_tip;
+                    let known_move = state
+                        .base_moved_heads
+                        .get(&p.number)
+                        .filter(|context| context.head_sha == p.head_sha && context.base == p.base);
                     if base_tip_moved
-                        && old.draft
+                        && !state.queued.contains_key(&p.number)
+                        && (old.conflict != Some(true) || known_move.is_some())
                         && !old.closed
                         && !old.merged
                         && !p.closed
@@ -747,11 +750,8 @@ fn apply(state: &mut State, rules: &Rules, event: &Event, out: &mut Vec<Decision
                     {
                         let old_tip = old.base_tip.clone().expect("checked above");
                         let observed_tip = p.base_tip.clone().expect("checked above");
-                        let original_tip = state
-                            .base_moved_heads
-                            .get(&p.number)
-                            .filter(|c| c.head_sha == p.head_sha && c.base == p.base)
-                            .map(|c| c.original_tip.clone())
+                        let original_tip = known_move
+                            .map(|context| context.original_tip.clone())
                             .unwrap_or(old_tip);
                         if observed_tip == original_tip {
                             state.base_moved_heads.remove(&p.number);
