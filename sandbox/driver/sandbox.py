@@ -44,7 +44,9 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,12 +69,54 @@ DEQUEUE_CODES = (
     "PR_MANUALLY_DEQUEUED", "PR_WITH_HIGHER_PRIORITY_QUEUED",
     "PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE", "INTERMEDIATE_RESULTS_SKIPPED", "PR_CLOSED",
 )
+REFERENCE_ACTIVITY_TYPES = (
+    "action.queue.enter", "action.queue.leave", "action.queue.merged",
+)
+REFERENCE_ACTIVITY_MAX_PRS = 32
+REFERENCE_ACTIVITY_MAX_PAGES = 32
+REFERENCE_ACTIVITY_MAX_EVENTS = 2048
+REFERENCE_ACTIVITY_MAX_RESPONSE_BYTES = 1_000_000
+REFERENCE_INCOMPLETE_REASONS = frozenset({
+    "source_missing", "run_incomplete", "selection_invalid", "transport",
+    "page_invalid", "scope_invalid", "pagination_invalid", "bound_exceeded",
+    "event_invalid",
+})
+# Public Activity Log identifiers only. Unlike DEQUEUE_CODES, this excludes Schlange's
+# observer-only aliases and includes identifiers that Schlange does not otherwise interpret.
+REFERENCE_DEQUEUE_CODES = frozenset({
+    "PR_MERGED", "PR_MERGED_INTERMEDIATE_RESULTS_SKIPPED", "PR_DEQUEUED",
+    "PR_DEQUEUED_FROM_PARTITION", "PR_AHEAD_DEQUEUED", "BATCH_AHEAD_FAILED",
+    "PR_WITH_HIGHER_PRIORITY_QUEUED", "SCHEDULED_FREEZE_STATUS_CHANGED",
+    "SPECULATIVE_CHECK_NUMBER_REDUCED", "CHECKS_TIMEOUT", "CHECKS_FAILED",
+    "DROPPED_BY_BISECTION_ELIMINATION", "QUEUE_RULE_MISSING", "BASE_BRANCH_MISSING",
+    "BASE_BRANCH_CHANGED", "PR_UNEXPECTEDLY_FAILED_TO_MERGE",
+    "BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS", "PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE",
+    "CONFLICT_WITH_BASE_BRANCH", "CONFLICT_WITH_PULL_AHEAD", "BRANCH_UPDATE_FAILED",
+    "DRAFT_PULL_REQUEST_CHANGED", "BATCH_PULL_REQUEST_CLOSED", "PULL_REQUEST_UPDATED",
+    "MERGE_QUEUE_RESET", "INCOMPATIBILITY_WITH_BRANCH_PROTECTIONS", "PR_MANUALLY_MERGED",
+    "DRAFT_PULL_REQUEST_CREATION_FAILED", "DRAFT_PULL_REQUEST_CREATION_BRANCH_NOT_INDEXED",
+    "CONFIGURATION_CHANGED", "UNPROCESSABLE_PULL_REQUEST", "PR_MANUALLY_DEQUEUED",
+    "STACK_PREDECESSOR_DEQUEUED", "INTERMEDIATE_RESULTS_SKIPPED", "CHECKS_RETRIED",
+    "SCHEDULE_BLOCKED_AHEAD_YIELDED", "BASE_REF_ALIGNMENT_TIMEOUT",
+    "GITHUB_STACKED_PULL_REQUEST_MERGE_UNSUPPORTED", "BATCH_SCOPES_CHANGED",
+    "BATCH_AHEAD_BRANCH_EDITED", "CHECKS_INTERRUPTED", "GITHUB_WORKFLOWS_PERMISSION_MISSING",
+    "BATCH_REBUILT", "BATCH_AHEAD_REBUILT", "GITHUB_REBASE_MERGE_REFUSED",
+    "PR_IN_SAME_BATCH_DEQUEUED",
+})
 # The driver acts with the sandbox credentials and must never touch another organisation, so the
 # organisation is fixed; SANDBOX_ORG and --org can only repeat it.
 ALLOWED_ORG = "schlange-sandbox"
 DEFAULT_ORG = os.environ.get("SANDBOX_ORG", ALLOWED_ORG)
 ALLOWED_REPOS = ("queue-lab", "schlange-e2e", "schlange-e2e-isolated")
 ACTIVE_REPOS = ("schlange-e2e", "schlange-e2e-isolated")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def die(msg):
@@ -190,6 +234,24 @@ class Client:
                 raise RuntimeError(f"{self.label}: {method} {path} → HTTP {e.code}") from None
         raise RuntimeError(f"{self.label}: {method} {path} failed repeatedly")
 
+    def activity_page(self, url):
+        """Credentialed JSON read whose redirects stay disabled so auth cannot change hosts."""
+        req = urllib.request.Request(url, method="GET", headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token()}",
+            "User-Agent": "schlange-sandbox-driver",
+        })
+        try:
+            with NO_REDIRECT_OPENER.open(req, timeout=60) as resp:
+                raw = resp.read(REFERENCE_ACTIVITY_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > REFERENCE_ACTIVITY_MAX_RESPONSE_BYTES:
+                    raise RuntimeError(f"{self.label}: activity log response is too large")
+                page = json.loads(raw) if raw else None
+                return page, {"link": resp.headers.get_all("Link", [])}
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as e:
+            code = f" HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else ""
+            raise RuntimeError(f"{self.label}: GET activity log failed{code}") from None
+
     def paged(self, path):
         sep = "&" if "?" in path else "?"
         page, out = 1, []
@@ -279,6 +341,238 @@ def fetch_events(client, url, strict=False):
     if strict and cursor:
         raise RuntimeError("queue event log exceeds pagination limit")
     return events
+
+
+class _ReferenceActivityError(Exception):
+    pass
+
+
+def reference_activity_enabled(state, environ=None):
+    environ = os.environ if environ is None else environ
+    return (environ.get("GITHUB_ACTIONS") == "true"
+            and environ.get("SANDBOX_REFERENCE_ACTIVITY") == "1"
+            and state.get("org") == ALLOWED_ORG and state.get("repo") == "queue-lab")
+
+
+def _activity_time(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)", value):
+        raise _ReferenceActivityError("event_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise _ReferenceActivityError("event_invalid") from None
+    if parsed.tzinfo is None:
+        raise _ReferenceActivityError("event_invalid")
+    return parsed
+
+
+def _activity_next(link):
+    if link is None:
+        return None
+    if not isinstance(link, str) or not link or len(link) > 8192:
+        raise _ReferenceActivityError("pagination_invalid")
+    relations = {}
+    for part in link.split(","):
+        match = re.fullmatch(r'\s*<([^>]+)>\s*;\s*rel="(next|prev)"\s*', part)
+        if not match or match.group(2) in relations:
+            raise _ReferenceActivityError("pagination_invalid")
+        relations[match.group(2)] = match.group(1)
+    return relations.get("next")
+
+
+def _validate_activity_url(url, fixed_query, cursor_required):
+    if not isinstance(url, str) or len(url) > 8192:
+        raise _ReferenceActivityError("scope_invalid")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise _ReferenceActivityError("scope_invalid") from None
+    expected_path = "/v1/repos/schlange-sandbox/queue-lab/logs"
+    if (parsed.scheme != "https" or parsed.hostname != "api.mergify.com" or port is not None
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path != expected_path or parsed.fragment):
+        raise _ReferenceActivityError("scope_invalid")
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    cursors = [value for key, value in pairs if key == "cursor"]
+    without_cursor = [(key, value) for key, value in pairs if key != "cursor"]
+    if (sorted(without_cursor) != sorted(fixed_query)
+            or len(cursors) != int(cursor_required) or any(not cursor for cursor in cursors)):
+        raise _ReferenceActivityError("scope_invalid")
+    return cursors[0] if cursors else None
+
+
+def _activity_link_header(headers):
+    if not isinstance(headers, dict):
+        raise _ReferenceActivityError("page_invalid")
+    values = []
+    for key, value in headers.items():
+        if not isinstance(key, str):
+            raise _ReferenceActivityError("page_invalid")
+        if key.lower() == "link":
+            values.extend(value if isinstance(value, list) else [value])
+    if len(values) > 1:
+        raise _ReferenceActivityError("pagination_invalid")
+    return values[0] if values else None
+
+
+def _activity_common_metadata(metadata, nullable_session=False):
+    if not isinstance(metadata, dict):
+        raise _ReferenceActivityError("event_invalid")
+    for field in ("queue_name", "branch"):
+        if not isinstance(metadata.get(field), str) or not metadata[field]:
+            raise _ReferenceActivityError("event_invalid")
+    _activity_time(metadata.get("queued_at"))
+    session = metadata.get("session_id")
+    if nullable_session and session is None:
+        return
+    if not isinstance(session, str):
+        raise _ReferenceActivityError("event_invalid")
+    try:
+        uuid.UUID(session)
+    except (ValueError, AttributeError):
+        raise _ReferenceActivityError("event_invalid") from None
+
+
+def _public_activity_event(event, selected, start, end):
+    if (not isinstance(event, dict) or type(event.get("id")) is not int or event["id"] <= 0
+            or event.get("repository") not in {"queue-lab", "schlange-sandbox/queue-lab"}
+            or type(event.get("pull_request")) is not int or event["pull_request"] not in selected
+            or event.get("type") not in REFERENCE_ACTIVITY_TYPES):
+        raise _ReferenceActivityError("event_invalid")
+    at = _activity_time(event.get("received_at"))
+    if not start <= at <= end:
+        raise _ReferenceActivityError("event_invalid")
+    metadata = event.get("metadata")
+    _activity_common_metadata(metadata, nullable_session=event["type"] == "action.queue.leave")
+    public = {"id": event["id"], "received_at": event["received_at"],
+              "pull_request": event["pull_request"]}
+    if event["type"] == "action.queue.enter":
+        public["kind"] = "enter"
+    elif event["type"] == "action.queue.leave":
+        code = metadata.get("dequeue_code")
+        if code is not None and (not isinstance(code, str) or code not in REFERENCE_DEQUEUE_CODES):
+            raise _ReferenceActivityError("event_invalid")
+        if type(metadata.get("merged")) is not bool:
+            raise _ReferenceActivityError("event_invalid")
+        if not metadata["merged"] and code is None:
+            raise _ReferenceActivityError("event_invalid")
+        public.update({"kind": "leave", "merged": metadata["merged"], "reason_code": code})
+    else:
+        sha = metadata.get("merge_commit_sha")
+        if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)):
+            raise _ReferenceActivityError("event_invalid")
+        public.update({"kind": "merged", "merge_commit_sha": sha})
+    return public, at
+
+
+def capture_reference_activity(state, client, recorded_at, environ=None):
+    """A bounded, prose-free Activity Log diagnostic; never an outcome or verifier input."""
+    environ = os.environ if environ is None else environ
+    state = state if isinstance(state, dict) else {}
+    raw_prs = state.get("prs") if isinstance(state.get("prs"), dict) else {}
+    selection_bounded = len(raw_prs) <= REFERENCE_ACTIVITY_MAX_PRS
+    prs = sorted({p.get("number") for p in raw_prs.values()
+                  if selection_bounded and isinstance(p, dict)
+                  and type(p.get("number")) is int and p["number"] > 0})
+    raw_run_id = state.get("run_id")
+    safe_run_id = (raw_run_id if isinstance(raw_run_id, str)
+                   and len(raw_run_id) <= 104
+                   and re.fullmatch(r"s\d{2}-[a-z0-9-]{1,100}", raw_run_id) else None)
+    result = {
+        "schema": 1, "repository": "schlange-sandbox/queue-lab",
+        "scenario_run_id": safe_run_id, "scenario_finished_at": None, "collected_at": None,
+        "source": {"workflow_run_id": None, "workflow_run_attempt": None,
+                   "workflow_commit": None, "workflow_repository": None},
+        "query": {"received_from": None, "received_to": None,
+                  "pull_requests": prs, "event_types": list(REFERENCE_ACTIVITY_TYPES)},
+        "complete": False, "incomplete_reason": None, "events": [],
+    }
+
+    def incomplete(reason):
+        result.update({"complete": False, "incomplete_reason": reason, "events": []})
+        return result
+
+    run_id, attempt, commit, workflow_repo = (
+        environ.get("GITHUB_RUN_ID"), environ.get("GITHUB_RUN_ATTEMPT"),
+        environ.get("GITHUB_SHA"), environ.get("GITHUB_REPOSITORY"))
+    if (environ.get("GITHUB_ACTIONS") != "true"
+            or not all(isinstance(value, str) for value in (run_id, attempt, commit, workflow_repo))
+            or len(run_id) > 32 or len(attempt) > 16 or len(commit) > 64
+            or len(workflow_repo) > 200 or not run_id.isdigit() or int(run_id) <= 0
+            or not attempt.isdigit() or int(attempt) <= 0
+            or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", workflow_repo)):
+        return incomplete("source_missing")
+    result["source"] = {"workflow_run_id": int(run_id), "workflow_run_attempt": int(attempt),
+                        "workflow_commit": commit, "workflow_repository": workflow_repo}
+    try:
+        start, collected, finish_time = (
+            _activity_time(state.get("started")), _activity_time(recorded_at),
+            _activity_time(state.get("finished")))
+    except _ReferenceActivityError:
+        return incomplete("run_incomplete")
+    if (safe_run_id is None or state.get("timed_out") is not False
+            or finish_time < start or collected < finish_time):
+        return incomplete("run_incomplete")
+    result.update({"scenario_finished_at": state["finished"], "collected_at": recorded_at})
+    result["query"].update({"received_from": state["started"],
+                            "received_to": state["finished"]})
+    if (state.get("org") != ALLOWED_ORG or state.get("repo") != "queue-lab"
+            or not selection_bounded or not prs or len(prs) > REFERENCE_ACTIVITY_MAX_PRS
+            or len(prs) != len(raw_prs)):
+        return incomplete("selection_invalid")
+
+    fixed_query = [("per_page", "100"), ("received_from", state["started"]),
+                   ("received_to", state["finished"])]
+    fixed_query.extend(("pull_request", str(number)) for number in prs)
+    fixed_query.extend(("event_type", kind) for kind in REFERENCE_ACTIVITY_TYPES)
+    url = f"{MERGIFY_API}/repos/schlange-sandbox/queue-lab/logs?{urllib.parse.urlencode(fixed_query)}"
+    seen_urls, seen_cursors, seen_ids, public = set(), set(), set(), []
+    try:
+        for page_number in range(REFERENCE_ACTIVITY_MAX_PAGES):
+            cursor = _validate_activity_url(url, fixed_query, cursor_required=page_number > 0)
+            if url in seen_urls:
+                raise _ReferenceActivityError("pagination_invalid")
+            if cursor is not None and cursor in seen_cursors:
+                raise _ReferenceActivityError("pagination_invalid")
+            seen_urls.add(url)
+            if cursor is not None:
+                seen_cursors.add(cursor)
+            try:
+                page, headers = client.activity_page(url)
+            except (RuntimeError, AttributeError):
+                raise _ReferenceActivityError("transport") from None
+            if (not isinstance(page, dict) or type(page.get("size")) is not int
+                    or page["size"] < 0 or page.get("per_page") != 100
+                    or not isinstance(page.get("events"), list)
+                    or page["size"] != len(page["events"]) or page["size"] > 100):
+                raise _ReferenceActivityError("page_invalid")
+            if len(public) + len(page["events"]) > REFERENCE_ACTIVITY_MAX_EVENTS:
+                raise _ReferenceActivityError("bound_exceeded")
+            for event in page["events"]:
+                item, at = _public_activity_event(event, set(prs), start, finish_time)
+                if item["id"] in seen_ids:
+                    raise _ReferenceActivityError("pagination_invalid")
+                seen_ids.add(item["id"])
+                public.append((at, item))
+            next_url = _activity_next(_activity_link_header(headers))
+            if next_url is None:
+                break
+            _validate_activity_url(next_url, fixed_query, cursor_required=True)
+            url = next_url
+        else:
+            raise _ReferenceActivityError("bound_exceeded")
+    except _ReferenceActivityError as error:
+        reason = error.args[0] if error.args and error.args[0] in REFERENCE_INCOMPLETE_REASONS else "event_invalid"
+        return incomplete(reason)
+    public.sort(key=lambda pair: (pair[0], pair[1]["id"]))
+    time_pr = [(at, item["pull_request"]) for at, item in public]
+    if len(time_pr) != len(set(time_pr)):
+        return incomplete("event_invalid")
+    result.update({"events": [item for _, item in public], "complete": True})
+    return result
 
 
 def currently_queued(events, number):
@@ -827,9 +1121,11 @@ def record(out):
     state = json.loads((out / "run.json").read_text())
     if state.get("org") != ALLOWED_ORG or state.get("repo") not in ALLOWED_REPOS:
         raise RuntimeError("recording is outside the allowed sandbox repositories")
+    recorded = now_iso()
+    m = mergify_client() if state["repo"] == "queue-lab" else None
     c = human_client()
     r = f"/repos/{state['org']}/{state['repo']}"
-    trace = {"run": state, "recorded": now_iso(), "prs": {}, "queue_prs": [], "main": []}
+    trace = {"run": state, "recorded": recorded, "prs": {}, "queue_prs": [], "main": []}
     for key, p in state["prs"].items():
         n = p["number"]
         pr = c.call("GET", f"{r}/pulls/{n}")
@@ -862,7 +1158,6 @@ def record(out):
                               "committer": (cm.get("committer") or {}).get("login"),
                               "message": cm["commit"]["message"], "date": cm["commit"]["committer"]["date"]})
     # Mergify's activity log (queue-lab only): structured reasons for entering and leaving the queue.
-    m = mergify_client() if state["repo"] == "queue-lab" else None
     if m:
         url = (f"{MERGIFY_API}/repos/{state['org']}/{state['repo']}/logs?per_page=100"
                f"&received_from={state['started']}")
@@ -889,6 +1184,34 @@ def record(out):
     (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     print(json.dumps(public_record_summary(summary), indent=2, ensure_ascii=False))
     log(f"Recording: {out}")
+
+
+def write_reference_activity(out):
+    """Write the optional diagnostic after standard recording and outcome generation."""
+    if (os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("SANDBOX_REFERENCE_ACTIVITY") != "1"):
+        return
+    state = json.loads((out / "run.json").read_text())
+    if not reference_activity_enabled(state):
+        return
+    recorded = now_iso()
+    try:
+        activity = capture_reference_activity(state, mergify_client(), recorded)
+    except Exception:
+        # Experimental evidence never changes the established sandbox result. It still emits
+        # an atomic, bounded marker rather than a partial history or exception text.
+        activity = {
+            "schema": 1, "repository": "schlange-sandbox/queue-lab",
+            "scenario_run_id": None, "scenario_finished_at": None,
+            "collected_at": None,
+            "source": {"workflow_run_id": None, "workflow_run_attempt": None,
+                       "workflow_commit": None, "workflow_repository": None},
+            "query": {"received_from": None, "received_to": None,
+                      "pull_requests": [], "event_types": list(REFERENCE_ACTIVITY_TYPES)},
+            "complete": False, "incomplete_reason": "transport", "events": [],
+        }
+    (out / "reference-activity.json").write_text(
+        json.dumps(activity, indent=2, ensure_ascii=False) + "\n")
 
 
 # --- Outcome and comparison -------------------------------------------------------------
@@ -1184,6 +1507,7 @@ def cmd_run(a):
             if not a.keep:
                 cleanup(a.org, a.repo, f"sbx/{out.name}/")
     write_outcome(out)
+    write_reference_activity(out)
     # Timed-out observations cannot prove a baseline or compatibility.
     if getattr(run, "timed_out", False) and os.environ.get("SANDBOX_FAIL_ON_TIMEOUT") == "1":
         log("A wait timed out: failing the run")
