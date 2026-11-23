@@ -324,6 +324,13 @@ then publishes `qualified-probe` on the same head under GitHub Actions. The anch
 head and workflow hint, and then waits for merge. Other scenarios do not use the opt-in label.
 The custom run link is only a hint, as in S15; it is not a proof of job provenance.
 
+S20 re-runs the pull request's CI after observing queue entry. The driver requires the next
+attempt of the same Actions run on the unchanged head, observes its new `ci-ok` check pending
+and green, and rejects missing or ambiguous check identity. The reference pull request entered
+once and Mergify merged it without dequeuing. The rerun finished before Mergify created the
+speculative draft.
+[S20 reference and shadow comparison](https://github.com/karma-works/schlange/actions/runs/45144411842)
+
 Review `run.json` for `timed_out: false` and the completed checkpoints before accepting an
 `outcome.json` baseline. Do not promote timed-out runs or manufacture a baseline from the
 scenario's expected outcome. Run 45009661581 supplied reviewed, non-timeout S16, S17 and S18

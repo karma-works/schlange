@@ -88,7 +88,14 @@ pub(crate) fn refresh_priorities(state: &mut State, rules: &Rules) {
     let waiting: Vec<u64> = state
         .queued
         .iter()
-        .filter(|(_, e)| matches!(e.status, EntryStatus::Waiting | EntryStatus::Held { .. }))
+        .filter(|(_, e)| {
+            matches!(
+                e.status,
+                EntryStatus::Waiting
+                    | EntryStatus::CheckReplacementPending
+                    | EntryStatus::Held { .. }
+            )
+        })
         .map(|(n, _)| *n)
         .collect();
     for n in waiting {
@@ -201,7 +208,7 @@ pub fn landing_hold(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Freeze;
+    use crate::engine::{Freeze, QueueEntry};
 
     #[test]
     fn freeze_matching_and_exceptions() {
@@ -225,6 +232,45 @@ mod tests {
         pr.base = "dev".into();
         pr.labels.clear();
         assert!(!f.holds(&pr, &ctx, 15), "does not match");
+    }
+
+    #[test]
+    fn pending_replacement_priority_is_refreshed() {
+        let rules = Rules::from_yaml(
+            "priority_rules:\n  - name: urgent\n    conditions: [label = urgent]\n    priority: high\n",
+        )
+        .unwrap();
+        let mut state = State::default();
+        state
+            .pull_requests
+            .insert(1, PullRequest::new(1, "bot", "main", "topic", "head"));
+        state.queued.insert(
+            1,
+            QueueEntry {
+                queue: "default".into(),
+                rule: "auto".into(),
+                since: 0,
+                head_sha: "head".into(),
+                base: "main".into(),
+                seq: 1,
+                waiting_since: 0,
+                status: EntryStatus::CheckReplacementPending,
+                external_reset: false,
+                by: None,
+                priority: 2000,
+                priority_rule: None,
+                interrupt: false,
+            },
+        );
+        state
+            .pull_requests
+            .get_mut(&1)
+            .unwrap()
+            .labels
+            .insert("urgent".into());
+        refresh_priorities(&mut state, &rules);
+        assert_eq!(state.queued[&1].priority, 3000);
+        assert_eq!(state.queued[&1].priority_rule.as_deref(), Some("urgent"));
     }
 }
 

@@ -558,7 +558,10 @@ pub fn explain(state: &State, rules: &Rules, number: u64) -> Explanation {
             .map(|(n, o)| (o.seq, *n))
             .collect();
         same.sort();
-        let ahead: Vec<u64> = if e.status == EntryStatus::Waiting {
+        let ahead: Vec<u64> = if matches!(
+            e.status,
+            EntryStatus::Waiting | EntryStatus::CheckReplacementPending
+        ) {
             // The engine's order: the pull requests in batches on this base, then the waiting
             // ones by priority, queue rule and arrival.
             let mut v: Vec<u64> = state
@@ -581,6 +584,7 @@ pub fn explain(state: &State, rules: &Rules, number: u64) -> Explanation {
         };
         let (status, held_on, batch) = match &e.status {
             EntryStatus::Waiting => ("waiting", None, None),
+            EntryStatus::CheckReplacementPending => ("waiting-check-replacement", None, None),
             EntryStatus::Bisecting => ("bisecting", None, None),
             EntryStatus::Held { on } => ("held", Some(on.clone()), None),
             EntryStatus::InCar { car } => {
