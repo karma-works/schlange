@@ -50,7 +50,8 @@ compares that with what Mergify did, per pull request.
   dequeue code remain in JSON for report compatibility. Verdicts `agree`, `disagree`,
   `inconclusive` (Mergify merged before Schlange decided), `pending`. Stored in SQLite
   (`shadow` and append-only `shadow_events` tables), shown by
-  `schlange shadow report [--json]` (exit 1 on a disagreement) and
+  `schlange shadow report [--json]` (exit 0 only for complete agreement; exit 1 for a
+  disagreement, pending/inconclusive row or incomplete repository history) and
   `GET /repos/{owner}/{repo}/shadow/report` behind the admin token.
 - `read-only-app`: built. A read-only app (metadata, contents, issues, pull requests,
   checks, actions, statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for

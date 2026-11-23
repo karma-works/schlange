@@ -216,7 +216,7 @@ struct ApiArgs {
 #[derive(Subcommand)]
 enum ShadowCommand {
     /// Agreements and disagreements with Mergify per pull request: queued, landed, landing
-    /// order, batch, dequeue reason. Exit 0 without disagreements, 1 with.
+    /// order, batch, dequeue reason. Exit 0 only for complete agreement, otherwise 1.
     Report {
         /// Read the SQLite database in this data directory instead of calling `serve`.
         #[arg(long)]
@@ -1356,7 +1356,11 @@ fn shadow_report_cli(data_dir: Option<&Path>, all: bool, api: &ApiArgs) -> ExitC
     } else {
         print!("{}", report.to_text());
     }
-    if report.disagreements == 0 {
+    if report.disagreements == 0
+        && report.pending == 0
+        && report.inconclusive == 0
+        && !report.history_incomplete
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(exit::INVALID)

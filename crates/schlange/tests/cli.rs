@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use schlange_github::store::{ShadowFact, Store};
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -19,6 +21,76 @@ fn run(args: &[&str]) -> (i32, String) {
         out.status.code().unwrap(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
     )
+}
+
+fn shadow_fact(repo: &str, side: &str, pr: u64, kind: &str) -> ShadowFact {
+    ShadowFact {
+        repo: repo.into(),
+        side: side.into(),
+        pr,
+        kind: kind.into(),
+        at: 1,
+        data: serde_json::json!({}),
+        seq: 1,
+    }
+}
+
+#[test]
+fn shadow_report_exit_is_zero_only_for_complete_agreement() {
+    let dir = std::env::temp_dir().join(format!("schlange-cli-shadow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Store::open(&dir).unwrap();
+    let record = |repo: &str, side: &str, pr: u64, kind: &str| {
+        store
+            .shadow_record(&shadow_fact(repo, side, pr, kind), true)
+            .unwrap();
+    };
+
+    record("o/complete", "schlange", 1, "seen");
+    let path = dir.to_str().unwrap();
+    let (code, out) = run(&[
+        "shadow",
+        "report",
+        "--json",
+        "--repo",
+        "o/complete",
+        "--data-dir",
+        path,
+    ]);
+    assert_eq!(code, 0, "{out}");
+
+    record("o/repository-incomplete", "schlange", 1, "seen");
+    record(
+        "o/repository-incomplete",
+        "observer",
+        0,
+        "history_incomplete",
+    );
+    record("o/pull-incomplete", "schlange", 1, "seen");
+    record("o/pull-incomplete", "schlange", 1, "history_incomplete");
+    record("o/pending", "schlange", 1, "seen");
+    record("o/pending", "schlange", 1, "queued");
+    record("o/pending", "mergify", 1, "queued");
+    record("o/inconclusive", "mergify", 1, "landed");
+
+    for repo in [
+        "o/repository-incomplete",
+        "o/pull-incomplete",
+        "o/pending",
+        "o/inconclusive",
+    ] {
+        let (code, out) = run(&[
+            "shadow",
+            "report",
+            "--json",
+            "--repo",
+            repo,
+            "--data-dir",
+            path,
+        ]);
+        assert_eq!(code, 1, "{repo}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 const GOLDEN: &str = "crates/schlange-config/tests/golden";
