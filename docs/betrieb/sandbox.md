@@ -262,10 +262,15 @@ write permissions for the separate active E2E repository, so the rehearsal does 
 that the production shadow app's registration is read-only.
 
 The workflow refuses shadow mode on any other repository, combined fixture reset, inspection
-or provisioning. It shares queue-lab's concurrency lock with reference runs. It records the
-CLI report and a service summary (shadow role, suppressed decisions, refused writes and config
-status), without publishing engine state or upstream comment texts. Every selected scenario PR
-must have an `agree` verdict. Pending, inconclusive, missing or timed-out evidence fails.
+or provisioning. It shares queue-lab's concurrency lock with reference runs. Before each
+scenario cleanup, the driver records a report containing only that scenario's selected pull
+requests and binds it to the Actions run, attempt, commit and scenario finish. The strict check
+uses these per-scenario snapshots; a missing or incomplete snapshot fails closed. The later
+global CLI report remains a diagnostic and cannot add cleanup-triggered facts to an earlier
+scenario. The workflow also records a service summary (shadow role, suppressed decisions,
+refused writes and config status), without publishing engine state or upstream comment texts.
+Every selected scenario PR must have an `agree` verdict. Pending, inconclusive, missing or
+timed-out evidence fails.
 `check-shadow-report.py` also compares what the observer says Mergify did with the driver's
 independent Mergify event-log outcome: queue entry, merge, relative landing order, green batch
 membership, queue-entry count and the complete dequeue-code history. Matching two incorrectly
@@ -341,9 +346,10 @@ Shadow mode is accepted only for `queue-lab` and cannot be combined with fixture
 inspection or isolated setup in the same invocation. It uses a read-only installation token
 and the shadow write gate; production acceptance must instead use the dedicated read-only app.
 The workflow independently records Mergify events and checks every selected PR's queue entry,
-merge, batch, order and dequeue reason against the shadow report. Empty, pending, inconclusive,
-unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
-`report.json` and `verification.json`, without upstream prose or private serve logs.
+merge, batch, order and dequeue reason against its pre-cleanup `shadow-report.json`. Empty,
+pending, inconclusive, unfinished or timed-out comparisons fail. The public artifact includes
+the per-scenario snapshots, the later diagnostic `report.json`, `service.json` and
+`verification.json`, without upstream prose or private serve logs.
 A failed comparison writes `complete: false` to `verification.json` and exits nonzero.
 
 After either result, the workflow reads the local database in query-only mode and publishes

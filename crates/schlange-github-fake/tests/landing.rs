@@ -278,6 +278,38 @@ fn unknown_mergeability_is_not_taken_for_no_conflict() {
     t.shutdown();
 }
 
+#[test]
+fn ready_pull_held_during_a_base_move_gets_the_external_conflict_reason() {
+    let t = arztagent()
+        .base_file("backend/held.py", "held = 0\n")
+        .start();
+    let number = t
+        .open_pr(BOT)
+        .file("backend/held.py", "held = 1\n")
+        .label("halt")
+        .create();
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&number));
+
+    t.gh.set_mergeable_lag(100);
+    t.gh.push_base(&[("backend/held.py".into(), "held = 2\n".into())]);
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&number));
+    t.pr(number).unlabel("halt");
+    t.pr(number).wait_queued();
+    t.advance("5m");
+    t.wait_until("the conflicting pull request left the queue", |t| {
+        t.dequeue_code(number).is_some()
+    });
+    assert_eq!(t.dequeue_code(number).as_deref(), Some("PR_DEQUEUED"));
+    t.advance("10m");
+    t.settle();
+    assert!(!t.status().unwrap().queued.contains(&number));
+    assert!(!t.pr(number).get().merged);
+    t.assert_invariants();
+    t.shutdown();
+}
+
 /// More than 30 commit statuses: the required one is on the second page.
 #[test]
 fn combined_statuses_are_read_across_pages() {

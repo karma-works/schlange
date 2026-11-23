@@ -82,6 +82,7 @@ REFERENCE_INCOMPLETE_REASONS = frozenset({
     "page_invalid", "scope_invalid", "pagination_invalid", "bound_exceeded",
     "event_invalid",
 })
+SHADOW_SNAPSHOT_MAX_ATTEMPTS = 12
 # Public Activity Log identifiers only. Unlike DEQUEUE_CODES, this excludes Schlange's
 # observer-only aliases and includes identifiers that Schlange does not otherwise interpret.
 REFERENCE_DEQUEUE_CODES = frozenset({
@@ -355,6 +356,30 @@ def reference_activity_enabled(state, environ=None):
             and state.get("org") == ALLOWED_ORG and state.get("repo") == "queue-lab")
 
 
+def shadow_snapshot_enabled(state, environ=None):
+    environ = os.environ if environ is None else environ
+    return (environ.get("GITHUB_ACTIONS") == "true"
+            and environ.get("SANDBOX_SHADOW_SNAPSHOT") == "1"
+            and state.get("org") == ALLOWED_ORG and state.get("repo") == "queue-lab")
+
+
+def _actions_source(environ):
+    run_id, attempt, commit, workflow_repo = (
+        environ.get("GITHUB_RUN_ID"), environ.get("GITHUB_RUN_ATTEMPT"),
+        environ.get("GITHUB_SHA"), environ.get("GITHUB_REPOSITORY"))
+    if (environ.get("GITHUB_ACTIONS") != "true"
+            or not all(isinstance(value, str)
+                       for value in (run_id, attempt, commit, workflow_repo))
+            or len(run_id) > 32 or len(attempt) > 16 or len(commit) > 64
+            or len(workflow_repo) > 200 or not run_id.isdigit() or int(run_id) <= 0
+            or not attempt.isdigit() or int(attempt) <= 0
+            or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", workflow_repo)):
+        return None
+    return {"workflow_run_id": int(run_id), "workflow_run_attempt": int(attempt),
+            "workflow_commit": commit, "workflow_repository": workflow_repo}
+
+
 def _activity_time(value):
     if not isinstance(value, str) or not re.fullmatch(
             r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)", value):
@@ -555,19 +580,10 @@ def _capture_reference_activity(state, client, recorded_at, environ, event_types
         result.update({"complete": False, "incomplete_reason": reason, "events": []})
         return result
 
-    run_id, attempt, commit, workflow_repo = (
-        environ.get("GITHUB_RUN_ID"), environ.get("GITHUB_RUN_ATTEMPT"),
-        environ.get("GITHUB_SHA"), environ.get("GITHUB_REPOSITORY"))
-    if (environ.get("GITHUB_ACTIONS") != "true"
-            or not all(isinstance(value, str) for value in (run_id, attempt, commit, workflow_repo))
-            or len(run_id) > 32 or len(attempt) > 16 or len(commit) > 64
-            or len(workflow_repo) > 200 or not run_id.isdigit() or int(run_id) <= 0
-            or not attempt.isdigit() or int(attempt) <= 0
-            or not re.fullmatch(r"[0-9a-f]{40}", commit)
-            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", workflow_repo)):
+    source = _actions_source(environ)
+    if source is None:
         return incomplete("source_missing")
-    result["source"] = {"workflow_run_id": int(run_id), "workflow_run_attempt": int(attempt),
-                        "workflow_commit": commit, "workflow_repository": workflow_repo}
+    result["source"] = source
     try:
         start, collected, finish_time = (
             _activity_time(state.get("started")), _activity_time(recorded_at),
@@ -1259,6 +1275,118 @@ def record(out):
     log(f"Recording: {out}")
 
 
+def snapshot_shadow_report(out):
+    """Capture selected shadow rows before scenario cleanup can create new facts."""
+    try:
+        state = json.loads((out / "run.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return
+    if not shadow_snapshot_enabled(state):
+        return
+    raw_prs = state.get("prs") if isinstance(state.get("prs"), dict) else {}
+    selection_bounded = len(raw_prs) <= REFERENCE_ACTIVITY_MAX_PRS
+    selected = sorted({pr.get("number") for pr in raw_prs.values()
+                       if selection_bounded and isinstance(pr, dict)
+                       and type(pr.get("number")) is int and pr["number"] > 0})
+    raw_run_id = state.get("run_id")
+    safe_run_id = (raw_run_id if isinstance(raw_run_id, str) and len(raw_run_id) <= 104
+                   and re.fullmatch(r"s\d{2}-[a-z0-9-]{1,100}", raw_run_id) else None)
+    result = {
+        "schema": 1, "repository": "schlange-sandbox/queue-lab",
+        "scenario_run_id": safe_run_id, "scenario_finished_at": None,
+        "captured_at": None, "selected_pull_requests": selected,
+        "source": {"workflow_run_id": None, "workflow_run_attempt": None,
+                   "workflow_commit": None, "workflow_repository": None},
+        "complete": False, "incomplete_reason": None,
+    }
+
+    def incomplete(reason):
+        result.pop("report", None)
+        result.update({"complete": False, "incomplete_reason": reason})
+        return result
+
+    source = _actions_source(os.environ)
+    if source is None:
+        incomplete("source_missing")
+    else:
+        result["source"] = source
+        try:
+            finish = _activity_time(state.get("finished"))
+        except _ReferenceActivityError:
+            incomplete("run_incomplete")
+        else:
+            result["scenario_finished_at"] = state["finished"]
+            if safe_run_id is None or state.get("timed_out") is not False:
+                incomplete("run_incomplete")
+            elif (not selection_bounded or not selected or len(selected) != len(raw_prs)):
+                incomplete("selection_invalid")
+            else:
+                client, base = schlange_client()
+                if client is None or not isinstance(base, str):
+                    incomplete("transport")
+                else:
+                    endpoint = f"{base}/repos/schlange-sandbox/queue-lab/shadow/report"
+                    for attempt in range(SHADOW_SNAPSHOT_MAX_ATTEMPTS):
+                        try:
+                            report = client.call("GET", endpoint, retry=False)
+                        except (AttributeError, KeyError, RuntimeError, TimeoutError, TypeError,
+                                ValueError, urllib.error.URLError):
+                            incomplete("transport")
+                            break
+                        observed_at = now_iso()
+                        try:
+                            observed_time = _activity_time(observed_at)
+                        except _ReferenceActivityError:
+                            incomplete("report_invalid")
+                            break
+                        if (not isinstance(report, dict)
+                                or report.get("repository") != "schlange-sandbox/queue-lab"
+                                or "history_incomplete" not in report
+                                or type(report["history_incomplete"]) is not bool
+                                or "draft_observer" not in report
+                                or not isinstance(report["draft_observer"], dict)
+                                or not isinstance(report.get("pull_requests"), list)):
+                            incomplete("report_invalid")
+                            break
+                        rows = report["pull_requests"]
+                        by_number = {}
+                        valid = len(rows) <= 100_000
+                        for row in rows if valid else []:
+                            number = row.get("number") if isinstance(row, dict) else None
+                            if type(number) is not int or number <= 0 or number in by_number:
+                                valid = False
+                                break
+                            by_number[number] = row
+                        if not valid:
+                            incomplete("report_invalid")
+                            break
+                        if all(number in by_number for number in selected):
+                            retained = {
+                                "repository": report["repository"],
+                                "history_incomplete": report["history_incomplete"],
+                                "draft_observer": report["draft_observer"],
+                                "pull_requests": [by_number[number] for number in selected],
+                            }
+                            ready = all(row.get("verdict") in ("agree", "disagree")
+                                        for row in retained["pull_requests"])
+                            if ready or attempt + 1 == SHADOW_SNAPSHOT_MAX_ATTEMPTS:
+                                if observed_time < finish:
+                                    incomplete("report_invalid")
+                                else:
+                                    result["report"] = retained
+                                    result.update({"captured_at": observed_at, "complete": True,
+                                                   "incomplete_reason": None})
+                                break
+                        else:
+                            incomplete("selected_prs_missing")
+                        if attempt + 1 < SHADOW_SNAPSHOT_MAX_ATTEMPTS:
+                            time.sleep(5)
+    destination = out / "shadow-report.json"
+    temporary = out / "shadow-report.json.tmp"
+    temporary.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    temporary.replace(destination)
+
+
 def write_reference_activity(out):
     """Write the optional diagnostic after standard recording and outcome generation."""
     if (os.environ.get("GITHUB_ACTIONS") != "true"
@@ -1579,6 +1707,7 @@ def cmd_run(a):
     finally:
         try:
             record(out)
+            snapshot_shadow_report(out)
         finally:
             if not a.keep:
                 cleanup(a.org, a.repo, f"sbx/{out.name}/")
