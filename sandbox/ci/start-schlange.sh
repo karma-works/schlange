@@ -4,9 +4,10 @@
 #
 #   bash sandbox/ci/start-schlange.sh [path of the schlange binary]
 #
-# No webhooks: the runner has no public address, and a forwarder from npm would run next to the
-# queue app's key. The reconciliation loop (every RECONCILE seconds) polls instead, which is
-# also what recovers lost webhooks in production.
+# The ordinary scenario workflow uses no webhooks: the runner has no public address, and a
+# downloaded forwarder must not run next to the queue app's key. The opt-in signed-ingress
+# diagnostic posts one independently HMAC-verified event to this loopback listener. Otherwise
+# the reconciliation loop (every RECONCILE seconds) polls, as production does for recovery.
 # Writes SCHLANGE_URL to GITHUB_ENV and the process ids to $RUNNER_TEMP/schlange.pids.
 # Only the schlange-sandbox organisation and the sandbox credentials are ever used.
 set -euo pipefail

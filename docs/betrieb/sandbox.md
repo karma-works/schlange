@@ -245,6 +245,33 @@ gh run watch "$(gh run list -w sandbox.yml -L1 --json databaseId --jq '.[0].data
   scenario times out. Fix by hand: Mergify installation, "Only select repositories",
   `queue-lab` only.
 
+### Disposable signed-ingress probe
+
+The `verify-signed-ingress` scenario selector in `sandbox.yml` is a manual, queue-lab-only diagnostic for
+the sandbox App's existing Smee route. It does not change the App endpoint, installation or
+subscriptions and does not expose a public listener. The separate conditional job opens one
+task-bound draft pull request with the sandbox driver, accepts only its
+`pull_request.opened` relay event, and forwards it to Schlange on `127.0.0.1:8080`. Ordinary
+scenario runs do not enter this path. The fresh Actions runner uses a new database under
+`RUNNER_TEMP`; only the explicit restart reuses that database.
+
+The relay representation is usable only when its candidate bytes verify against the original
+GitHub HMAC. A representation that cannot be verified fails closed. The same verified bytes
+and delivery identifier are then submitted once more to the live process and once after a
+restart with the same SQLite directory. The artifact contains only provenance, the selected
+pull request number, booleans and row counts. It never contains the relay URL, request body,
+headers, signature or delivery identifier. No downloaded forwarder runs beside the App key.
+
+This probe demonstrates loopback ingestion and persistent duplicate suppression for one
+forwarded signed event. Replaying the in-memory relay delivery is not a GitHub redelivery, and
+the result says nothing about GitHub's handling of a public endpoint, a follower's `503`, or
+Smee delivery guarantees. Dispatch it only from a reviewed commit:
+
+```bash
+gh workflow run sandbox.yml --ref <reviewed-branch-or-commit> \
+  -f repo=queue-lab -f scenarios=verify-signed-ingress
+```
+
 ### Validate the real shadow observer
 
 Run the same workflow with `repo=queue-lab` and `shadow_mode=true`, for example:

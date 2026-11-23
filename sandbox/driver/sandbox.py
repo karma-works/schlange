@@ -197,6 +197,34 @@ def app_jwt(role):
     return f"{head}.{body}.{b64url(sig)}"
 
 
+def app_hook_url(role):
+    """Read the existing App hook URL without printing it or accepting redirects."""
+    if role != "queue":
+        raise RuntimeError("hook configuration is restricted to the queue app")
+    request = urllib.request.Request(
+        API + "/app/hook/config", method="GET", headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {app_jwt(role)}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "schlange-sandbox-driver",
+        })
+    try:
+        with NO_REDIRECT_OPENER.open(request, timeout=60) as response:
+            raw = response.read(16_385)
+    except (OSError, TimeoutError, urllib.error.HTTPError, urllib.error.URLError):
+        raise RuntimeError("queue app hook configuration read failed") from None
+    if len(raw) > 16_384:
+        raise RuntimeError("queue app hook configuration is too large")
+    try:
+        value = json.loads(raw)
+    except (RecursionError, UnicodeError, ValueError):
+        raise RuntimeError("queue app hook configuration is invalid") from None
+    url = value.get("url") if isinstance(value, dict) and len(value) <= 32 else None
+    if not isinstance(url, str) or len(url) > 1_024:
+        raise RuntimeError("queue app hook configuration is invalid")
+    return url
+
+
 class Client:
     def __init__(self, token_fn, label):
         self.token_fn = token_fn
