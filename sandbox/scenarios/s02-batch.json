@@ -1,25 +1,46 @@
 {
   "id": "S02",
-  "title": "Three PRs in quick succession land as one batch",
+  "title": "Three eligible PRs enter in order and land as one batch",
   "strict_batches": true,
-  "expected_batches": [["a", "b", "c"]],
+  "expected_batches": [
+    [
+      "a",
+      "b",
+      "c"
+    ]
+  ],
   "refs": [
     "MQ-26",
     "MQ-20"
   ],
   "steps": [
-    {
-      "open": "a"
-    },
-    {
-      "open": "b"
-    },
-    {
-      "open": "c"
-    },
-    {
-      "wait": "done",
-      "timeout": 2400
-    }
+    {"open": "a", "draft": true},
+    {"label": "a", "add": "halt", "as": "human"},
+    {"ready": "a"},
+    {"open": "b", "draft": true},
+    {"label": "b", "add": "halt", "as": "human"},
+    {"ready": "b"},
+    {"open": "c", "draft": true},
+    {"label": "c", "add": "halt", "as": "human"},
+    {"ready": "c"},
+    {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "a", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "a", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
+    {"assert_unqueued": "a"},
+    {"wait_check": "b", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "b", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "b", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
+    {"assert_unqueued": "b"},
+    {"wait_check": "c", "name": "ci-ok", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "c", "name": "Risk class and data protection", "conclusion": "success", "timeout": 1200},
+    {"wait_check": "c", "name": "KI-Review", "conclusion": "success", "timeout": 1200},
+    {"assert_unqueued": "c"},
+    {"label": "a", "remove": "halt", "as": "human"},
+    {"wait": "queued", "prs": ["a"], "timeout": 60},
+    {"label": "b", "remove": "halt", "as": "human"},
+    {"wait": "queued", "prs": ["b"], "timeout": 60},
+    {"label": "c", "remove": "halt", "as": "human"},
+    {"wait": "queued", "prs": ["c"], "timeout": 60},
+    {"wait": "done", "timeout": 2400}
   ]
 }
