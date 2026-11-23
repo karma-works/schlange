@@ -8,12 +8,30 @@
 //! - The shadow report agrees where both queues did the same (queued, landed, landing order,
 //!   batch composition, dequeue code) and names every difference.
 
-use schlange_github_fake::mergify::MERGIFY_LOGIN;
+use schlange_github_fake::mergify::{MERGIFY_APP, MERGIFY_LOGIN, MERGIFY_QUEUE_CHECK};
 use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, Tester};
 
 const ARZTAGENT: &str = include_str!("../../schlange-config/tests/golden/arztagent.yml");
 const BOT: &str = "arztagent-bot";
+
+const CHECK_FAILURE_QUEUE: &str = r##"
+queue_rules:
+  - name: default
+    batch_size: 1
+    queue_conditions:
+      - base = main
+      - "#check-failure = 0"
+    merge_conditions:
+      - "#check-failure = 0"
+      - check-success = ci-ok
+pull_request_rules:
+  - name: queue test pull requests
+    conditions:
+      - author = arztagent-bot
+    actions:
+      queue:
+"##;
 
 fn arztagent_ci(t: Tester) -> Tester {
     t.ci(CiRule::success(
@@ -408,6 +426,280 @@ fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
     assert_eq!(row["queue_entries"]["mergify"], 0);
     assert_eq!(row["dequeue_reasons"]["schlange"], serde_json::json!([]));
     assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn shadow_queue_conditions_ignore_the_competing_queues_cancelled_check() {
+    let mut t = Tester::new(CHECK_FAILURE_QUEUE)
+        .ci(CiRule::success("ci-ok", CiOn::Both))
+        .shadow()
+        .persistent()
+        .start();
+    let own = green_pr(&t, "backend/own.py", "own = 1\n");
+    let unknown = green_pr(&t, "backend/unknown.py", "unknown = 1\n");
+    let competing = green_pr(&t, "backend/competing.py", "competing = 1\n");
+    for n in [own, unknown, competing] {
+        t.pr(n).wait_queued();
+    }
+
+    // A cancellation from an ordinary CI app is part of the counterfactual input and must
+    // still make the exact fixture-style queue condition false.
+    t.gh.report_check_as(
+        own,
+        "cancelled ordinary CI",
+        Some("cancelled"),
+        "github-actions",
+    );
+    t.wait_until("ordinary cancellation dequeues", |t| {
+        t.dequeue_code(own).as_deref() == Some("PR_DEQUEUED")
+    });
+    let own_decision = t
+        .decisions()
+        .into_iter()
+        .find(|d| d.contains(&format!(r#""type":"dequeue","number":{own}"#)))
+        .expect("ordinary cancellation has a dequeue decision");
+    assert!(
+        own_decision.contains("queue_conditions no longer hold (condition 2 is false)"),
+        "{own_decision}"
+    );
+
+    // A legacy commit status has no verified app slug and must not be projected out either.
+    t.gh.report_status(unknown, "unknown publisher", "failure");
+    t.wait_until("unknown publisher failure dequeues", |t| {
+        t.dequeue_code(unknown).as_deref() == Some("PR_DEQUEUED")
+    });
+
+    // The configured competing queue would not exist in Schlange's counterfactual. Its own
+    // cancelled status must remain observer evidence, not an input that dequeues the PR.
+    t.gh.mergify_check(competing, "cancelled competing queue", Some("cancelled"));
+    reconcile(&t);
+    let status = t.status().expect("fresh shadow worker state");
+    assert!(
+        status.state["queued"].get(competing.to_string()).is_some(),
+        "configured Mergify cancellation contaminated the core: decisions={:?}",
+        t.decisions()
+    );
+    assert_eq!(t.dequeue_code(competing), None);
+
+    // Projection changes only the counterfactual input. The raw observer still records the
+    // configured app's structured queue membership and recognized dequeue output durably.
+    t.gh.mergify_queue(competing);
+    let _draft = t.gh.mergify_embark(&[competing]);
+    t.settle();
+    t.gh.mergify_dequeue(competing, "CHECKS_FAILED");
+    reconcile(&t);
+    let observed = report(&t);
+    let row = observed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == competing)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["CHECKS_FAILED"]),
+        "{observed:#}"
+    );
+    t.stop_service();
+    t.start_service();
+    reconcile(&t);
+    let restarted = report(&t);
+    let row = restarted["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == competing)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["CHECKS_FAILED"]),
+        "{restarted:#}"
+    );
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_virtual_draft_does_not_borrow_the_reference_queues_own_checks() {
+    let mut t = Tester::new(CHECK_FAILURE_QUEUE)
+        .ci(CiRule::success("ci-ok", CiOn::Both))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/virtual.py", "virtual = 1\n");
+    t.pr(n).wait_queued();
+
+    // Let the matching draft and all its checks first appear while the observer is stopped.
+    // Restart reconciliation must project the configured app's cancellation both from the
+    // full snapshot and from a source fetched separately for the virtual draft.
+    t.stop_service();
+    let draft = t.gh.mergify_embark(&[n]);
+    t.gh.mergify_check(draft, "cancelled reference bookkeeping", Some("cancelled"));
+    t.start_service();
+    reconcile(&t);
+    t.wait_until(
+        "Schlange would land from the projected virtual draft",
+        |t| {
+            t.decisions().iter().any(|decision| {
+                decision.contains(r#""type":"land""#)
+                    && decision.contains(&format!(r#""number":{n}"#))
+            })
+        },
+    );
+    assert_eq!(t.dequeue_code(n), None);
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_completed_run_is_reexamined_when_the_same_id_gains_a_dequeue_code() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.gh.mergify_queue(n);
+    t.advance("5m");
+    t.settle();
+    let _draft = t.gh.mergify_embark(&[n]);
+    t.settle();
+
+    let head = t.gh.pr(n).unwrap().head_sha;
+    let run = t
+        .gh
+        .runs()
+        .into_iter()
+        .find(|r| r.head_sha == head && r.app_slug == MERGIFY_APP && r.name == MERGIFY_QUEUE_CHECK)
+        .unwrap();
+    t.gh.complete_check(run.id, "failure");
+    reconcile(&t);
+    let first = report(&t);
+    let row = first["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
+
+    t.stop_service();
+    t.start_service();
+    t.gh.update_check_output(run.id, "Observed PR_MANUALLY_DEQUEUED");
+    reconcile(&t);
+    let recognized = report(&t);
+    let row = recognized["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["PR_MANUALLY_DEQUEUED"])
+    );
+    let facts = Store::open(t.serve_cfg.data_dir.as_ref().unwrap())
+        .unwrap()
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap();
+    let observed = facts
+        .iter()
+        .find(|fact| fact.pr == n && fact.side == "mergify" && fact.kind == "dequeued")
+        .unwrap();
+    assert_eq!(observed.data["run_id"], run.id);
+    assert!(observed.data.get("source_at").is_none());
+
+    // The first recognized durable fact for a GitHub run ID stays authoritative.
+    t.stop_service();
+    t.start_service();
+    t.gh.update_check_output(run.id, "Observed CHECKS_TIMEOUT");
+    reconcile(&t);
+    let retained = report(&t);
+    let row = retained["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["PR_MANUALLY_DEQUEUED"])
+    );
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_failed_code_free_marker_never_reuses_the_old_completion_time_after_recovery() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.gh.mergify_queue(n);
+    t.advance("5m");
+    t.settle();
+    let _draft = t.gh.mergify_embark(&[n]);
+    t.settle();
+
+    let head = t.gh.pr(n).unwrap().head_sha;
+    let run = t
+        .gh
+        .runs()
+        .into_iter()
+        .find(|r| r.head_sha == head && r.app_slug == MERGIFY_APP && r.name == MERGIFY_QUEUE_CHECK)
+        .unwrap();
+    let db = rusqlite::Connection::open(t.serve_cfg.data_dir.as_ref().unwrap().join("schlange.db"))
+        .unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_pending BEFORE INSERT ON shadow_events \
+         BEGIN SELECT RAISE(FAIL, 'pending storage failure'); END; \
+         CREATE TRIGGER reject_incomplete BEFORE INSERT ON shadow \
+         BEGIN SELECT RAISE(FAIL, 'marker storage failure'); END;",
+    )
+    .unwrap();
+
+    t.gh.complete_check(run.id, "failure");
+    reconcile(&t);
+    let failed = report(&t);
+    let row = failed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["history_incomplete"], true, "{failed:#}");
+
+    db.execute_batch("DROP TRIGGER reject_pending; DROP TRIGGER reject_incomplete;")
+        .unwrap();
+    t.gh.update_check_output(run.id, "Observed PR_MANUALLY_DEQUEUED");
+    reconcile(&t);
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    let observed = store
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap()
+        .into_iter()
+        .find(|fact| fact.pr == n && fact.side == "mergify" && fact.kind == "dequeued")
+        .unwrap();
+    assert!(observed.data.get("source_at").is_none());
+
+    t.stop_service();
+    t.start_service();
+    let restarted = report(&t);
+    let row = restarted["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["history_incomplete"], true, "{restarted:#}");
     assert_no_writes(&t);
     t.shutdown();
 }

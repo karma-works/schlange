@@ -345,6 +345,12 @@ merge, batch, order and dequeue reason against the shadow report. Empty, pending
 unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
 `report.json` and `verification.json`, without upstream prose or private serve logs.
 
+Each `queue-lab` scenario also publishes `queue-timing.json`. It records draft creation and
+closure, `ci-ok` and Mergify check completion times, member merge times, and the activity
+log's receipt times for queue entries and exits. Draft title references are hints limited to
+scenario PR numbers. Missing activity logs or malformed required observations set `complete`
+to `false`. Receipt times may lag the action. This artifact does not affect baseline comparison.
+
 The shadow report stores queue-entry, batch and dequeue occurrences as append-only events and
 compares entry counts and ordered dequeue-code histories. The independent verifier therefore
 accepts an S18-style dequeue, requeue and later landing only when those histories match its

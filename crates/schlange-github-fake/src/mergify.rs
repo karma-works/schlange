@@ -80,11 +80,14 @@ impl FakeGithub {
             );
             s.next_issue += 1;
             let d = s.next_issue;
+            s.source_clock += 1;
+            let created_at = s.source_clock;
             let list: Vec<String> = prs.iter().map(|n| format!("#{n}")).collect();
             s.prs.insert(
                 d,
                 crate::FakePr {
                     number: d,
+                    created_at,
                     title: format!(
                         "{} ({})",
                         if prs.len() == 1 {
@@ -194,9 +197,12 @@ fn conclude(s: &mut crate::St, sha: &str, conclusion: &str, title: &str) {
         .map(|r| r.id)
         .collect();
     for id in ids {
+        s.source_clock += 1;
+        let completed_at = s.source_clock;
         if let Some(r) = s.runs.iter_mut().find(|r| r.id == id) {
             r.status = "completed".into();
             r.conclusion = Some(conclusion.into());
+            r.completed_at = Some(completed_at);
             r.output_title = title.into();
         }
         s.emit_run("completed", id);
