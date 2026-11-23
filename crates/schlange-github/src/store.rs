@@ -150,6 +150,12 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, side TEXT NOT NULL,
                  pr INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL,
                  UNIQUE (repo, side, pr, kind));
+             CREATE TABLE IF NOT EXISTS shadow_events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, side TEXT NOT NULL,
+                 pr INTEGER NOT NULL, kind TEXT NOT NULL, event_key TEXT NOT NULL,
+                 at INTEGER NOT NULL, data TEXT NOT NULL,
+                 UNIQUE (repo, side, pr, kind, event_key));
+             CREATE INDEX IF NOT EXISTS shadow_events_repo ON shadow_events (repo, id);
              CREATE TABLE IF NOT EXISTS lease (
                  repo TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);",
         )
@@ -503,6 +509,30 @@ impl Store {
         })
     }
 
+    /// Appends a durable shadow event. `event_key` is the source identity (for example a
+    /// queue draft, car, or check-run ID), so inbox replay and reconciliation cannot duplicate
+    /// an observation while later queue cycles remain distinct.
+    pub fn shadow_event(&self, o: &ShadowFact, event_key: &str) -> rusqlite::Result<bool> {
+        let data = o.data.to_string();
+        self.with(|c| {
+            let n = c.execute(
+                "INSERT OR IGNORE INTO shadow_events \
+                 (repo, side, pr, kind, event_key, at, data) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    o.repo,
+                    o.side,
+                    o.pr as i64,
+                    o.kind,
+                    event_key,
+                    o.at as i64,
+                    data
+                ],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     /// Whether a fact of this kind exists.
     pub fn shadow_has(
         &self,
@@ -513,7 +543,11 @@ impl Store {
     ) -> rusqlite::Result<bool> {
         self.with(|c| {
             c.query_row(
-                "SELECT 1 FROM shadow WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4",
+                "SELECT 1 FROM (
+                    SELECT repo, side, pr, kind FROM shadow
+                    UNION ALL
+                    SELECT repo, side, pr, kind FROM shadow_events
+                 ) WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4 LIMIT 1",
                 params![repo, side, pr as i64, kind],
                 |_| Ok(()),
             )
@@ -524,7 +558,7 @@ impl Store {
 
     /// Every shadow fact of a repository, in the order they were first written.
     pub fn shadow_facts(&self, repo: &str) -> rusqlite::Result<Vec<ShadowFact>> {
-        self.with(|c| {
+        let mut facts: Vec<ShadowFact> = self.with(|c| {
             let mut st = c.prepare(
                 "SELECT repo, side, pr, kind, at, data, id FROM shadow WHERE repo = ?1 ORDER BY id",
             )?;
@@ -539,6 +573,34 @@ impl Store {
                     data: serde_json::from_str(&data).unwrap_or_default(),
                     seq: r.get::<_, i64>(6)? as u64,
                 })
+            })?;
+            rows.collect()
+        })?;
+        facts.extend(self.shadow_events(repo)?.into_iter().map(|(fact, _)| fact));
+        Ok(facts)
+    }
+
+    /// Append-only shadow events and their durable source keys, in occurrence order.
+    pub fn shadow_events(&self, repo: &str) -> rusqlite::Result<Vec<(ShadowFact, String)>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT repo, side, pr, kind, at, data, id, event_key \
+                 FROM shadow_events WHERE repo = ?1 ORDER BY id",
+            )?;
+            let rows = st.query_map(params![repo], |r| {
+                let data: String = r.get(5)?;
+                Ok((
+                    ShadowFact {
+                        repo: r.get(0)?,
+                        side: r.get(1)?,
+                        pr: r.get::<_, i64>(2)? as u64,
+                        kind: r.get(3)?,
+                        at: r.get::<_, i64>(4)? as u64,
+                        data: serde_json::from_str(&data).unwrap_or_default(),
+                        seq: r.get::<_, i64>(6)? as u64,
+                    },
+                    r.get(7)?,
+                ))
             })?;
             rows.collect()
         })

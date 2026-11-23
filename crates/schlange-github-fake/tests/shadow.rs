@@ -246,11 +246,19 @@ fn the_report_agrees_with_the_other_queue_and_names_each_difference() {
     assert_eq!(pa["batch"]["schlange"], serde_json::json!([a, b]));
     assert_eq!(verdict(&r, c), "disagree", "{r:#}");
     assert_eq!(verdict(&r, f), "disagree", "{r:#}");
-    let text = serde_json::to_string(&r).unwrap();
-    assert!(
-        text.contains("dequeue reason: Schlange CHECKS_FAILED, Mergify CHECKS_TIMEOUT"),
-        "{r:#}"
+    let c_report = r["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pr| pr["number"] == c)
+        .unwrap();
+    assert_eq!(
+        c_report["differences"],
+        serde_json::json!([
+            "dequeue history: Schlange [\"CHECKS_FAILED\"], Mergify [\"CHECKS_TIMEOUT\"]"
+        ])
     );
+    let text = serde_json::to_string(&r).unwrap();
     assert!(text.contains("queued: Schlange no, Mergify yes"), "{r:#}");
     assert_eq!(r["agreements"], 2);
     assert_eq!(r["disagreements"], 2);
@@ -422,6 +430,37 @@ fn structured_embarkment_ignores_issue_mentions_and_borrows_checks() {
     assert_eq!(verdict(&r, 12), "absent");
     assert_eq!(verdict(&r, 500), "absent");
     assert_eq!(verdict(&r, 42), "absent");
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_short_lived_queue_draft_is_captured_from_its_durable_webhook() {
+    use schlange_github::store::Store;
+
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let draft = t.gh.mergify_embark(&[n]);
+    // Close before allowing the service to settle/read the draft. The signed opened delivery
+    // is already durable in the inbox and must retain the structured membership.
+    t.gh.close_pr(draft);
+    t.settle();
+
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    let queued = store
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap()
+        .into_iter()
+        .find(|f| f.side == "mergify" && f.pr == n && f.kind == "queued")
+        .expect("signed queue-draft delivery was observed");
+    assert_eq!(queued.data["draft"], draft);
+    assert_eq!(queued.data["source"], "webhook");
     assert_no_writes(&t);
     t.shutdown();
 }

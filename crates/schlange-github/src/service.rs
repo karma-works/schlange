@@ -1691,6 +1691,9 @@ impl Worker {
                     }
                     this.webhooks += 1;
                     this.forge.note(format!("webhook {}", p.summary));
+                    if let (Some(sh), Some(pull)) = (&mut this.shadow, &p.shadow_pull) {
+                        sh.observe_pull_webhook(pull, this.clock.now());
+                    }
                     hints.extend(p.hints);
                     handled += 1;
                 }

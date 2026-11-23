@@ -32,6 +32,8 @@ class ShadowEvidenceTests(unittest.TestCase):
                        'disagreements': 0, 'inconclusive': 0, 'pending': 0,
                        'pull_requests': [{'number': 42, 'verdict': 'agree',
                                           'queued': same(True), 'landed': same(True),
+                                          'queue_entries': same(1),
+                                          'dequeue_reasons': same([]),
                                           'order': same(1), 'batch': same([42]),
                                           'differences': []}]}
 
@@ -105,6 +107,9 @@ class ShadowEvidenceTests(unittest.TestCase):
         row.pop('batch')
         row['dequeue_reason'] = {'schlange': 'PR_MANUALLY_DEQUEUED',
                                  'mergify': 'PR_MANUALLY_DEQUEUED', 'agree': True}
+        row['dequeue_reasons'] = {
+            'schlange': ['PR_MANUALLY_DEQUEUED'],
+            'mergify': ['PR_MANUALLY_DEQUEUED'], 'agree': True}
         self.assertEqual(self.check().returncode, 0)
 
     def test_missing_independent_dequeue_codes_are_not_evidence(self):
@@ -123,6 +128,20 @@ class ShadowEvidenceTests(unittest.TestCase):
     def test_repeated_queue_entries_need_a_history_comparison(self):
         self.outcome['prs']['a']['enter_count'] = 2
         self.assertNotEqual(self.check().returncode, 0)
+
+    def test_requeue_then_merge_matches_complete_history(self):
+        self.outcome['prs']['a'].update(
+            enter_count=2, dequeue_codes=['PR_MANUALLY_DEQUEUED'])
+        row = self.report['pull_requests'][0]
+        row['queue_entries'] = {
+            'schlange': 2, 'mergify': 2, 'agree': True}
+        row['dequeue_reasons'] = {
+            'schlange': ['PR_MANUALLY_DEQUEUED'],
+            'mergify': ['PR_MANUALLY_DEQUEUED'], 'agree': True}
+        row['dequeue_reason'] = {
+            'schlange': 'PR_MANUALLY_DEQUEUED',
+            'mergify': 'PR_MANUALLY_DEQUEUED', 'agree': True}
+        self.assertEqual(self.check().returncode, 0)
 
     def test_inconsistent_or_missing_queue_entry_count_is_not_evidence(self):
         for count in (0, None, True):

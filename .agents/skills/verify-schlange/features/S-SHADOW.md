@@ -41,11 +41,15 @@ compares that with what Mergify did, per pull request.
   summary is recorded once per GitHub check-run ID, including for closed PRs whose heads
   come from the recent-pulls read. Literal `PR_CLOSED` is preserved as observer evidence
   even though the engine currently calls this path assumed `PR_DEQUEUED`; this produces
-  an honest disagreement pending sandbox evidence. Missing codes are not inferred from prose.
-- `compare`: built. Per pull request: queued, landed, landing order (rank among the pull
+  an honest disagreement pending sandbox evidence. A signed pull-request webhook records a
+  recognized queue draft before reconciliation, so an opened and quickly closed draft is not
+  lost; replay is deduplicated by draft PR number. Missing codes are not inferred from prose.
+- `compare`: built. Per pull request: queue-entry count, landed, landing order (rank among the pull
   requests both landed; Mergify's merges in one second keep their batch's order), the batch
-  it landed in, the dequeue code. Verdicts `agree`, `disagree`, `inconclusive` (Mergify merged
-  before Schlange decided), `pending`. Stored in SQLite (`shadow` table), shown by
+  it landed in, and the ordered dequeue-code history. The legacy queued boolean and latest
+  dequeue code remain in JSON for report compatibility. Verdicts `agree`, `disagree`,
+  `inconclusive` (Mergify merged before Schlange decided), `pending`. Stored in SQLite
+  (`shadow` and append-only `shadow_events` tables), shown by
   `schlange shadow report [--json]` (exit 1 on a disagreement) and
   `GET /repos/{owner}/{repo}/shadow/report` behind the admin token.
 - `read-only-app`: built. A read-only app (metadata, contents, issues, pull requests,
@@ -55,7 +59,10 @@ compares that with what Mergify did, per pull request.
   --test shadow a_read_only_app_is_enough_for_shadow_mode` (the fake GitHub refuses endpoints
   without the permission GitHub asks for), `--test client
   doctor_accepts_a_read_only_app_for_shadow_mode_only`. Setup guide: `docs/shadow-mode.md`.
-- `history`: built. The shadow layer records once per pull request, in the database, that it
+- `history`: built. Queue-entry, batch and dequeue occurrences are append-only in the
+  `shadow_events` table, keyed by their durable source identity (draft PR, check-run or Schlange
+  car/transition), and survive restarts without replay duplication. The shadow layer also
+  records once per pull request, in the database, that it
   saw it open (`seen`). A pull request Mergify merged or closed while shadow mode was not
   watching (before its start, or while it was stopped) is `inconclusive` instead of a
   disagreement (`before_watching` in the JSON); one with nothing but `seen` has no row. The
@@ -84,6 +91,7 @@ Preconditions:
 - **Fake GitHub, no writes.** `cargo test -p schlange-github-fake --test shadow the_e2e_flows_in_shadow_send_no_write_request`: the e2e flows (draft, batch of three, red batch, halt label, commands, push, pause) in shadow while the fake's scripted other queue does the work; the fake's request log has no request but reads and token requests, the gate saw no attempt, and the report agrees on every pull request both landed.
 - **Fake GitHub, report.** `cargo test -p schlange-github-fake --test shadow the_report_agrees_with_the_other_queue_and_names_each_difference`: two pull requests agree (queued, landed, order 1 and 2, batch `[a, b]`); a dequeue code differs (`CHECKS_FAILED` vs `CHECKS_TIMEOUT`) and a pull request only the other queue took are disagreements.
 - **Restart.** `cargo test -p schlange-github-fake --test shadow the_report_survives_a_restart_from_the_database`.
+- **Short-lived draft.** `cargo test -p schlange-github-fake --test shadow a_short_lived_queue_draft_is_captured_from_its_durable_webhook` closes the queue draft before reconciliation and verifies that replay preserves one entry.
 
 ## Gotchas
 

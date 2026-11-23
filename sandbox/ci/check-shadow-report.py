@@ -53,7 +53,8 @@ def verify(report, recordings):
                 verdict = row.get('verdict')
                 if verdict not in ('agree', 'disagree', 'pending', 'inconclusive'):
                     verdict = 'invalid'
-                fields = ('queued', 'landed', 'order', 'batch', 'dequeue_reason')
+                fields = ('queued', 'queue_entries', 'landed', 'order', 'batch',
+                          'dequeue_reason', 'dequeue_reasons')
                 different = [field for field in fields if isinstance(row.get(field), dict)
                              and row[field].get('agree') is False]
                 before = row.get('before_watching')
@@ -62,7 +63,8 @@ def verify(report, recordings):
                                  f'(verdict={verdict}, before_watching={before}, '
                                  f'differing_fields={",".join(different) or "none"})')
             actual = outcome['prs'][key]
-            for field in ('queued', 'landed', 'order', 'batch', 'dequeue_reason'):
+            for field in ('queued', 'queue_entries', 'landed', 'order', 'batch',
+                          'dequeue_reason', 'dequeue_reasons'):
                 comparison = row.get(field)
                 if comparison is None:
                     continue
@@ -75,8 +77,12 @@ def verify(report, recordings):
             if not isinstance(codes, list) or not all(isinstance(code, str) for code in codes):
                 raise ValueError('independent recording has no complete dequeue evidence')
             entries = actual.get('enter_count')
-            if type(entries) is not int or entries != int(actual['queued']) or len(codes) > entries:
+            if type(entries) is not int or entries < int(actual['queued']) or len(codes) > entries:
                 raise ValueError(f'PR #{number}: queue entry/dequeue history is not comparable')
+            if row.get('queue_entries', {}).get('mergify') != entries:
+                raise ValueError(f'PR #{number}: observer has a different queue-entry history')
+            if row.get('dequeue_reasons', {}).get('mergify') != codes:
+                raise ValueError(f'PR #{number}: observer has a different dequeue history')
             if (row.get('queued', {}).get('mergify') is not actual['queued']
                     or row.get('landed', {}).get('mergify') is not (actual['end'] == 'merged')):
                 raise ValueError(f'PR #{number}: observer differs from the independent queue events')
@@ -86,8 +92,6 @@ def verify(report, recordings):
             if actual['end'] == 'merged':
                 if actual.get('merged_by_mergify') is not True:
                     raise ValueError(f'PR #{number}: independent recording does not prove a Mergify merge')
-                if codes:
-                    raise ValueError(f'PR #{number}: landed PR has an unverified dequeue history')
                 rank = row.get('order', {}).get('mergify')
                 if type(rank) is not int or rank <= 0:
                     raise ValueError(f'PR #{number}: missing landing rank')

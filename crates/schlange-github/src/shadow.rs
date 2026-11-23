@@ -44,6 +44,7 @@ use serde_json::json;
 use crate::client::Priority;
 use crate::forge::GithubForge;
 use crate::store::{ShadowFact, Store};
+use crate::webhook::ShadowPull;
 
 /// Virtual draft numbers start here (far above any real pull request number).
 pub const VIRTUAL_DRAFTS: u64 = 1_000_000_000;
@@ -105,6 +106,8 @@ pub struct Shadow {
     seen_merged: BTreeSet<u64>,
     /// Concluded Mergify check runs already read for a dequeue code.
     seen_runs: BTreeSet<u64>,
+    /// Durable source identities of append-only queue, batch and dequeue observations.
+    event_keys: BTreeSet<String>,
     seq: u64,
     /// Decisions answered or dropped here instead of being sent.
     pub suppressed: u64,
@@ -186,6 +189,29 @@ impl Shadow {
             .as_ref()
             .and_then(|s| s.shadow_facts(repo).ok())
             .unwrap_or_default();
+        let events = store
+            .as_ref()
+            .and_then(|s| s.shadow_events(repo).ok())
+            .unwrap_or_default();
+        let mut event_keys: BTreeSet<String> = events
+            .iter()
+            .map(|(f, key)| format!("{}:{}:{}:{key}", f.side, f.pr, f.kind))
+            .collect();
+        // Version-1 singleton rows may already describe a draft/car event. Treat their source
+        // identity as observed so the first reconciliation after upgrading does not duplicate
+        // it in the append-only stream.
+        for f in &facts {
+            let key = match (f.side.as_str(), f.kind.as_str()) {
+                (MERGIFY, "queued" | "batch") => {
+                    f.data["draft"].as_u64().map(|n| format!("draft:{n}"))
+                }
+                (SCHLANGE, "batch") => f.data["car"].as_u64().map(|n| format!("car:{n}")),
+                _ => None,
+            };
+            if let Some(key) = key {
+                event_keys.insert(format!("{}:{}:{}:{key}", f.side, f.pr, f.kind));
+            }
+        }
         let seq = facts.iter().map(|f| f.seq).max().unwrap_or(0);
         Shadow {
             cfg,
@@ -196,6 +222,7 @@ impl Shadow {
             drafts: BTreeMap::new(),
             seen_merged: BTreeSet::new(),
             seen_runs: BTreeSet::new(),
+            event_keys,
             seq,
             suppressed: 0,
         }
@@ -260,6 +287,98 @@ impl Shadow {
             .any(|f| f.side == side && f.pr == pr && f.kind == kind)
     }
 
+    /// Appends an occurrence with a source-stable key. Unlike `fact`, later occurrences of
+    /// the same kind are retained, while replay of the same webhook/read is ignored.
+    fn event(
+        &mut self,
+        side: &str,
+        pr: u64,
+        kind: &str,
+        key: impl std::fmt::Display,
+        at: Time,
+        data: serde_json::Value,
+    ) {
+        let key = key.to_string();
+        let identity = format!("{side}:{pr}:{kind}:{key}");
+        if !self.event_keys.insert(identity) {
+            return;
+        }
+        self.seq += 1;
+        let f = ShadowFact {
+            repo: self.repo.clone(),
+            side: side.into(),
+            pr,
+            kind: kind.into(),
+            at,
+            data,
+            seq: self.seq,
+        };
+        if let Some(s) = &self.store {
+            let _ = s.shadow_event(&f, &key);
+        }
+        if self.facts.len() >= FACTS_MAX {
+            self.facts.remove(0);
+        }
+        self.facts.push(f);
+    }
+
+    fn last_occurrence(&self, side: &str, pr: u64, kind: &str) -> Option<&ShadowFact> {
+        self.facts
+            .iter()
+            .rev()
+            .find(|f| f.side == side && f.pr == pr && f.kind == kind)
+    }
+
+    fn occurrence_is_current(&self, side: &str, pr: u64, kind: &str, opposite: &str) -> bool {
+        let Some(current) = self.last_occurrence(side, pr, kind) else {
+            return false;
+        };
+        self.last_occurrence(side, pr, opposite)
+            .is_none_or(|other| (current.at, current.seq) > (other.at, other.seq))
+    }
+
+    fn note_schlange_entry(&mut self, number: u64, queue: &str, rule: &str, now: Time) {
+        // A replayed decision in the same queue cycle is not another entry. A dequeue between
+        // the decisions makes the later entry a distinct occurrence.
+        if self.occurrence_is_current(SCHLANGE, number, "queued", "dequeued") {
+            return;
+        }
+        let occurrence = self
+            .facts
+            .iter()
+            .filter(|f| f.side == SCHLANGE && f.pr == number && f.kind == "queued")
+            .count()
+            + 1;
+        self.event(
+            SCHLANGE,
+            number,
+            "queued",
+            format_args!("entry:{occurrence}"),
+            now,
+            json!({ "queue": queue, "rule": rule }),
+        );
+    }
+
+    fn note_schlange_dequeue(&mut self, number: u64, code: Option<&str>, text: &str, now: Time) {
+        if self.occurrence_is_current(SCHLANGE, number, "dequeued", "queued") {
+            return;
+        }
+        let occurrence = self
+            .facts
+            .iter()
+            .filter(|f| f.side == SCHLANGE && f.pr == number && f.kind == "dequeued")
+            .count()
+            + 1;
+        self.event(
+            SCHLANGE,
+            number,
+            "dequeued",
+            format_args!("leave:{occurrence}"),
+            now,
+            json!({ "code": code, "text": text }),
+        );
+    }
+
     /// Carries out a decision in shadow: records it, answers what the engine needs, sends
     /// nothing but reads.
     pub fn execute(&mut self, d: &Decision, forge: &mut GithubForge, now: Time) -> Vec<Event> {
@@ -299,13 +418,13 @@ impl Shadow {
                 self.suppressed += 1;
                 let list: Vec<u64> = prs.iter().map(|p| p.number).collect();
                 for n in own {
-                    self.fact(
+                    self.event(
                         SCHLANGE,
                         *n,
                         "batch",
+                        format_args!("car:{car}"),
                         now,
                         json!({ "car": car, "prs": list }),
-                        false,
                     );
                 }
                 let v = VirtualCar {
@@ -333,13 +452,13 @@ impl Shadow {
             }
             Decision::CheckInPlace { car, number, .. } => {
                 self.suppressed += 1;
-                self.fact(
+                self.event(
                     SCHLANGE,
                     *number,
                     "batch",
+                    format_args!("car:{car}"),
                     now,
                     json!({ "car": car, "prs": [number] }),
-                    false,
                 );
                 vec![]
             }
@@ -383,25 +502,11 @@ impl Shadow {
                 queue,
                 rule,
             } => {
-                self.fact(
-                    SCHLANGE,
-                    *number,
-                    "queued",
-                    now,
-                    json!({ "queue": queue, "rule": rule }),
-                    true,
-                );
+                self.note_schlange_entry(*number, queue, rule, now);
                 vec![]
             }
             Decision::Dequeue { number, reason, .. } => {
-                self.fact(
-                    SCHLANGE,
-                    *number,
-                    "dequeued",
-                    now,
-                    json!({ "code": reason.code, "text": reason.text }),
-                    false,
-                );
+                self.note_schlange_dequeue(*number, reason.code, &reason.text, now);
                 vec![]
             }
             Decision::Merged { number, sha, .. } => {
@@ -556,27 +661,67 @@ impl Shadow {
                 self.drafts.insert(p.number, d);
             }
             for n in &prs {
-                self.fact(
+                self.event(
                     MERGIFY,
                     *n,
                     "queued",
+                    format_args!("draft:{}", p.number),
                     now,
                     json!({ "draft": p.number }),
-                    true,
                 );
-                self.fact(
+                self.event(
                     MERGIFY,
                     *n,
                     "batch",
+                    format_args!("draft:{}", p.number),
                     now,
                     json!({ "draft": p.number, "prs": prs }),
-                    false,
                 );
             }
         }
         // Summary and rule-evaluation check runs are published for unqueued PRs too.
         // Until sandbox evidence identifies an unambiguous queue check, draft membership
         // is the only positive queue signal; never guess from an app slug or check title.
+    }
+
+    /// Records structured membership directly from a signed, durable pull-request webhook.
+    /// The payload is evidence only for the observer; the engine still acts exclusively on
+    /// fresh forge reads. Prefix, author and structured-member checks are identical to reads.
+    pub fn observe_pull_webhook(&mut self, p: &ShadowPull, now: Time) {
+        if p.author != self.cfg.mergify_login
+            || !p.head_ref.starts_with(&self.cfg.mergify_queue_prefix)
+        {
+            return;
+        }
+        let prs = draft_members(&p.title, &p.body, p.number);
+        if prs.is_empty() {
+            return;
+        }
+        self.drafts.insert(
+            p.number,
+            OtherDraft {
+                base: p.base.clone(),
+                prs: prs.clone(),
+            },
+        );
+        for n in prs.iter().copied() {
+            self.event(
+                MERGIFY,
+                n,
+                "queued",
+                format_args!("draft:{}", p.number),
+                now,
+                json!({ "draft": p.number, "source": "webhook" }),
+            );
+            self.event(
+                MERGIFY,
+                n,
+                "batch",
+                format_args!("draft:{}", p.number),
+                now,
+                json!({ "draft": p.number, "prs": prs, "source": "webhook" }),
+            );
+        }
     }
 
     /// Reads what Mergify did since the last round: merges (who merged, when), drafts that
@@ -606,21 +751,21 @@ impl Shadow {
                         },
                     );
                     for n in &prs {
-                        self.fact(
+                        self.event(
                             MERGIFY,
                             *n,
                             "queued",
+                            format_args!("draft:{}", p.number),
                             now,
                             json!({ "draft": p.number }),
-                            true,
                         );
-                        self.fact(
+                        self.event(
                             MERGIFY,
                             *n,
                             "batch",
+                            format_args!("draft:{}", p.number),
                             now,
                             json!({ "draft": p.number, "prs": prs }),
-                            false,
                         );
                     }
                 }
@@ -648,6 +793,7 @@ impl Shadow {
                 let batch = self
                     .facts
                     .iter()
+                    .rev()
                     .find(|f| f.side == MERGIFY && f.pr == p.number && f.kind == "batch")
                     .map(|f| f.data["prs"].clone())
                     .unwrap_or(json!([p.number]));
@@ -725,13 +871,13 @@ impl Shadow {
                             .any(|w| w == *c)
                     })
                 {
-                    self.fact(
+                    self.event(
                         MERGIFY,
                         n,
                         "dequeued",
+                        format_args!("run:{}", r.id),
                         now,
                         json!({ "code": code, "text": text.trim() }),
-                        false,
                     );
                 }
             }
@@ -763,6 +909,8 @@ pub struct PrComparison {
     /// or `pending` (neither side is done with it).
     pub verdict: String,
     pub queued: Compared<bool>,
+    /// Number of distinct queue entries observed on each side.
+    pub queue_entries: Compared<usize>,
     pub landed: Compared<bool>,
     /// Rank among the pull requests both landed (1 = first).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -773,6 +921,8 @@ pub struct PrComparison {
     /// The dequeue code when it did not land.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dequeue_reason: Option<Compared<Option<String>>>,
+    /// Every observed dequeue code, in occurrence order.
+    pub dequeue_reasons: Compared<Vec<String>>,
     pub differences: Vec<String>,
     /// It closed while shadow mode was not watching (before its start, or while it was
     /// stopped): `inconclusive`, and left out of the text report unless `--all`.
@@ -805,6 +955,18 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
         facts
             .iter()
             .find(|f| f.side == side && f.pr == pr && f.kind == kind)
+    };
+    let get_last = |side: &str, pr: u64, kind: &str| {
+        facts
+            .iter()
+            .rev()
+            .find(|f| f.side == side && f.pr == pr && f.kind == kind)
+    };
+    let history = |side: &str, pr: u64, kind: &str| {
+        facts
+            .iter()
+            .filter(|f| f.side == side && f.pr == pr && f.kind == kind)
+            .collect::<Vec<_>>()
     };
     // A pull request with nothing but "seen" has nothing to compare yet.
     let prs: BTreeSet<u64> = facts
@@ -850,13 +1012,24 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             get(SCHLANGE, pr, "queued").is_some(),
             get(MERGIFY, pr, "queued").is_some(),
         );
+        let queue_entries = cmp(
+            history(SCHLANGE, pr, "queued").len(),
+            history(MERGIFY, pr, "queued").len(),
+        );
         let s_land = get(SCHLANGE, pr, "landed");
         let m_land = get(MERGIFY, pr, "landed");
         let landed = cmp(s_land.is_some(), m_land.is_some());
-        let s_deq =
-            get(SCHLANGE, pr, "dequeued").and_then(|f| f.data["code"].as_str().map(str::to_string));
-        let m_deq =
-            get(MERGIFY, pr, "dequeued").and_then(|f| f.data["code"].as_str().map(str::to_string));
+        let reasons = |side: &str| {
+            history(side, pr, "dequeued")
+                .into_iter()
+                .filter_map(|f| f.data["code"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let dequeue_reasons = cmp(reasons(SCHLANGE), reasons(MERGIFY));
+        let s_deq = get_last(SCHLANGE, pr, "dequeued")
+            .and_then(|f| f.data["code"].as_str().map(str::to_string));
+        let m_deq = get_last(MERGIFY, pr, "dequeued")
+            .and_then(|f| f.data["code"].as_str().map(str::to_string));
         let elsewhere = get(MERGIFY, pr, "merged_elsewhere").is_some();
         let mut differences = Vec::new();
         let mut order = None;
@@ -869,9 +1042,31 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
                 if queued.mergify { "yes" } else { "no" }
             ));
         }
-        let s_done = s_land.is_some() || s_deq.is_some() || !queued.schlange;
-        let m_done = m_land.is_some() || m_deq.is_some() || elsewhere || !queued.mergify;
+        let cycle_done = |side: &str, landed: bool| {
+            if landed {
+                return true;
+            }
+            match (get_last(side, pr, "queued"), get_last(side, pr, "dequeued")) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(q), Some(d)) => (d.at, d.seq) > (q.at, q.seq),
+            }
+        };
+        let s_done = cycle_done(SCHLANGE, s_land.is_some());
+        let m_done = elsewhere || cycle_done(MERGIFY, m_land.is_some());
         let mut verdict = "agree";
+        if !queue_entries.agree && s_done && m_done {
+            differences.push(format!(
+                "queue entries: Schlange {}, Mergify {}",
+                queue_entries.schlange, queue_entries.mergify
+            ));
+        }
+        if !dequeue_reasons.agree && s_done && m_done {
+            differences.push(format!(
+                "dequeue history: Schlange {:?}, Mergify {:?}",
+                dequeue_reasons.schlange, dequeue_reasons.mergify
+            ));
+        }
         if let (Some(s), Some(m)) = (s_land, m_land) {
             let o = cmp(
                 rank(ours.iter().map(|(_, p)| *p).collect(), pr).unwrap_or(0),
@@ -912,13 +1107,13 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             }
         } else if s_deq.is_some() || m_deq.is_some() {
             let d = cmp(s_deq.clone(), m_deq.clone());
-            if !d.agree && s_done && m_done {
+            if !d.agree && dequeue_reasons.agree && s_done && m_done {
                 differences.push(format!(
                     "dequeue reason: Schlange {}, Mergify {}",
                     s_deq.as_deref().unwrap_or("none"),
                     m_deq.as_deref().unwrap_or("none")
                 ));
-            } else if !d.agree {
+            } else if !d.agree && dequeue_reasons.agree {
                 verdict = "pending";
             }
             dequeue_reason = Some(d);
@@ -940,10 +1135,12 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             number: pr,
             verdict: verdict.into(),
             queued,
+            queue_entries,
             landed,
             order,
             batch,
             dequeue_reason,
+            dequeue_reasons,
             differences,
             before_watching,
         });
@@ -996,11 +1193,13 @@ impl ShadowReport {
             .filter(|p| all || !p.before_watching)
         {
             let mut line = format!(
-                "#{} {}: queued {}/{}, landed {}/{}",
+                "#{} {}: queued {}/{}, entries {}/{}, landed {}/{}",
                 p.number,
                 p.verdict,
                 yn(p.queued.schlange),
                 yn(p.queued.mergify),
+                p.queue_entries.schlange,
+                p.queue_entries.mergify,
                 yn(p.landed.schlange),
                 yn(p.landed.mergify)
             );
@@ -1122,6 +1321,82 @@ mod tests {
     }
 
     #[test]
+    fn signed_short_lived_drafts_are_durable_and_replay_is_deduplicated() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-history-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store.clone()));
+        let pull = |number| ShadowPull {
+            number,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: format!("mergify/merge-queue/{number:010x}"),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        s.observe_pull_webhook(&pull(80), 1);
+        s.observe_pull_webhook(&pull(80), 2); // durable inbox replay
+        s.observe_pull_webhook(&pull(81), 3); // a later requeue
+        let before = report("o/r", s.facts());
+        let row = before
+            .pull_requests
+            .iter()
+            .find(|p| p.number == 50)
+            .unwrap();
+        assert_eq!(row.queue_entries.mergify, 2);
+
+        drop(s);
+        let restarted = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        let after = report("o/r", restarted.facts());
+        let row = after.pull_requests.iter().find(|p| p.number == 50).unwrap();
+        assert_eq!(row.queue_entries.mergify, 2);
+        assert_eq!(
+            restarted
+                .facts()
+                .iter()
+                .filter(|f| f.side == MERGIFY && f.pr == 50 && f.kind == "batch")
+                .count(),
+            2
+        );
+        drop(restarted);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn schlange_queue_cycles_append_and_replay_deduplicates_across_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-cycles-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store.clone()));
+        s.note_schlange_entry(50, "default", "ready", 1);
+        s.note_schlange_entry(50, "default", "ready", 2); // replay of this cycle
+        s.note_schlange_dequeue(50, Some("PR_MANUALLY_DEQUEUED"), "manual", 3);
+        s.note_schlange_dequeue(50, Some("PR_MANUALLY_DEQUEUED"), "manual", 4); // replay
+        s.note_schlange_entry(50, "default", "ready", 5);
+        drop(s);
+
+        let mut restarted = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        restarted.note_schlange_entry(50, "default", "ready", 6); // replay after restart
+        restarted.note_schlange_dequeue(50, Some("CHECKS_FAILED"), "red", 7);
+        let row = report("o/r", restarted.facts()).pull_requests.remove(0);
+        assert_eq!(row.queue_entries.schlange, 2);
+        assert_eq!(
+            row.dequeue_reasons.schlange,
+            vec!["PR_MANUALLY_DEQUEUED", "CHECKS_FAILED"]
+        );
+        drop(restarted);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_text_report_hides_what_closed_before_shadow_mode_watched() {
         let facts = vec![
             // #1: seen open, both queued and landed it.
@@ -1225,9 +1500,47 @@ mod tests {
             (r.agreements, r.disagreements, r.pending, r.inconclusive),
             (2, 2, 1, 1)
         );
-        assert!(
-            r.to_text()
-                .contains("dequeue reason: Schlange CHECKS_FAILED, Mergify CHECKS_TIMEOUT")
+        assert!(r.to_text().contains(
+            "dequeue history: Schlange [\"CHECKS_FAILED\"], Mergify [\"CHECKS_TIMEOUT\"]"
+        ));
+    }
+
+    #[test]
+    fn report_compares_repeated_queue_and_dequeue_history() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 8, "queued", 1, 2, json!({})),
+            f(MERGIFY, 8, "queued", 1, 3, json!({ "draft": 80 })),
+            f(
+                SCHLANGE,
+                8,
+                "dequeued",
+                2,
+                4,
+                json!({ "code": "PR_MANUALLY_DEQUEUED" }),
+            ),
+            f(
+                MERGIFY,
+                8,
+                "dequeued",
+                2,
+                5,
+                json!({ "code": "PR_MANUALLY_DEQUEUED" }),
+            ),
+            f(SCHLANGE, 8, "queued", 3, 6, json!({})),
+            f(MERGIFY, 8, "queued", 3, 7, json!({ "draft": 81 })),
+            f(SCHLANGE, 8, "landed", 4, 8, json!({ "batch": [8] })),
+            f(MERGIFY, 8, "landed", 4, 9, json!({ "batch": [8] })),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.verdict, "agree");
+        assert_eq!(row.queue_entries, cmp(2, 2));
+        assert_eq!(
+            row.dequeue_reasons,
+            cmp(
+                vec!["PR_MANUALLY_DEQUEUED".to_string()],
+                vec!["PR_MANUALLY_DEQUEUED".to_string()]
+            )
         );
     }
 }
