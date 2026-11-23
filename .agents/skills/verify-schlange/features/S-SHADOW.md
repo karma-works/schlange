@@ -94,9 +94,10 @@ compares that with what Mergify did, per pull request.
   45113336435 isolated the queue-draft observer format without retaining Mergify prose;
   run 45114951923 then confirmed matching queue membership and entry count for S01 (`1/1`).
   That run remained `inconclusive` for landing: the Actions runner has no webhook ingress and
-  completed only 17 full reconciliations before Mergify merged, so Schlange first saw the member
-  closed and correctly refused to reconstruct a pre-merge I1 read. This is evidence for queue
-  observation, not an acceptance result. The fake GitHub still supplies the signed-webhook path
+  the service recorded 17 reconciliations in total, but its decisive read observed Mergify's
+  merge before Schlange had recorded a pre-merge landing decision. The report therefore does
+  not prove I1 landing parity and correctly refuses to reconstruct a pre-merge read. This is
+  evidence for queue observation, not an acceptance result. The fake GitHub supplies the signed-webhook path
   and the active sandbox supplies landing evidence; a real webhook-connected shadow deployment
   and the two-week Arztagent run remain required. W-01/W-02 latency is not measured against
   Mergify yet.
