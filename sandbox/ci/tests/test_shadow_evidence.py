@@ -57,6 +57,20 @@ class ShadowEvidenceTests(unittest.TestCase):
         self.report['pull_requests'] = []
         self.assertNotEqual(self.check().returncode, 0)
 
+    def test_selected_never_queued_pr_has_explicit_zero_history(self):
+        self.outcome['prs']['a'].update(
+            end='open', queued=False, enter_count=0, dequeue_codes=[])
+        self.outcome.update(landed=[], batches=[])
+        row = self.report['pull_requests'][0]
+        row.update(
+            queued={'schlange': False, 'mergify': False, 'agree': True},
+            queue_entries={'schlange': 0, 'mergify': 0, 'agree': True},
+            landed={'schlange': False, 'mergify': False, 'agree': True},
+            dequeue_reasons={'schlange': [], 'mergify': [], 'agree': True})
+        row.pop('order')
+        row.pop('batch')
+        self.assertEqual(self.check().returncode, 0)
+
     def test_pending_inconclusive_and_disagree_are_not_agreement(self):
         for verdict in ('pending', 'inconclusive', 'disagree'):
             with self.subTest(verdict=verdict):
@@ -155,6 +169,10 @@ class ShadowEvidenceTests(unittest.TestCase):
 
     def test_closed_before_watching_cannot_be_agreement(self):
         self.report['pull_requests'][0]['before_watching'] = True
+        self.assertNotEqual(self.check().returncode, 0)
+
+    def test_incomplete_history_cannot_be_agreement(self):
+        self.report['pull_requests'][0]['history_incomplete'] = True
         self.assertNotEqual(self.check().returncode, 0)
 
     def test_foreign_or_unknown_merge_cannot_prove_mergify_landing(self):

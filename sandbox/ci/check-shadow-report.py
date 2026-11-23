@@ -49,6 +49,9 @@ def verify(report, recordings):
                 raise ValueError(f'PR #{number} is missing from the shadow report')
             if type(row.get('before_watching', False)) is not bool or row.get('before_watching', False):
                 raise ValueError(f'PR #{number} was not confirmed while shadow mode was watching')
+            if (type(row.get('history_incomplete', False)) is not bool
+                    or row.get('history_incomplete', False)):
+                raise ValueError(f'PR #{number} has incomplete shadow occurrence history')
             if row.get('verdict') != 'agree' or row.get('differences') != []:
                 verdict = row.get('verdict')
                 if verdict not in ('agree', 'disagree', 'pending', 'inconclusive'):

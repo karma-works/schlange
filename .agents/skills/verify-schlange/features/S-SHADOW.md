@@ -71,6 +71,11 @@ compares that with what Mergify did, per pull request.
   Arztagent: 20 pull requests merged the day before showed up as disagreements. Tests:
   `--test shadow pull_requests_merged_before_shadow_mode_saw_them_are_inconclusive`,
   `shadow::tests::report_agreements_and_each_kind_of_difference`.
+  A watched pull request with no queue events is an explicit zero-entry/zero-dequeue agreement,
+  rather than being omitted. Each per-PR occurrence stream is limited to 1,024 rows; reaching
+  the limit or failing a durable append sets `history_incomplete` and makes the report
+  inconclusive instead of comparing a prefix. Only the literal dequeue code and check-run ID
+  are retained, not the upstream check title or summary.
 - `acceptance-run`: missing. Two weeks on Arztagent next to the real Mergify (KONZEPT.md,
   section 11) have not happened; only the fake GitHub's scripted other queue was compared.
   W-01/W-02 latency is not measured against Mergify yet.
@@ -112,4 +117,6 @@ Preconditions:
   or batch observations. Archive that database and use a fresh shadow data directory for
   acceptance after this fix; historical disagreements are not silently rewritten.
 - Schlange cannot test its own drafts in shadow; a batch Mergify never built stays pending.
+- A prior dequeue followed by a new unmatched queue entry is `pending`; matching historical
+  prefixes never turn an unfinished latest cycle into agreement.
 - Two weeks without a differing decision are the acceptance of phase 1.

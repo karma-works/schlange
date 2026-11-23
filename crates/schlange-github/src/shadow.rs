@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use schlange_core::Decision;
 use schlange_core::engine::{Event, State};
 use schlange_core::model::{PullRequest, Time};
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
 use crate::client::Priority;
@@ -48,8 +48,9 @@ use crate::webhook::ShadowPull;
 
 /// Virtual draft numbers start here (far above any real pull request number).
 pub const VIRTUAL_DRAFTS: u64 = 1_000_000_000;
-/// At most this many facts are kept in memory per repository.
-const FACTS_MAX: usize = 200_000;
+/// A single pull request cannot grow one occurrence stream without bound. Reaching this
+/// limit records an explicit incomplete-history marker; reports then fail closed.
+const HISTORY_MAX: usize = 1_024;
 
 pub const SCHLANGE: &str = "schlange";
 pub const MERGIFY: &str = "mergify";
@@ -108,6 +109,8 @@ pub struct Shadow {
     seen_runs: BTreeSet<u64>,
     /// Durable source identities of append-only queue, batch and dequeue observations.
     event_keys: BTreeSet<String>,
+    /// Counts from the complete durable event rows, never from the report's working set.
+    event_counts: BTreeMap<(String, u64, String), usize>,
     seq: u64,
     /// Decisions answered or dropped here instead of being sent.
     pub suppressed: u64,
@@ -197,6 +200,12 @@ impl Shadow {
             .iter()
             .map(|(f, key)| format!("{}:{}:{}:{key}", f.side, f.pr, f.kind))
             .collect();
+        let mut event_counts = BTreeMap::new();
+        for (fact, _) in &events {
+            *event_counts
+                .entry((fact.side.clone(), fact.pr, fact.kind.clone()))
+                .or_insert(0) += 1;
+        }
         // Version-1 singleton rows may already describe a draft/car event. Treat their source
         // identity as observed so the first reconciliation after upgrading does not duplicate
         // it in the append-only stream.
@@ -223,6 +232,7 @@ impl Shadow {
             seen_merged: BTreeSet::new(),
             seen_runs: BTreeSet::new(),
             event_keys,
+            event_counts,
             seq,
             suppressed: 0,
         }
@@ -272,12 +282,7 @@ impl Shadow {
         }
         match exists {
             Some(i) => self.facts[i] = f,
-            None => {
-                if self.facts.len() >= FACTS_MAX {
-                    self.facts.remove(0);
-                }
-                self.facts.push(f);
-            }
+            None => self.facts.push(f),
         }
     }
 
@@ -297,11 +302,23 @@ impl Shadow {
         key: impl std::fmt::Display,
         at: Time,
         data: serde_json::Value,
-    ) {
+    ) -> bool {
         let key = key.to_string();
         let identity = format!("{side}:{pr}:{kind}:{key}");
-        if !self.event_keys.insert(identity) {
-            return;
+        if self.event_keys.contains(&identity) {
+            return true;
+        }
+        let count_key = (side.to_string(), pr, kind.to_string());
+        if self.event_counts.get(&count_key).copied().unwrap_or(0) >= HISTORY_MAX {
+            self.fact(
+                side,
+                pr,
+                "history_incomplete",
+                at,
+                json!({ "stream": kind, "reason": "limit" }),
+                true,
+            );
+            return true;
         }
         self.seq += 1;
         let f = ShadowFact {
@@ -314,27 +331,41 @@ impl Shadow {
             seq: self.seq,
         };
         if let Some(s) = &self.store {
-            let _ = s.shadow_event(&f, &key);
+            match s.shadow_event(&f, &key) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => {
+                    // Do not claim the source key or occurrence in memory. The durable inbox
+                    // may replay it after storage recovers; meanwhile the report fails closed.
+                    self.fact(
+                        side,
+                        pr,
+                        "history_incomplete",
+                        at,
+                        json!({ "stream": kind, "reason": "storage" }),
+                        true,
+                    );
+                    return false;
+                }
+            }
         }
-        if self.facts.len() >= FACTS_MAX {
-            self.facts.remove(0);
-        }
+        self.event_keys.insert(identity);
+        *self.event_counts.entry(count_key).or_insert(0) += 1;
         self.facts.push(f);
+        true
     }
 
-    fn last_occurrence(&self, side: &str, pr: u64, kind: &str) -> Option<&ShadowFact> {
+    fn last_occurrence_index(&self, side: &str, pr: u64, kind: &str) -> Option<usize> {
         self.facts
             .iter()
-            .rev()
-            .find(|f| f.side == side && f.pr == pr && f.kind == kind)
+            .rposition(|f| f.side == side && f.pr == pr && f.kind == kind)
     }
 
     fn occurrence_is_current(&self, side: &str, pr: u64, kind: &str, opposite: &str) -> bool {
-        let Some(current) = self.last_occurrence(side, pr, kind) else {
+        let Some(current) = self.last_occurrence_index(side, pr, kind) else {
             return false;
         };
-        self.last_occurrence(side, pr, opposite)
-            .is_none_or(|other| (current.at, current.seq) > (other.at, other.seq))
+        self.last_occurrence_index(side, pr, opposite)
+            .is_none_or(|other| current > other)
     }
 
     fn note_schlange_entry(&mut self, number: u64, queue: &str, rule: &str, now: Time) {
@@ -344,10 +375,10 @@ impl Shadow {
             return;
         }
         let occurrence = self
-            .facts
-            .iter()
-            .filter(|f| f.side == SCHLANGE && f.pr == number && f.kind == "queued")
-            .count()
+            .event_counts
+            .get(&(SCHLANGE.into(), number, "queued".into()))
+            .copied()
+            .unwrap_or(0)
             + 1;
         self.event(
             SCHLANGE,
@@ -364,10 +395,10 @@ impl Shadow {
             return;
         }
         let occurrence = self
-            .facts
-            .iter()
-            .filter(|f| f.side == SCHLANGE && f.pr == number && f.kind == "dequeued")
-            .count()
+            .event_counts
+            .get(&(SCHLANGE.into(), number, "dequeued".into()))
+            .copied()
+            .unwrap_or(0)
             + 1;
         self.event(
             SCHLANGE,
@@ -846,7 +877,7 @@ impl Shadow {
                 // Use GitHub IDs at both the membership check and insertion, not the
                 // engine's check ordering field. Do not overwrite the observation time on
                 // every reconciliation of the same concluded run.
-                if !self.seen_runs.insert(r.id) {
+                if self.seen_runs.contains(&r.id) {
                     continue;
                 }
                 let text = r
@@ -860,7 +891,7 @@ impl Shadow {
                         )
                     })
                     .unwrap_or_default();
-                if let Some(code) = schlange_core::reasons::ALL
+                let code = schlange_core::reasons::ALL
                     .iter()
                     .copied()
                     // Preserve literal observer evidence even where the engine has not
@@ -869,16 +900,19 @@ impl Shadow {
                     .find(|c| {
                         text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
                             .any(|w| w == *c)
-                    })
-                {
+                    });
+                let recorded = code.is_none_or(|code| {
                     self.event(
                         MERGIFY,
                         n,
                         "dequeued",
                         format_args!("run:{}", r.id),
                         now,
-                        json!({ "code": code, "text": text.trim() }),
-                    );
+                        json!({ "code": code, "run_id": r.id }),
+                    )
+                });
+                if recorded {
+                    self.seen_runs.insert(r.id);
                 }
             }
         }
@@ -886,7 +920,7 @@ impl Shadow {
 }
 
 /// One aspect compared for one pull request.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compared<T> {
     pub schlange: T,
     pub mergify: T,
@@ -902,7 +936,7 @@ fn cmp<T: PartialEq>(schlange: T, mergify: T) -> Compared<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PrComparison {
     pub number: u64,
     /// `agree`, `disagree`, `inconclusive` (Schlange saw Mergify's merge before it decided)
@@ -928,9 +962,63 @@ pub struct PrComparison {
     /// stopped): `inconclusive`, and left out of the text report unless `--all`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub before_watching: bool,
+    /// At least one occurrence stream could not be retained completely.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_incomplete: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Deserialize)]
+struct PrComparisonWire {
+    number: u64,
+    verdict: String,
+    queued: Compared<bool>,
+    queue_entries: Option<Compared<usize>>,
+    landed: Compared<bool>,
+    order: Option<Compared<usize>>,
+    batch: Option<Compared<Vec<u64>>>,
+    dequeue_reason: Option<Compared<Option<String>>>,
+    dequeue_reasons: Option<Compared<Vec<String>>>,
+    differences: Vec<String>,
+    #[serde(default)]
+    before_watching: bool,
+    #[serde(default)]
+    history_incomplete: bool,
+}
+
+impl<'de> Deserialize<'de> for PrComparison {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PrComparisonWire::deserialize(deserializer)?;
+        let queue_entries = wire
+            .queue_entries
+            .unwrap_or_else(|| cmp(wire.queued.schlange as usize, wire.queued.mergify as usize));
+        let dequeue_reasons = wire.dequeue_reasons.unwrap_or_else(|| {
+            wire.dequeue_reason.as_ref().map_or_else(
+                || cmp(Vec::new(), Vec::new()),
+                |reason| Compared {
+                    schlange: reason.schlange.clone().into_iter().collect(),
+                    mergify: reason.mergify.clone().into_iter().collect(),
+                    agree: reason.agree,
+                },
+            )
+        });
+        Ok(Self {
+            number: wire.number,
+            verdict: wire.verdict,
+            queued: wire.queued,
+            queue_entries,
+            landed: wire.landed,
+            order: wire.order,
+            batch: wire.batch,
+            dequeue_reason: wire.dequeue_reason,
+            dequeue_reasons,
+            differences: wire.differences,
+            before_watching: wire.before_watching,
+            history_incomplete: wire.history_incomplete,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowReport {
     pub repository: String,
     pub agreements: usize,
@@ -968,12 +1056,9 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .filter(|f| f.side == side && f.pr == pr && f.kind == kind)
             .collect::<Vec<_>>()
     };
-    // A pull request with nothing but "seen" has nothing to compare yet.
-    let prs: BTreeSet<u64> = facts
-        .iter()
-        .filter(|f| f.kind != "seen")
-        .map(|f| f.pr)
-        .collect();
+    // A watched pull request with no queue event is explicit negative evidence. This is how
+    // selected never-enqueued sandbox cases distinguish zero from a missing observation.
+    let prs: BTreeSet<u64> = facts.iter().map(|f| f.pr).collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
     let mut ours: Vec<(u64, u64)> = facts
         .iter()
@@ -1042,14 +1127,22 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
                 if queued.mergify { "yes" } else { "no" }
             ));
         }
+        let occurrence_position = |side: &str, kind: &str| {
+            facts
+                .iter()
+                .rposition(|f| f.side == side && f.pr == pr && f.kind == kind)
+        };
         let cycle_done = |side: &str, landed: bool| {
             if landed {
                 return true;
             }
-            match (get_last(side, pr, "queued"), get_last(side, pr, "dequeued")) {
+            match (
+                occurrence_position(side, "queued"),
+                occurrence_position(side, "dequeued"),
+            ) {
                 (None, _) => true,
                 (Some(_), None) => false,
-                (Some(q), Some(d)) => (d.at, d.seq) > (q.at, q.seq),
+                (Some(q), Some(d)) => d > q,
             }
         };
         let s_done = cycle_done(SCHLANGE, s_land.is_some());
@@ -1120,8 +1213,18 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
         } else if !(s_done && m_done) {
             verdict = "pending";
         }
+        // A matching prefix is not agreement while either side has a live latest cycle.
+        if !(s_done && m_done) && verdict != "inconclusive" {
+            verdict = "pending";
+        }
         if !differences.is_empty() && verdict == "agree" {
             verdict = "disagree";
+        }
+        let history_incomplete = get(SCHLANGE, pr, "history_incomplete").is_some()
+            || get(MERGIFY, pr, "history_incomplete").is_some();
+        if history_incomplete {
+            verdict = "inconclusive";
+            differences = vec!["shadow occurrence history is incomplete".into()];
         }
         // Merged or closed before shadow mode watched (before its start, or while it was
         // stopped): Schlange could not decide, so there is nothing to compare.
@@ -1143,6 +1246,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             dequeue_reasons,
             differences,
             before_watching,
+            history_incomplete,
         });
     }
     let count = |v: &str| out.iter().filter(|p| p.verdict == v).count();
@@ -1471,7 +1575,7 @@ mod tests {
             f(MERGIFY, 5, "queued", 1, 16, json!({})),
             // #6: Mergify landed it while shadow mode was not watching.
             f(MERGIFY, 6, "landed", 0, 17, json!({ "batch": [6] })),
-            // #7: seen open, nothing else yet: no row.
+            // #7: seen open, explicitly never queued by either side.
             f(SCHLANGE, 7, "seen", 0, 18, json!({})),
         ];
         // Schlange saw #1 to #5 open.
@@ -1493,12 +1597,13 @@ mod tests {
                 (3, "disagree"),
                 (4, "disagree"),
                 (5, "pending"),
-                (6, "inconclusive")
+                (6, "inconclusive"),
+                (7, "agree")
             ]
         );
         assert_eq!(
             (r.agreements, r.disagreements, r.pending, r.inconclusive),
-            (2, 2, 1, 1)
+            (3, 2, 1, 1)
         );
         assert!(r.to_text().contains(
             "dequeue history: Schlange [\"CHECKS_FAILED\"], Mergify [\"CHECKS_TIMEOUT\"]"
@@ -1542,5 +1647,111 @@ mod tests {
                 vec!["PR_MANUALLY_DEQUEUED".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn watched_never_queued_pull_request_is_an_explicit_zero_history_agreement() {
+        let row = report("o/r", &[f(SCHLANGE, 16, "seen", 1, 1, json!({}))])
+            .pull_requests
+            .remove(0);
+        assert_eq!(row.verdict, "agree");
+        assert_eq!(row.queue_entries, cmp(0, 0));
+        assert_eq!(row.dequeue_reasons, cmp(Vec::new(), Vec::new()));
+        assert!(!row.before_watching);
+    }
+
+    #[test]
+    fn unfinished_latest_cycle_is_pending_even_when_prior_history_matches() {
+        let facts = vec![
+            f(SCHLANGE, 8, "seen", 0, 1, json!({})),
+            f(SCHLANGE, 8, "queued", 1, 2, json!({})),
+            f(MERGIFY, 8, "queued", 1, 3, json!({})),
+            f(SCHLANGE, 8, "dequeued", 2, 4, json!({ "code": "RED" })),
+            f(MERGIFY, 8, "dequeued", 2, 5, json!({ "code": "RED" })),
+            f(SCHLANGE, 8, "queued", 3, 6, json!({})),
+        ];
+        let row = report("o/r", &facts).pull_requests.remove(0);
+        assert_eq!(row.verdict, "pending");
+        assert_eq!(row.queue_entries, cmp(2, 1));
+    }
+
+    #[test]
+    fn legacy_report_json_deserializes_history_from_legacy_fields() {
+        let json = json!({
+            "number": 8,
+            "verdict": "agree",
+            "queued": {"schlange": true, "mergify": true, "agree": true},
+            "landed": {"schlange": false, "mergify": false, "agree": true},
+            "dequeue_reason": {
+                "schlange": "RED", "mergify": "RED", "agree": true
+            },
+            "differences": []
+        });
+        let row: PrComparison = serde_json::from_value(json).unwrap();
+        assert_eq!(row.queue_entries, cmp(1, 1));
+        assert_eq!(
+            row.dequeue_reasons,
+            cmp(vec!["RED".into()], vec!["RED".into()])
+        );
+    }
+
+    #[test]
+    fn failed_event_append_does_not_claim_the_source_key_in_memory() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-store-failure-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        rusqlite::Connection::open(dir.join("schlange.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE shadow_events")
+            .unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        let pull = ShadowPull {
+            number: 80,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: "mergify/merge-queue/0000000050".into(),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        s.observe_pull_webhook(&pull, 1);
+        assert!(!s.has(MERGIFY, 50, "queued"));
+        assert!(s.has(MERGIFY, 50, "history_incomplete"));
+
+        // Removing persistence simulates recovery for the retry: the same source ID was not
+        // claimed by the failed append and can still be observed.
+        s.store = None;
+        s.observe_pull_webhook(&pull, 2);
+        assert!(s.has(MERGIFY, 50, "queued"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn occurrence_limit_marks_history_inconclusive_instead_of_false_agreement() {
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        s.fact(SCHLANGE, 50, "seen", 0, json!({}), true);
+        for n in 0..=HISTORY_MAX {
+            s.event(
+                SCHLANGE,
+                50,
+                "queued",
+                format_args!("test:{n}"),
+                n as u64,
+                json!({}),
+            );
+        }
+        assert_eq!(
+            s.facts()
+                .iter()
+                .filter(|f| f.side == SCHLANGE && f.pr == 50 && f.kind == "queued")
+                .count(),
+            HISTORY_MAX
+        );
+        let row = report("o/r", s.facts()).pull_requests.remove(0);
+        assert_eq!(row.verdict, "inconclusive");
+        assert!(row.history_incomplete);
     }
 }

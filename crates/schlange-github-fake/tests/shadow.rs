@@ -396,7 +396,18 @@ fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
         t.gh.mergify_check(n, name, Some(conclusion));
     }
     reconcile(&t);
-    assert_eq!(verdict(&report(&t), n), "absent");
+    let r = report(&t);
+    assert_eq!(verdict(&r, n), "agree", "{r:#}");
+    let row = r["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["queue_entries"]["schlange"], 0);
+    assert_eq!(row["queue_entries"]["mergify"], 0);
+    assert_eq!(row["dequeue_reasons"]["schlange"], serde_json::json!([]));
+    assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
     assert_no_writes(&t);
     t.shutdown();
 }
@@ -495,6 +506,8 @@ fn a_closed_queued_pr_keeps_its_dequeue_reason_and_completed_runs_are_deduplicat
         };
         let before = reason();
         assert_eq!(before.data["code"], code);
+        assert!(before.data["run_id"].is_u64());
+        assert!(before.data.get("text").is_none());
         t.advance("3m");
         reconcile(&t);
         let after = reason();

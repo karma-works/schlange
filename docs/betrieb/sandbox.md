@@ -336,6 +336,9 @@ compares entry counts and ordered dequeue-code histories. The independent verifi
 accepts an S18-style dequeue, requeue and later landing only when those histories match its
 separately recorded outcome. This implementation change does not itself establish a live shadow
 acceptance; that still requires a reviewed sandbox run.
+Selected pull requests which never enter either queue appear as explicit zero-history agreement
+rows. An unfinished latest cycle remains pending. Per-PR streams are bounded; a storage failure
+or limit marks the history incomplete and the verifier refuses it rather than comparing a prefix.
 
 ## Results of the first full comparison (2026-10-28)
 
