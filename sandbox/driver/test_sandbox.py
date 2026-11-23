@@ -13,6 +13,16 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_s06_observes_queue_entry_before_pushing(self):
+        scenario = json.loads(
+            (driver.REPO_ROOT / 'sandbox/scenarios/s06-push-while-queued.json').read_text())
+        steps = scenario['steps']
+        push = next(index for index, step in enumerate(steps) if 'push' in step)
+        queued = [index for index, step in enumerate(steps)
+                  if step.get('wait') == 'queued' and step.get('prs') == ['a']]
+        self.assertTrue(queued)
+        self.assertLess(queued[-1], push)
+
     def test_reference_outcome_records_only_bounded_merger_identity(self):
         trace = {'run': {'repo': 'queue-lab', 'run_id': 's99-test'},
                  'prs': {'a': {'number': 1, 'state': 'closed', 'merged': True, 'merged_by': 'mergify[bot]'},
