@@ -266,6 +266,10 @@ completion is supplied by the other app, missing or ambiguous ordering is report
 inconclusive instead of being reconstructed from REST/webhook arrival order.
 If several drafts have no observed dequeue between them, the report infers one continuous
 cycle; only the independent sandbox event outcome can rule out a missed dequeue/re-entry.
+When Mergify merges a pull request before Schlange reaches a landing decision, Schlange
+may record the external merge as a terminal queue exit. The report keeps landing
+inconclusive. When the recorded exit is at or after the Mergify merge, that terminal
+exit stays outside the compared dequeue reasons. Earlier dequeues remain in the history.
 Mergify can admit and dequeue a pull request before opening a draft. In sandbox scenario
 S18, the activity log recorded the first entry, manual dequeue, and second entry before
 the only draft opened. The report observed one cycle, and the independent verifier
