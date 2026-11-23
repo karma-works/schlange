@@ -1,12 +1,12 @@
 # SHA-256 of the pinned Mergify sources (tools/fetch-mergify-sources --update).
 # Format: <sha256>  <file>  <url>
 03d4adcf8c7741a6595002576433699115d09e518c6b619c4c71710eb9281d83  schema.json  https://docs.mergify.com/mergify-configuration-schema.json
-8201bfbbf4bcbbf11b5227851148c6b62eafc51ba8785778dee0718461b4f369  openapi.json  https://docs.mergify.com/openapi.json
+a9362fd2091326fe7ddfaa9e9b20c68231920dda3d641fdbdf0d87d8f3185e19  openapi.json  https://docs.mergify.com/openapi.json
 35024192c511d7d97125b7d595eb404ef9da9b271835808c783a14f7604aaba5  commands.md  https://docs.mergify.com/commands.md
 013087db8f057dae05dabd9af30c7c39f297e8770e46019ac42e20aaa376ec8c  commands_queue.md  https://docs.mergify.com/commands/queue.md
 497300844c820b0fdb0ca3ff5950743de17998fe5fdef61e8d5f1417f2296c4f  commands_dequeue.md  https://docs.mergify.com/commands/dequeue.md
 354ab92b59f1da7e9c29d85b1d255213e505fc35818aac11b84f27640a0891ce  commands_restrictions.md  https://docs.mergify.com/commands/restrictions.md
-206b47f2a0621b3a2f3ce1aaa9a1c6b8d64929d4b7a13c7e065300d146e11b00  cli.html  https://docs.mergify.com/cli
+c252028b1e6db2caa84602b6f73f7b8f1954e41a0b7ac2bf182a32f453604289  cli.html  https://docs.mergify.com/cli
 3d10b8b01a209f03a14983aeaabdbd701919932e998515bdd9b0b7223b2b5387  cli_auth.html  https://docs.mergify.com/cli/auth
 7a2fd72966f547da53aad4c1b1fa04cc05f7a87bac43caa0d2b9fdc63d85ec4f  cli_ci.html  https://docs.mergify.com/cli/ci
 4881570b1994f6b2bd7ca68adf320741d566809e7d98e55a2c28108ff9d2d33e  cli_config.html  https://docs.mergify.com/cli/config
@@ -14,4 +14,4 @@
 2ad8be411777896fe7b73c859f43d73e0b4796d4a2d8a8f02d38d2c8aef3f3b2  cli_freeze.html  https://docs.mergify.com/cli/freeze
 b62f0c54bfaec61e2556bc2a8094a7fbd93a87b112f38f27340dae3d14a1c50e  cli_queue.html  https://docs.mergify.com/cli/queue
 134b494412b43b24306edb7ef137ba40b00a2af079e8eee3b35c703502f93f7b  cli_stack.html  https://docs.mergify.com/cli/stack
-8bd8e715c8e5fa51ddddab924d4fd7a627172ddfb28ee5f107c7aefcaab6755e  cli_tests.html  https://docs.mergify.com/cli/tests
+3e8e27944d6ab02466d538449c048c999c85b37358fe2ac12b7bb784179f0668  cli_tests.html  https://docs.mergify.com/cli/tests

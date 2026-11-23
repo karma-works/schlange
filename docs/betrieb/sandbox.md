@@ -412,6 +412,14 @@ cleanup events stay outside the window. A failed, truncated, or ambiguous read p
 `complete: false` and an empty event list. The existing outcome and shadow verifier use
 their own evidence.
 
+The separate `reference-check-starts.json` diagnostic records the check run and batch IDs,
+member numbers in the source's order, parent batch IDs, and check head for each recorded
+start. It uses the same sandbox scope and Actions provenance. Missing check identity or
+membership outside the scenario produces an incomplete artifact. A recorded start shows
+which check run began on the named head. It does not establish check completion, a tested
+prefix, or passing results. An empty artifact shows that the query returned no starts in
+its time window. This diagnostic has no role in shadow acceptance.
+
 The shadow report stores queue-entry, batch and dequeue occurrences as append-only events and
 compares entry counts and ordered dequeue-code histories. The independent verifier therefore
 accepts an S18-style dequeue, requeue and later landing only when those histories match its
