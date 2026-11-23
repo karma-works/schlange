@@ -13,7 +13,11 @@
       ]
     },
     {
-      "sleep": 120
+      "wait": "queued",
+      "prs": [
+        "a"
+      ],
+      "timeout": 1200
     },
     {
       "push": "a"
