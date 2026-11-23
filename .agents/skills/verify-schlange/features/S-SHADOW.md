@@ -43,7 +43,10 @@ compares that with what Mergify did, per pull request.
   even though the engine currently calls this path assumed `PR_DEQUEUED`; this produces
   an honest disagreement pending sandbox evidence. A signed pull-request webhook records a
   recognized queue draft before reconciliation, so an opened and quickly closed draft is not
-  lost; replay is deduplicated by draft PR number. Missing codes are not inferred from prose.
+  lost; replay is deduplicated by draft PR number. The JSON report's `draft_observer` section
+  lists only candidate PR numbers at the three structural gates: matching queue prefix,
+  matching configured author and parsed membership. It retains no title, body or author
+  identity, and its probe rows never become parity rows. Missing codes are not inferred from prose.
 - `compare`: built. Per pull request: queue-entry count, landed, landing order (rank among the pull
   requests both landed; Mergify's merges in one second keep their batch's order), the batch
   it landed in, and the ordered dequeue-code history. The legacy queued boolean and latest

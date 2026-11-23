@@ -741,11 +741,21 @@ impl Shadow {
     /// A pull request read from GitHub: a Mergify draft (what it embarks), or a pull request
     /// with an explicit queue-draft membership list.
     fn note_other(&mut self, p: &PullRequest, now: Time) {
-        if p.author == self.cfg.mergify_login {
-            if !p.head_ref.starts_with(&self.cfg.mergify_queue_prefix) {
-                return;
-            }
-            let prs = draft_members(&p.title, &p.body, p.number);
+        let author_matches = p.author == self.cfg.mergify_login;
+        let prefix_matches = p.head_ref.starts_with(&self.cfg.mergify_queue_prefix);
+        let prs = if author_matches || prefix_matches {
+            draft_members(&p.title, &p.body, p.number)
+        } else {
+            Vec::new()
+        };
+        self.note_draft_probe(
+            p.number,
+            author_matches,
+            prefix_matches,
+            !prs.is_empty(),
+            now,
+        );
+        if author_matches && prefix_matches {
             if prs.is_empty() {
                 return;
             }
@@ -780,16 +790,52 @@ impl Shadow {
         // is the only positive queue signal; never guess from an app slug or check title.
     }
 
+    fn note_draft_probe(
+        &mut self,
+        number: u64,
+        author_matches: bool,
+        prefix_matches: bool,
+        membership_parsed: bool,
+        now: Time,
+    ) {
+        if !(author_matches || prefix_matches) {
+            return;
+        }
+        self.fact(
+            "observer",
+            number,
+            "draft_probe",
+            now,
+            json!({
+                "matching_configured_author": author_matches,
+                "matching_queue_prefix": prefix_matches,
+                "structured_membership_parsed": membership_parsed,
+            }),
+            false,
+        );
+    }
+
     /// Records structured membership directly from a signed, durable pull-request webhook.
     /// The payload is evidence only for the observer; the engine still acts exclusively on
     /// fresh forge reads. Prefix, author and structured-member checks are identical to reads.
     pub fn observe_pull_webhook(&mut self, p: &ShadowPull, now: Time) -> bool {
-        if p.author != self.cfg.mergify_login
-            || !p.head_ref.starts_with(&self.cfg.mergify_queue_prefix)
-        {
+        let author_matches = p.author == self.cfg.mergify_login;
+        let prefix_matches = p.head_ref.starts_with(&self.cfg.mergify_queue_prefix);
+        let prs = if author_matches || prefix_matches {
+            draft_members(&p.title, &p.body, p.number)
+        } else {
+            Vec::new()
+        };
+        self.note_draft_probe(
+            p.number,
+            author_matches,
+            prefix_matches,
+            !prs.is_empty(),
+            now,
+        );
+        if !(author_matches && prefix_matches) {
             return true;
         }
-        let prs = draft_members(&p.title, &p.body, p.number);
         if prs.is_empty() {
             return true;
         }
@@ -835,11 +881,24 @@ impl Shadow {
             }
         };
         for p in &recent {
-            if p.user.login == self.cfg.mergify_login {
-                if !p.head.ref_name.starts_with(&self.cfg.mergify_queue_prefix) {
+            let author_matches = p.user.login == self.cfg.mergify_login;
+            let prefix_matches = p.head.ref_name.starts_with(&self.cfg.mergify_queue_prefix);
+            let prs = if author_matches || prefix_matches {
+                draft_members(&p.title, p.body.as_deref().unwrap_or_default(), p.number)
+            } else {
+                Vec::new()
+            };
+            self.note_draft_probe(
+                p.number,
+                author_matches,
+                prefix_matches,
+                !prs.is_empty(),
+                now,
+            );
+            if author_matches {
+                if !prefix_matches {
                     continue;
                 }
-                let prs = draft_members(&p.title, p.body.as_deref().unwrap_or_default(), p.number);
                 if !prs.is_empty() {
                     self.drafts.insert(
                         p.number,
@@ -1085,9 +1144,19 @@ impl<'de> Deserialize<'de> for PrComparison {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftObserverDiagnostics {
+    /// Candidate pull request numbers only; no title, body or author identity is retained.
+    pub matching_queue_prefix: Vec<u64>,
+    pub matching_configured_author: Vec<u64>,
+    pub structured_membership_parsed: Vec<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowReport {
     pub repository: String,
+    #[serde(default)]
+    pub draft_observer: DraftObserverDiagnostics,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history_incomplete: bool,
     pub agreements: usize,
@@ -1128,9 +1197,27 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .filter(|f| f.side == side && f.pr == pr && f.kind == kind)
             .collect::<Vec<_>>()
     };
+    let probe_numbers = |field: &str| {
+        facts
+            .iter()
+            .filter(|f| f.kind == "draft_probe" && f.data[field] == true)
+            .map(|f| f.pr)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let draft_observer = DraftObserverDiagnostics {
+        matching_queue_prefix: probe_numbers("matching_queue_prefix"),
+        matching_configured_author: probe_numbers("matching_configured_author"),
+        structured_membership_parsed: probe_numbers("structured_membership_parsed"),
+    };
     // A watched pull request with no queue event is explicit negative evidence. This is how
     // selected never-enqueued sandbox cases distinguish zero from a missing observation.
-    let prs: BTreeSet<u64> = facts.iter().filter(|f| f.pr != 0).map(|f| f.pr).collect();
+    let prs: BTreeSet<u64> = facts
+        .iter()
+        .filter(|f| f.pr != 0 && f.kind != "draft_probe")
+        .map(|f| f.pr)
+        .collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
     let mut ours: Vec<(u64, u64)> = facts
         .iter()
@@ -1324,6 +1411,7 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
     let count = |v: &str| out.iter().filter(|p| p.verdict == v).count();
     ShadowReport {
         repository: repo.to_string(),
+        draft_observer,
         history_incomplete: repository_history_incomplete,
         agreements: count("agree"),
         disagreements: count("disagree"),
@@ -1495,7 +1583,13 @@ mod tests {
         p.author = "mergify[bot]".into();
         p.body = "Embarked pull requests:\n#12".into();
         s.note_other(&p, 2);
-        assert!(s.facts().is_empty());
+        assert!(!s.has(MERGIFY, 12, "queued"));
+        assert_eq!(
+            report("o/r", s.facts())
+                .draft_observer
+                .matching_configured_author,
+            vec![99]
+        );
         p.head_ref = "mergify/merge-queue/a".into();
         p.body = "Embarked pull requests:\n#50: Fixes #12".into();
         s.note_other(&p, 3);
@@ -1838,5 +1932,52 @@ mod tests {
         let report = report("o/r", s.facts());
         assert!(report.history_incomplete);
         assert_eq!(report.pull_requests[0].queue_entries.schlange, 0);
+    }
+
+    #[test]
+    fn draft_observer_diagnostics_are_structural_and_not_comparison_rows() {
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        let mut author_only = PullRequest::new(70, "mergify[bot]", "main", "other", "a");
+        author_only.title = "private author-only title".into();
+        s.note_other(&author_only, 1);
+
+        let mut prefix_only = PullRequest::new(
+            71,
+            "different-bot",
+            "main",
+            "mergify/merge-queue/0000000047",
+            "b",
+        );
+        prefix_only.body = "private prefix-only body".into();
+        s.note_other(&prefix_only, 2);
+
+        let mut parsed = PullRequest::new(
+            72,
+            "mergify[bot]",
+            "main",
+            "mergify/merge-queue/0000000048",
+            "c",
+        );
+        parsed.title = "queue draft (#50)".into();
+        s.note_other(&parsed, 3);
+
+        let report = report("o/r", s.facts());
+        assert!(
+            report
+                .pull_requests
+                .iter()
+                .all(|row| ![70, 71, 72].contains(&row.number))
+        );
+        assert_eq!(report.draft_observer.matching_queue_prefix, vec![71, 72]);
+        assert_eq!(
+            report.draft_observer.matching_configured_author,
+            vec![70, 72]
+        );
+        assert_eq!(report.draft_observer.structured_membership_parsed, vec![72]);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("private author-only title"));
+        assert!(!json.contains("private prefix-only body"));
+        assert!(!json.contains("different-bot"));
+        assert!(!json.contains("mergify[bot]"));
     }
 }
