@@ -1,0 +1,27 @@
+{
+  "scenario": "S20",
+  "repo": "queue-lab",
+  "prs": {
+    "a": {
+      "end": "merged",
+      "queued": true,
+      "enter_count": 1,
+      "dequeue_codes": [],
+      "merged_by_mergify": true
+    }
+  },
+  "landed": [
+    "a"
+  ],
+  "batches": [
+    {
+      "prs": [
+        "a"
+      ],
+      "ci_ok": "success"
+    }
+  ],
+  "source_runs": [
+    "45144411842"
+  ]
+}

@@ -32,6 +32,7 @@ Scenario format (JSON), steps in order:
   {"dispatch_workflow": "name.yml", "pr": "a", "ref": "pr"|"main", "inputs": {"pr": "{pr}"}}
   {"wait_check": "a", "name": "ci-ok", "conclusion": "success", "app": "github-actions", "after_checkpoint": true}
   {"assert_check_pair": "a", "name": "ci-ok", "distinct_suites": true}
+  {"rerun_ci": "a", "timeout": 900}                   observe the queued same-head CI attempt pending, then green
 Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text conflict).
 """
 
@@ -875,6 +876,90 @@ class Run:
         self.checkpoints.append({"kind": "dispatch", "at": started, "workflow": workflow, "pr": s["pr"]})
         log(f"Dispatched {workflow} for PR #{pr['number']}")
 
+    def step_rerun_ci(self, s):
+        """Exercise the existing PR workflow again without pushing or changing its conditions."""
+        key = s["rerun_ci"]
+        if not any(point["kind"] == "queued" and key in point["prs"] for point in self.checkpoints):
+            raise RuntimeError("CI rerun requires an observed queue entry")
+        if self.org != ALLOWED_ORG or self.repo not in ALLOWED_REPOS or self.r != f"/repos/{self.org}/{self.repo}":
+            raise RuntimeError("CI rerun is outside the sandbox")
+        pr_path = f"{self.r}/pulls/{self.prs[key]['number']}"
+        client = self.actors["human"]
+        pr = client.call("GET", pr_path)
+        head = pr.get("head", {}).get("sha")
+        if pr.get("state") != "open" or pr.get("draft") is not False or not re.fullmatch("[0-9a-f]{40}", head or ""):
+            raise RuntimeError("CI rerun requires an open, ready pull request")
+
+        checks = client.paged(f"{self.r}/commits/{head}/check-runs?filter=all")
+        candidates = [check for check in checks
+                      if check.get("head_sha") == head and check.get("name") == "ci-ok"
+                      and (check.get("app") or {}).get("slug") == "github-actions"
+                      and type(check.get("id")) is int and check["id"] > 0]
+        if not candidates:
+            raise RuntimeError("CI rerun requires the original CI check")
+        original = max(candidates, key=lambda check: check["id"])
+        if original.get("status") != "completed" or original.get("conclusion") != "success":
+            raise RuntimeError("the original CI check is not green")
+        run_id = workflow_check_identity(client, self.r, original, "ci.yml", "pull_request", head, self.started)
+        if type(run_id) is not int or run_id <= 0:
+            raise RuntimeError("the original CI job could not be bound to its workflow run")
+        run_path = f"{self.r}/actions/runs/{run_id}"
+        first = client.call("GET", run_path)
+        attempt = first.get("run_attempt")
+        if (first.get("id") != run_id or first.get("head_sha") != head or first.get("status") != "completed"
+                or type(attempt) is not int or attempt <= 0):
+            raise RuntimeError("the original workflow attempt is not ready to rerun")
+
+        def checkpoint(kind, run_attempt, check_id):
+            self.checkpoints.append({"kind": kind, "at": now_iso(), "pr": key, "head": head,
+                                     "workflow_run_id": run_id, "run_attempt": run_attempt, "check_id": check_id})
+            self.save_state()
+
+        client.call("POST", f"{run_path}/rerun", retry=False)
+        checkpoint("ci_rerun_requested", attempt, original["id"])
+        deadline = time.monotonic() + s.get("timeout", 900)
+        pending_id = None
+        while time.monotonic() < deadline:
+            current_pr = client.call("GET", pr_path)
+            if current_pr.get("head", {}).get("sha") != head:
+                raise RuntimeError("the pull request head changed during the rerun")
+            source = client.call("GET", run_path)
+            current_attempt = source.get("run_attempt")
+            if source.get("id") != run_id or source.get("head_sha") != head or type(current_attempt) is not int:
+                raise RuntimeError("the workflow run could not be bound to the original head")
+            if current_attempt != attempt:
+                if current_attempt != attempt + 1:
+                    raise RuntimeError("more than one new workflow attempt was observed")
+                jobs = client.paged(f"{run_path}/attempts/{current_attempt}/jobs")
+                ci_jobs = [job for job in jobs if job.get("name") == "ci-ok"]
+                if len(ci_jobs) == 1:
+                    job = ci_jobs[0]
+                    link = job.get("check_run_url")
+                    source_id = re.fullmatch(re.escape(f"{API}{self.r}/check-runs/") + r"([1-9][0-9]*)", link or "")
+                    if (job.get("run_id") != run_id or not source_id or int(source_id[1]) <= original["id"]):
+                        raise RuntimeError("the new CI job could not be bound to the rerun")
+                    check_id = int(source_id[1])
+                    check = client.call("GET", f"{self.r}/check-runs/{check_id}")
+                    if (check.get("id") != check_id or check.get("head_sha") != head or check.get("name") != "ci-ok"
+                            or (check.get("app") or {}).get("slug") != "github-actions"):
+                        raise RuntimeError("the rerun check is not the named check on the original head")
+                    if pending_id is None and check.get("status") in ("queued", "in_progress", "waiting", "pending"):
+                        if current_pr.get("state") != "open":
+                            raise RuntimeError("the pull request closed before the pending check was observed")
+                        pending_id = check_id
+                        checkpoint("ci_rerun_pending", current_attempt, check_id)
+                    if check.get("status") == "completed":
+                        if check.get("conclusion") != "success" or pending_id != check_id:
+                            raise RuntimeError("the same CI rerun must be observed pending and green")
+                        checkpoint("ci_rerun_green", current_attempt, check_id)
+                        return
+                elif len(ci_jobs) > 1:
+                    raise RuntimeError("the workflow attempt has multiple ci-ok jobs")
+            time.sleep(5)
+        self.timed_out = True
+        self.save_state()
+        raise RuntimeError("timeout before the same-head CI rerun completed")
+
     def step_wait_check(self, s):
         key, name = s["wait_check"], s["name"]
         previous = max((c["id"] for c in self.checkpoints if c.get("kind") == "check"
@@ -1031,7 +1116,8 @@ class Run:
         for s in self.scenario["steps"]:
             kind = next(k for k in ("prepare", "open", "push", "comment", "label", "ready", "draft", "edit_body",
                                     "close", "main_commit", "sleep", "wait", "assert_unqueued",
-                                    "dispatch_workflow", "wait_check", "assert_check_pair", "assert_prepared_base") if k in s)
+                                    "dispatch_workflow", "wait_check", "assert_check_pair", "assert_prepared_base",
+                                    "rerun_ci") if k in s)
             if kind == "sleep":
                 time.sleep(s["sleep"])
             else:

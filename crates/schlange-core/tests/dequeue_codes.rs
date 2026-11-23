@@ -27,6 +27,20 @@ fn run(name: &str, sha: &str, ok: Option<Conclusion>, seq: u64) -> CheckRun {
     }
 }
 
+fn actions_run(name: &str, sha: &str, ok: Option<Conclusion>, seq: u64) -> CheckRun {
+    CheckRun {
+        name: name.into(),
+        app: Some("github-actions".into()),
+        app_id: Some(15368),
+        head_sha: sha.into(),
+        conclusion: ok,
+        seq,
+        workflow: Some(format!(".github/workflows/{name}.yml")),
+        event: Some("pull_request".into()),
+        ..CheckRun::default()
+    }
+}
+
 fn pr(n: u64) -> PullRequest {
     let mut p = PullRequest::new(n, "a", "main", &format!("pr-{n}"), &format!("h{n}"));
     p.checks = vec![run("quick", &format!("h{n}"), Some(Conclusion::Success), n)];
@@ -451,6 +465,53 @@ fn never_mode_ignores_a_stale_refusal_while_landing_again() {
     merged.merge_commit_sha = Some("m1".into());
     let d = dr.snapshot(vec![merged], &[]);
     assert!(dequeued(&d, 1).is_none(), "not a manual merge: {d:#?}");
+}
+
+#[test]
+fn a_known_replacement_failure_does_not_delete_an_issued_landing_reply() {
+    let mut dr = Driver::new(&config("", ""));
+    let mut own = pr(1);
+    own.checks = vec![actions_run("quick", "h1", Some(Conclusion::Success), 10)];
+    let d = dr.snapshot(vec![own], &[("main", "b0")]);
+    dr.build_all(d);
+    let Decision::Land { car, .. } = dr.land(0) else {
+        unreachable!()
+    };
+
+    let pending = actions_run("quick", "h1", None, 11);
+    let d = dr.feed(Event::CheckRun {
+        number: 1,
+        run: pending.clone(),
+    });
+    assert!(dequeued(&d, 1).is_none(), "{d:#?}");
+    assert!(matches!(
+        dr.state.trains["main"].cars[0].status,
+        schlange_core::queue::CarStatus::Landing { .. }
+    ));
+
+    let mut failed = pending;
+    failed.conclusion = Some(Conclusion::Failure);
+    let d = dr.feed(Event::CheckRun {
+        number: 1,
+        run: failed,
+    });
+    assert!(dequeued(&d, 1).is_none(), "{d:#?}");
+    assert!(matches!(
+        dr.state.trains["main"].cars[0].status,
+        schlange_core::queue::CarStatus::Landing { .. }
+    ));
+
+    let d = dr.feed(Event::Landed {
+        car,
+        commits: vec![],
+        error: Some(LandError::BaseMoved {
+            actual: "b1".into(),
+        }),
+    });
+    assert!(
+        dequeued(&d, 1).is_some(),
+        "the reply is handled first: {d:#?}"
+    );
 }
 
 #[test]

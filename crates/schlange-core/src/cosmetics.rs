@@ -191,6 +191,9 @@ fn status_body(state: &State, rules: &Rules, n: u64) -> Option<(String, bool)> {
                     _ => "Waiting for its turn: first in its queue.".to_string(),
                 }
             }
+            EntryStatus::CheckReplacementPending => {
+                "Waiting for a newer run of a required pull-request check to finish.".to_string()
+            }
             EntryStatus::InCar { car } => {
                 let draft = state
                     .trains
