@@ -30,6 +30,8 @@ use schlange_core::journal::{Journal, JournalError, Recovered};
 use schlange_core::model::Time;
 
 pub const DB_FILE: &str = "schlange.db";
+pub const SHADOW_EVENTS_PER_STREAM_MAX: usize = 1_024;
+pub const SHADOW_EVENTS_REPO_MAX: usize = 200_000;
 const SCHEMA_VERSION: i64 = 1;
 
 /// One webhook delivery still queued in the inbox: id, repository, event and raw body.
@@ -150,6 +152,12 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, side TEXT NOT NULL,
                  pr INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL,
                  UNIQUE (repo, side, pr, kind));
+             CREATE TABLE IF NOT EXISTS shadow_events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, side TEXT NOT NULL,
+                 pr INTEGER NOT NULL, kind TEXT NOT NULL, event_key TEXT NOT NULL,
+                 at INTEGER NOT NULL, data TEXT NOT NULL,
+                 UNIQUE (repo, side, pr, kind, event_key));
+             CREATE INDEX IF NOT EXISTS shadow_events_repo ON shadow_events (repo, id);
              CREATE TABLE IF NOT EXISTS lease (
                  repo TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);",
         )
@@ -503,6 +511,47 @@ impl Store {
         })
     }
 
+    /// Appends a durable shadow event. `event_key` is the source identity (for example a
+    /// queue draft, car, or check-run ID), so inbox replay and reconciliation cannot duplicate
+    /// an observation while later queue cycles remain distinct.
+    pub fn shadow_event(&self, o: &ShadowFact, event_key: &str) -> rusqlite::Result<bool> {
+        let data = o.data.to_string();
+        self.with(|c| {
+            let n = c.execute(
+                "INSERT OR IGNORE INTO shadow_events \
+                 (repo, side, pr, kind, event_key, at, data) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    o.repo,
+                    o.side,
+                    o.pr as i64,
+                    o.kind,
+                    event_key,
+                    o.at as i64,
+                    data
+                ],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Persists the repository-wide marker used when occurrence history is incomplete.
+    pub fn shadow_repository_incomplete(&self, repo: &str, at: u64) -> rusqlite::Result<()> {
+        self.shadow_record(
+            &ShadowFact {
+                repo: repo.into(),
+                side: "observer".into(),
+                pr: 0,
+                kind: "history_incomplete".into(),
+                at,
+                data: serde_json::json!({ "reason": "repository_limit" }),
+                seq: 0,
+            },
+            true,
+        )
+        .map(|_| ())
+    }
+
     /// Whether a fact of this kind exists.
     pub fn shadow_has(
         &self,
@@ -513,7 +562,11 @@ impl Store {
     ) -> rusqlite::Result<bool> {
         self.with(|c| {
             c.query_row(
-                "SELECT 1 FROM shadow WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4",
+                "SELECT 1 FROM (
+                    SELECT repo, side, pr, kind FROM shadow
+                    UNION ALL
+                    SELECT repo, side, pr, kind FROM shadow_events
+                 ) WHERE repo = ?1 AND side = ?2 AND pr = ?3 AND kind = ?4 LIMIT 1",
                 params![repo, side, pr as i64, kind],
                 |_| Ok(()),
             )
@@ -524,7 +577,7 @@ impl Store {
 
     /// Every shadow fact of a repository, in the order they were first written.
     pub fn shadow_facts(&self, repo: &str) -> rusqlite::Result<Vec<ShadowFact>> {
-        self.with(|c| {
+        let mut facts: Vec<ShadowFact> = self.with(|c| {
             let mut st = c.prepare(
                 "SELECT repo, side, pr, kind, at, data, id FROM shadow WHERE repo = ?1 ORDER BY id",
             )?;
@@ -541,7 +594,89 @@ impl Store {
                 })
             })?;
             rows.collect()
-        })
+        })?;
+        let (events, incomplete) = self.shadow_event_snapshot(repo)?;
+        facts.extend(events.into_iter().map(|(fact, _)| fact));
+        if incomplete
+            && !facts
+                .iter()
+                .any(|f| f.pr == 0 && f.kind == "history_incomplete")
+        {
+            facts.push(ShadowFact {
+                repo: repo.into(),
+                side: "observer".into(),
+                pr: 0,
+                kind: "history_incomplete".into(),
+                at: 0,
+                data: serde_json::json!({ "reason": "repository_limit" }),
+                seq: 0,
+            });
+        }
+        Ok(facts)
+    }
+
+    /// Append-only shadow events and their durable source keys, in occurrence order.
+    pub fn shadow_events(&self, repo: &str) -> rusqlite::Result<Vec<(ShadowFact, String)>> {
+        self.shadow_event_snapshot(repo).map(|(events, _)| events)
+    }
+
+    fn shadow_event_snapshot(
+        &self,
+        repo: &str,
+    ) -> rusqlite::Result<(Vec<(ShadowFact, String)>, bool)> {
+        self.shadow_event_snapshot_with_limits(
+            repo,
+            SHADOW_EVENTS_REPO_MAX,
+            SHADOW_EVENTS_PER_STREAM_MAX,
+        )
+    }
+
+    fn shadow_event_snapshot_with_limits(
+        &self,
+        repo: &str,
+        repository_max: usize,
+        stream_max: usize,
+    ) -> rusqlite::Result<(Vec<(ShadowFact, String)>, bool)> {
+        let (events, incomplete) = self.with(|c| {
+            let stream_over: bool = c.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM shadow_events WHERE repo = ?1
+                    GROUP BY side, pr, kind HAVING COUNT(*) > ?2 LIMIT 1
+                 )",
+                params![repo, stream_max as i64],
+                |r| r.get(0),
+            )?;
+            if stream_over {
+                return Ok((Vec::new(), true));
+            }
+            let mut st = c.prepare(
+                "SELECT repo, side, pr, kind, at, data, id, event_key \
+                 FROM shadow_events WHERE repo = ?1 ORDER BY id LIMIT ?2",
+            )?;
+            let rows = st.query_map(params![repo, (repository_max + 1) as i64], |r| {
+                let data: String = r.get(5)?;
+                Ok((
+                    ShadowFact {
+                        repo: r.get(0)?,
+                        side: r.get(1)?,
+                        pr: r.get::<_, i64>(2)? as u64,
+                        kind: r.get(3)?,
+                        at: r.get::<_, i64>(4)? as u64,
+                        data: serde_json::from_str(&data).unwrap_or_default(),
+                        seq: r.get::<_, i64>(6)? as u64,
+                    },
+                    r.get(7)?,
+                ))
+            })?;
+            let mut events: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+            let repository_over = events.len() > repository_max;
+            events.truncate(repository_max);
+            Ok((events, repository_over))
+        })?;
+        if incomplete {
+            self.shadow_repository_incomplete(repo, crate::time::unix_now())?;
+        }
+        Ok((events, incomplete))
     }
 
     // ---- lease (MQ-32) -----------------------------------------------------------------
@@ -1372,6 +1507,54 @@ mod tests {
         }
         assert!(!s.delivery_seen("g0").unwrap());
         assert!(s.delivery_seen("g19").unwrap());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn oversized_shadow_event_snapshot_is_bounded_and_durably_marked() {
+        let d = dir("shadow-event-bound");
+        let s = Store::open(&d).unwrap();
+        for n in 1..=4 {
+            let fact = ShadowFact {
+                repo: "o/r".into(),
+                side: "mergify".into(),
+                pr: n,
+                kind: "queued".into(),
+                at: n,
+                data: serde_json::json!({}),
+                seq: n,
+            };
+            assert!(s.shadow_event(&fact, &format!("draft:{n}")).unwrap());
+        }
+        let (events, incomplete) = s.shadow_event_snapshot_with_limits("o/r", 3, 2).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(incomplete);
+        assert!(
+            s.shadow_has("o/r", "observer", 0, "history_incomplete")
+                .unwrap()
+        );
+        for n in 1..=3 {
+            let fact = ShadowFact {
+                repo: "o/s".into(),
+                side: "mergify".into(),
+                pr: 1,
+                kind: "queued".into(),
+                at: n,
+                data: serde_json::json!({}),
+                seq: n,
+            };
+            assert!(s.shadow_event(&fact, &format!("draft:{n}")).unwrap());
+        }
+        let (events, incomplete) = s.shadow_event_snapshot_with_limits("o/s", 10, 2).unwrap();
+        assert!(
+            events.is_empty(),
+            "an oversized stream is not partially loaded"
+        );
+        assert!(incomplete);
+        assert!(
+            s.shadow_has("o/s", "observer", 0, "history_incomplete")
+                .unwrap()
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 }

@@ -268,8 +268,8 @@ status), without publishing engine state or upstream comment texts. Every select
 must have an `agree` verdict. Pending, inconclusive, missing or timed-out evidence fails.
 `check-shadow-report.py` also compares what the observer says Mergify did with the driver's
 independent Mergify event-log outcome: queue entry, merge, relative landing order, green batch
-membership and the final dequeue reason. Matching two incorrectly interpreted observer values
-is therefore insufficient. Queue entry counts remain part of the separate active comparison.
+membership, queue-entry count and the complete dequeue-code history. Matching two incorrectly
+interpreted observer values is therefore insufficient.
 
 Both sandbox modes currently poll by reconciliation, not webhooks. A successful rehearsal is
 evidence for reading/reporting decisions, not for webhook ingress or full two-week acceptance.
@@ -331,11 +331,17 @@ merge, batch, order and dequeue reason against the shadow report. Empty, pending
 unfinished or timed-out comparisons fail. The public artifact includes `service.json`,
 `report.json` and `verification.json`, without upstream prose or private serve logs.
 
-The current shadow report stores first queue/landing facts and the latest dequeue fact, not
-a complete entry/leave history. The independent verifier deliberately rejects S18-style
-multiple queue entries and a landing after a previous dequeue. Such a run is useful diagnostic
-evidence, but cannot be claimed as a passing history comparison until the report supports it.
-No new reviewed baselines or live shadow acceptance are established by these tooling changes.
+The shadow report stores queue-entry, batch and dequeue occurrences as append-only events and
+compares entry counts and ordered dequeue-code histories. The independent verifier therefore
+accepts an S18-style dequeue, requeue and later landing only when those histories match its
+separately recorded outcome. This implementation change does not itself establish a live shadow
+acceptance; that still requires a reviewed sandbox run.
+Selected pull requests which never enter either queue appear as explicit zero-history agreement
+rows. An unfinished latest cycle remains pending. Per-PR streams are bounded; a storage failure
+or limit marks the history incomplete and the verifier refuses it rather than comparing a prefix.
+The repository-wide occurrence limit is 200,000 rows. Existing overflow is detected before
+event rows are loaded and produces a durable top-level incomplete marker. If the occurrence and
+marker writes both fail, the webhook inbox delivery remains pending for replay after recovery.
 
 ## Results of the first full comparison (2026-10-28)
 

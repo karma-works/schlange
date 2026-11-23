@@ -52,9 +52,23 @@ pub struct Parsed {
     pub repo: Option<String>,
     pub installation: Option<u64>,
     pub event: Option<Event>,
+    /// Signed pull-request payload retained for the shadow observer. Unlike an API read after
+    /// the hint, this still describes a queue draft that opened and closed quickly.
+    pub shadow_pull: Option<ShadowPull>,
     pub hints: Vec<Hint>,
     /// One line for the log.
     pub summary: String,
+}
+
+/// The clean-room subset of a signed pull-request delivery used to observe queue drafts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShadowPull {
+    pub number: u64,
+    pub author: String,
+    pub base: String,
+    pub head_ref: String,
+    pub title: String,
+    pub body: String,
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
@@ -203,6 +217,8 @@ struct PrJson {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
     draft: bool,
     #[serde(default)]
     state: String,
@@ -337,6 +353,7 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
         repo: common.repository.map(|r| r.full_name),
         installation: common.installation.map(|i| i.id),
         event: None,
+        shadow_pull: None,
         hints: vec![],
         summary: format!(
             "{event_name}{}",
@@ -353,6 +370,14 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
             let n = ev.number;
             let p = &ev.pull_request;
             parsed.summary = format!("{} #{n}", parsed.summary);
+            parsed.shadow_pull = Some(ShadowPull {
+                number: n,
+                author: p.user.login.clone(),
+                base: p.base.ref_name.clone(),
+                head_ref: p.head.ref_name.clone(),
+                title: p.title.clone(),
+                body: p.body.clone().unwrap_or_default(),
+            });
             parsed.event = match action.as_deref().unwrap_or("") {
                 "opened" | "reopened" => Some(Event::PullRequestOpened {
                     pull_request: Box::new(pull_request_of(p)),
@@ -524,7 +549,8 @@ mod tests {
             "repository": {"full_name": "karma-works/arzt-agent"},
             "installation": {"id": 42},
             "pull_request": {
-                "number": 7, "title": "t", "draft": false, "state": "open", "merged": false,
+                "number": 7, "title": "t", "body": "Embarked pull requests:\n#50",
+                "draft": false, "state": "open", "merged": false,
                 "user": {"login": "arztagent-bot"},
                 "head": {"ref": "feature", "sha": "aaaaaaaaaa"},
                 "base": {"ref": "main", "sha": "bbbbbbbbbb"},
@@ -555,6 +581,10 @@ mod tests {
             assert_eq!(p.hints, vec![Hint::PullRequest(7)]);
             assert_eq!(p.repo.as_deref(), Some("karma-works/arzt-agent"));
             assert_eq!(p.installation, Some(42));
+            assert_eq!(
+                p.shadow_pull.as_ref().map(|p| p.body.as_str()),
+                Some("Embarked pull requests:\n#50")
+            );
         }
         let p = parse(
             "pull_request",

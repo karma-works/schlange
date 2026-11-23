@@ -246,11 +246,19 @@ fn the_report_agrees_with_the_other_queue_and_names_each_difference() {
     assert_eq!(pa["batch"]["schlange"], serde_json::json!([a, b]));
     assert_eq!(verdict(&r, c), "disagree", "{r:#}");
     assert_eq!(verdict(&r, f), "disagree", "{r:#}");
-    let text = serde_json::to_string(&r).unwrap();
-    assert!(
-        text.contains("dequeue reason: Schlange CHECKS_FAILED, Mergify CHECKS_TIMEOUT"),
-        "{r:#}"
+    let c_report = r["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pr| pr["number"] == c)
+        .unwrap();
+    assert_eq!(
+        c_report["differences"],
+        serde_json::json!([
+            "dequeue history: Schlange [\"CHECKS_FAILED\"], Mergify [\"CHECKS_TIMEOUT\"]"
+        ])
     );
+    let text = serde_json::to_string(&r).unwrap();
     assert!(text.contains("queued: Schlange no, Mergify yes"), "{r:#}");
     assert_eq!(r["agreements"], 2);
     assert_eq!(r["disagreements"], 2);
@@ -388,7 +396,18 @@ fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
         t.gh.mergify_check(n, name, Some(conclusion));
     }
     reconcile(&t);
-    assert_eq!(verdict(&report(&t), n), "absent");
+    let r = report(&t);
+    assert_eq!(verdict(&r, n), "agree", "{r:#}");
+    let row = r["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["queue_entries"]["schlange"], 0);
+    assert_eq!(row["queue_entries"]["mergify"], 0);
+    assert_eq!(row["dequeue_reasons"]["schlange"], serde_json::json!([]));
+    assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
     assert_no_writes(&t);
     t.shutdown();
 }
@@ -427,6 +446,96 @@ fn structured_embarkment_ignores_issue_mentions_and_borrows_checks() {
 }
 
 #[test]
+fn a_short_lived_queue_draft_is_captured_from_its_durable_webhook() {
+    use schlange_github::store::Store;
+
+    let t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let draft = t.gh.mergify_embark(&[n]);
+    // Close before allowing the service to settle/read the draft. The signed opened delivery
+    // is already durable in the inbox and must retain the structured membership.
+    t.gh.close_pr(draft);
+    t.settle();
+
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    let queued = store
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap()
+        .into_iter()
+        .find(|f| f.side == "mergify" && f.pr == n && f.kind == "queued")
+        .expect("signed queue-draft delivery was observed");
+    assert_eq!(queued.data["draft"], draft);
+    assert_eq!(queued.data["source"], "webhook");
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn shadow_storage_failure_leaves_webhook_pending_until_restart_recovers_it() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.advance("5m");
+    t.settle();
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    assert!(store.inbox_pending().unwrap().is_empty());
+    rusqlite::Connection::open(t.serve_cfg.data_dir.as_ref().unwrap().join("schlange.db"))
+        .unwrap()
+        .execute_batch("DROP TABLE shadow_events; DROP TABLE shadow")
+        .unwrap();
+
+    t.gh.mergify_embark(&[n]);
+    t.wait_until("shadow observer exposes its non-durable failure", |t| {
+        report(t)["pull_requests"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["number"] == n && row["history_incomplete"] == true)
+        })
+    });
+    assert!(
+        store
+            .inbox_pending()
+            .unwrap()
+            .iter()
+            .any(|row| row.2 == "pull_request")
+    );
+    let failed = report(&t);
+    let row = failed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["verdict"], "inconclusive", "{failed:#}");
+    assert_eq!(row["history_incomplete"], true, "{failed:#}");
+
+    t.stop_service();
+    t.start_service(); // Store::open recreates both tables before inbox replay.
+    t.wait_until("pending shadow webhook is durably replayed", |_| {
+        store.inbox_pending().unwrap().is_empty()
+    });
+    let facts = Store::open(t.serve_cfg.data_dir.as_ref().unwrap())
+        .unwrap()
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap();
+    assert!(facts.iter().any(|f| {
+        f.pr == n && f.side == "mergify" && (f.kind == "queued" || f.kind == "history_incomplete")
+    }));
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
 fn a_closed_queued_pr_keeps_its_dequeue_reason_and_completed_runs_are_deduplicated() {
     use schlange_github::store::Store;
     // The engine currently calls a closed PR PR_DEQUEUED. Preserve any actual
@@ -456,6 +565,8 @@ fn a_closed_queued_pr_keeps_its_dequeue_reason_and_completed_runs_are_deduplicat
         };
         let before = reason();
         assert_eq!(before.data["code"], code);
+        assert!(before.data["run_id"].is_u64());
+        assert!(before.data.get("text").is_none());
         t.advance("3m");
         reconcile(&t);
         let after = reason();

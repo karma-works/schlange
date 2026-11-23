@@ -44,8 +44,8 @@ the events of the Mergify API.
 
 | Level | Comparison |
 |---|---|
-| Enqueue | per PR: enqueued yes/no, which rule, which condition was missing |
-| Dequeue | dequeue reason per PR |
+| Enqueue | per PR: queue-entry count, which rule, which condition was missing |
+| Dequeue | ordered dequeue-reason history per PR |
 | Commands | `@mergifyio queue`/`dequeue`: accepted or rejected (`commands_restrictions`) |
 | Bisection | which PR counts as the culprit, which PRs land anyway |
 | Landing | order and composition of the batches (tolerant: batches depend on timing), squash commit message |

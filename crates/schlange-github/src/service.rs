@@ -1669,6 +1669,7 @@ impl Worker {
             let mut reconcile = false;
             let mut stop = false;
             let mut deliveries: Vec<String> = Vec::new();
+            let mut round_deliveries = BTreeSet::new();
             let mut take = |m: Msg, hints: &mut BTreeSet<Hint>, this: &mut Self| match m {
                 Msg::Webhook(p, delivery) => {
                     if this.crash == Some(CrashPoint::BeforeInboxEdit)
@@ -1680,17 +1681,30 @@ impl Worker {
                         this.die("injected crash before processing an inbox edit".into());
                         return;
                     }
-                    if let Some(id) = delivery {
+                    let delivery = match delivery {
                         // A polled inbox row can also be waiting in the channel. It is one
                         // delivery, with one acknowledgement, even in the same worker round.
-                        if deliveries.contains(&id) {
+                        Some(id) if !round_deliveries.insert(id.clone()) => {
                             this.shared.inflight.fetch_sub(1, Ordering::SeqCst);
                             return;
                         }
-                        deliveries.push(id);
-                    }
+                        other => other,
+                    };
                     this.webhooks += 1;
                     this.forge.note(format!("webhook {}", p.summary));
+                    let shadow_durable = match (&mut this.shadow, &p.shadow_pull) {
+                        (Some(sh), Some(pull)) => sh.observe_pull_webhook(pull, this.clock.now()),
+                        _ => true,
+                    };
+                    if shadow_durable {
+                        if let Some(id) = delivery {
+                            deliveries.push(id);
+                        }
+                    } else {
+                        this.forge.note(
+                            "shadow: webhook observation not durable; inbox delivery remains pending",
+                        );
+                    }
                     hints.extend(p.hints);
                     handled += 1;
                 }
