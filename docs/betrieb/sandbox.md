@@ -270,6 +270,10 @@ must have an `agree` verdict. Pending, inconclusive, missing or timed-out eviden
 independent Mergify event-log outcome: queue entry, merge, relative landing order, green batch
 membership, queue-entry count and the complete dequeue-code history. Matching two incorrectly
 interpreted observer values is therefore insufficient.
+When queue-entry history differs, the verifier also prints prose-free counts from the report's
+`draft_observer` gates (matching prefix, configured author and parsed membership). The public
+report contains only the candidate PR numbers for those gates, never draft titles, bodies or
+author identities.
 
 Both sandbox modes currently poll by reconciliation, not webhooks. A successful rehearsal is
 evidence for reading/reporting decisions, not for webhook ingress or full two-week acceptance.

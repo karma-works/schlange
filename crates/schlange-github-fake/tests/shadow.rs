@@ -441,6 +441,18 @@ fn structured_embarkment_ignores_issue_mentions_and_borrows_checks() {
     assert_eq!(verdict(&r, 12), "absent");
     assert_eq!(verdict(&r, 500), "absent");
     assert_eq!(verdict(&r, 42), "absent");
+    assert_eq!(
+        r["draft_observer"]["matching_queue_prefix"],
+        serde_json::json!([draft])
+    );
+    assert_eq!(
+        r["draft_observer"]["matching_configured_author"],
+        serde_json::json!([draft])
+    );
+    assert_eq!(
+        r["draft_observer"]["structured_membership_parsed"],
+        serde_json::json!([draft])
+    );
     assert_no_writes(&t);
     t.shutdown();
 }
