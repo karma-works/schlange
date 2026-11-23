@@ -73,13 +73,32 @@ class SignedWebhookProbeTests(unittest.TestCase):
                 event, secret, 'schlange-sandbox/queue-lab', 'sbx/ingress-123-1/a',
                 42, 'sandbox-driver[bot]')
         event['x-github-delivery'] = ['not', 'scalar']
-        with self.assertRaisesRegex(probe.ProbeError, 'headers_invalid'):
+        with self.assertRaisesRegex(probe.ProbeError, 'delivery_header_invalid'):
             probe.select_signed_event(
                 event, secret, 'schlange-sandbox/queue-lab', 'sbx/ingress-123-1/a',
                 42, 'sandbox-driver[bot]')
-        event = self.event(payload, 'sha256=' + '0' * 64)
-        event['content-type'] = 'application/x-www-form-urlencoded'
-        with self.assertRaisesRegex(probe.ProbeError, 'headers_invalid'):
+
+    def test_only_required_flattened_headers_are_validated_case_insensitively(self):
+        secret = b'test-webhook-secret-long-enough'
+        payload = self.payload()
+        original = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()
+        signature = 'sha256=' + hmac.new(secret, original, hashlib.sha256).hexdigest()
+        event = self.event(payload, signature)
+        event['unrelated-list'] = ['relay', 'metadata']
+        event['unrelated-large'] = 'x' * 10_000
+        event['X-GitHub-Event'] = event.pop('x-github-event')
+        event['X-GitHub-Delivery'] = event.pop('x-github-delivery')
+        event['X-Hub-Signature-256'] = event.pop('x-hub-signature-256')
+        self.assertTrue(probe.matches_target_untrusted(
+            event, 'schlange-sandbox/queue-lab',
+            'sbx/ingress-123-1/a', 42, 'sandbox-driver[bot]'))
+        selected = probe.select_signed_event(
+            event, secret, 'schlange-sandbox/queue-lab',
+            'sbx/ingress-123-1/a', 42, 'sandbox-driver[bot]')
+        self.assertEqual(selected.body, original)
+
+        event['x-github-event'] = 'pull_request'
+        with self.assertRaisesRegex(probe.ProbeError, 'event_header_invalid'):
             probe.select_signed_event(
                 event, secret, 'schlange-sandbox/queue-lab', 'sbx/ingress-123-1/a',
                 42, 'sandbox-driver[bot]')
@@ -119,7 +138,7 @@ class SignedWebhookProbeTests(unittest.TestCase):
         self.assertTrue(probe.matches_target_untrusted(
             target, 'schlange-sandbox/queue-lab',
             'sbx/ingress-123-1/a', 42, 'sandbox-driver[bot]'))
-        with self.assertRaisesRegex(probe.ProbeError, 'headers_invalid'):
+        with self.assertRaisesRegex(probe.ProbeError, 'signature_header_invalid'):
             probe.select_signed_event(
                 target, b'test-webhook-secret-long-enough',
                 'schlange-sandbox/queue-lab', 'sbx/ingress-123-1/a', 42,

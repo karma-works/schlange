@@ -63,25 +63,25 @@ class SelectedEvent:
 
 
 def _headers(value):
-    if not isinstance(value, dict) or len(value) > 64:
-        raise ProbeError("headers_invalid")
-    out = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not isinstance(item, str):
-            raise ProbeError("headers_invalid")
-        lowered = key.lower()
-        if lowered in out or len(lowered) > 100 or len(item) > 500:
-            raise ProbeError("headers_invalid")
-        out[lowered] = item
-    signature = out.get("x-hub-signature-256")
-    delivery = out.get("x-github-delivery")
-    event = out.get("x-github-event")
-    content_type = out.get("content-type", "").split(";", 1)[0].strip().lower()
-    if (not isinstance(signature, str) or not re.fullmatch(r"sha256=[0-9a-f]{64}", signature)
-            or not isinstance(delivery, str)
-            or not re.fullmatch(r"[0-9A-Za-z-]{1,100}", delivery)
-            or event != "pull_request" or content_type != "application/json"):
-        raise ProbeError("headers_invalid")
+    if not isinstance(value, dict):
+        raise ProbeError("required_headers_invalid")
+
+    def required(name, reason):
+        items = [item for key, item in value.items()
+                 if isinstance(key, str) and key.lower() == name]
+        if len(items) != 1 or not isinstance(items[0], str):
+            raise ProbeError(reason)
+        return items[0]
+
+    event = required("x-github-event", "event_header_invalid")
+    if event != "pull_request":
+        raise ProbeError("event_header_invalid")
+    delivery = required("x-github-delivery", "delivery_header_invalid")
+    if not re.fullmatch(r"[0-9A-Za-z-]{1,100}", delivery):
+        raise ProbeError("delivery_header_invalid")
+    signature = required("x-hub-signature-256", "signature_header_invalid")
+    if not re.fullmatch(r"sha256=[0-9a-f]{64}", signature):
+        raise ProbeError("signature_header_invalid")
     return signature, delivery, event
 
 
@@ -130,7 +130,9 @@ def _scope_matches(payload, repository, branch, number, driver_login):
 
 def matches_target_untrusted(event, repository, branch, number, driver_login):
     """Cheap selection only; selected bytes are independently verified and reparsed."""
-    if not isinstance(event, dict) or event.get("x-github-event") != "pull_request":
+    if not isinstance(event, dict) or not any(
+            isinstance(key, str) and key.lower() == "x-github-event"
+            and value == "pull_request" for key, value in event.items()):
         return False
     body = event.get("body")
     if isinstance(body, dict):
