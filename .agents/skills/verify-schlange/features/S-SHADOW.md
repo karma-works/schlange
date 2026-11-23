@@ -90,8 +90,16 @@ compares that with what Mergify did, per pull request.
   If neither an occurrence nor its incomplete-history marker can be stored, the worker leaves
   the durable webhook inbox row pending; restart replays it after storage recovers.
 - `acceptance-run`: missing. Two weeks on Arztagent next to the real Mergify (KONZEPT.md,
-  section 11) have not happened; only the fake GitHub's scripted other queue was compared.
-  W-01/W-02 latency is not measured against Mergify yet.
+  section 11) have not happened. Real `schlange-sandbox/queue-lab` runs 45109750499 and
+  45113336435 isolated the queue-draft observer format without retaining Mergify prose;
+  run 45114951923 then confirmed matching queue membership and entry count for S01 (`1/1`).
+  That run remained `inconclusive` for landing: the Actions runner has no webhook ingress and
+  completed only 17 full reconciliations before Mergify merged, so Schlange first saw the member
+  closed and correctly refused to reconstruct a pre-merge I1 read. This is evidence for queue
+  observation, not an acceptance result. The fake GitHub still supplies the signed-webhook path
+  and the active sandbox supplies landing evidence; a real webhook-connected shadow deployment
+  and the two-week Arztagent run remain required. W-01/W-02 latency is not measured against
+  Mergify yet.
 
 ## How to get to it (user POV)
 
