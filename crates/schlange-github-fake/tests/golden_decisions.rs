@@ -70,12 +70,17 @@ fn normalise(lines: &[String]) -> String {
                     {
                         *s = format!("mergify/merge-queue/{}", name("branch", rest));
                     } else {
-                        // SHAs inside texts ("moved from 1a2b3c4 to …") are short.
+                        // SHAs inside text can end a sentence, as in the merge comment.
                         let words: Vec<String> = s
                             .split(' ')
                             .map(|w| {
-                                if w.len() == 7 && hex(w) && w.chars().any(|c| c.is_ascii_digit()) {
-                                    name("short", w)
+                                let (word, punctuation) =
+                                    w.strip_suffix('.').map_or((w, ""), |word| (word, "."));
+                                if word.len() == 7
+                                    && hex(word)
+                                    && word.chars().any(|c| c.is_ascii_digit())
+                                {
+                                    format!("{}{punctuation}", name("short", word))
                                 } else {
                                     w.to_string()
                                 }
@@ -108,6 +113,17 @@ fn check(t: &Running, file: &str) {
     let expected = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("{} missing; run with UPDATE_GOLDEN=1", path.display()));
     assert_eq!(expected, actual, "golden file {} differs", path.display());
+}
+
+#[test]
+fn merge_comment_shas_with_sentence_punctuation_are_normalised() {
+    let decision = |sha: &str| {
+        serde_json::json!({"type": "cosmetic", "body": format!("Merged by the queue as {sha}.")})
+            .to_string()
+    };
+    let expected = normalise(&[decision("e04d72a")]);
+    assert_eq!(normalise(&[decision("0e1d438")]), expected);
+    assert!(expected.contains("Merged by the queue as <short1>."));
 }
 
 #[test]
