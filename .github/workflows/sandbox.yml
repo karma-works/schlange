@@ -146,6 +146,7 @@ jobs:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           SANDBOX_MERGIFY_API_KEY: ${{ secrets.SANDBOX_MERGIFY_API_KEY }}
           SANDBOX_REFERENCE_ACTIVITY: ${{ inputs.shadow_mode && '1' || '0' }}
+          SANDBOX_SHADOW_SNAPSHOT: ${{ inputs.shadow_mode && '1' || '0' }}
           REPO: ${{ inputs.repo || 'queue-lab' }}
           SCENARIOS: ${{ inputs.scenarios || 'all' }}
         # Several names become separate arguments.
@@ -178,17 +179,13 @@ jobs:
           assert result['shadow_suppressed'] > 0, 'no suppressed decisions were observed'
           assert result['config_error'] is None, 'shadow configuration is invalid'
           PY
-          for attempt in $(seq 1 12); do
-            target/release/schlange shadow report --json --repo schlange-sandbox/queue-lab \
-              --data-dir "$RUNNER_TEMP/schlange-data" > "$RUNNER_TEMP/shadow-evidence/report.json" || true
-            if python3 -I sandbox/ci/check-shadow-report.py "$RUNNER_TEMP/shadow-evidence/report.json" \
-                "$RUNNER_TEMP/sandbox-runs" > "$RUNNER_TEMP/shadow-evidence/verification.json"; then
-              cat "$RUNNER_TEMP/shadow-evidence/verification.json"
-              exit 0
-            fi
-            sleep 5
-          done
-          exit 1
+          # Keep the current global report as a late diagnostic. Strict evidence comes only
+          # from each scenario's report captured before that scenario's cleanup.
+          target/release/schlange shadow report --json --repo schlange-sandbox/queue-lab \
+            --data-dir "$RUNNER_TEMP/schlange-data" > "$RUNNER_TEMP/shadow-evidence/report.json" || true
+          python3 -I sandbox/ci/check-shadow-report.py --snapshots \
+            "$RUNNER_TEMP/sandbox-runs" > "$RUNNER_TEMP/shadow-evidence/verification.json"
+          cat "$RUNNER_TEMP/shadow-evidence/verification.json"
       - name: Export structural Schlange dequeue causes
         if: ${{ always() && inputs.shadow_mode && inputs.repo == 'queue-lab' && !inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         # Optional structural diagnosis only: it does not feed the strict comparison.
@@ -219,6 +216,7 @@ jobs:
             ${{ runner.temp }}/sandbox-runs/*/queue-timing.json
             ${{ runner.temp }}/sandbox-runs/*/reference-activity.json
             ${{ runner.temp }}/sandbox-runs/*/reference-check-starts.json
+            ${{ runner.temp }}/sandbox-runs/*/shadow-report.json
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
             ${{ runner.temp }}/shadow-evidence/*.json
