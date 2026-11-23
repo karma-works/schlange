@@ -321,9 +321,9 @@ The custom run link is only a hint, as in S15; it is not a proof of job provenan
 
 S20 re-runs the pull request's CI after observing queue entry. The driver requires the next
 attempt of the same Actions run on the unchanged head, observes its new `ci-ok` check pending
-and green, and rejects missing or ambiguous check identity. Mergify entered once and merged
-without dequeuing in the reference run. The rerun finished before the speculative draft was
-created, so the recording does not establish what happens to an already running draft.
+and green, and rejects missing or ambiguous check identity. The reference pull request entered
+once and Mergify merged it without dequeuing. The rerun finished before Mergify created the
+speculative draft.
 [S20 reference and shadow comparison](https://github.com/karma-works/schlange/actions/runs/45144411842)
 
 Review `run.json` for `timed_out: false` and the completed checkpoints before accepting an
