@@ -52,6 +52,7 @@ Preconditions:
 
 - **Tests.** `cargo test -p schlange-core` table test of all conclusions × attributes.
 - **Scenario.** Run `target/release/schlange sim run scenarios/p1-check-regex-app.yaml`. Exit `0`; `#2` merges, `#1` (bare-name exemption) and `#3` (failing run from another app) stay open.
+- **Arztagent scenario.** Run `target/release/schlange sim run scenarios/p1-arztagent-journeys-informational.yaml`. Exit `0`; the GitHub Actions umbrella and shard `1/4` fail after entry without dequeuing, while the same family from another app, shard `5/4`, and an unrelated red check never enter.
 - **Scenario.** Run `target/release/schlange sim run scenarios/p0-queue-conditions.yaml`. Exit `0`; `#7` (`ci-ok` failure) and `#10` (cancelled check) are not queued; `#1` enters only after its last required check completes.
 
 ## Gotchas
