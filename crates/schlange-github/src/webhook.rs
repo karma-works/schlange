@@ -69,6 +69,9 @@ pub struct ShadowPull {
     pub head_ref: String,
     pub title: String,
     pub body: String,
+    /// Exact membership evidence from a signed `opened` payload. Later payloads may describe
+    /// membership edited after creation and therefore do not carry a transition time.
+    pub membership_at: Option<u64>,
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
@@ -225,6 +228,8 @@ struct PrJson {
     #[serde(default)]
     merged: bool,
     #[serde(default)]
+    created_at: String,
+    #[serde(default)]
     mergeable: Option<bool>,
     user: UserJson,
     head: Side,
@@ -377,6 +382,9 @@ pub fn parse(event_name: &str, body: &[u8]) -> Result<Parsed, String> {
                 head_ref: p.head.ref_name.clone(),
                 title: p.title.clone(),
                 body: p.body.clone().unwrap_or_default(),
+                membership_at: (action.as_deref() == Some("opened"))
+                    .then(|| crate::time::parse_rfc3339(&p.created_at))
+                    .flatten(),
             });
             parsed.event = match action.as_deref().unwrap_or("") {
                 "opened" | "reopened" => Some(Event::PullRequestOpened {
@@ -551,6 +559,7 @@ mod tests {
             "pull_request": {
                 "number": 7, "title": "t", "body": "Embarked pull requests:\n#50",
                 "draft": false, "state": "open", "merged": false,
+                "created_at": "2026-01-01T00:00:07Z",
                 "user": {"login": "arztagent-bot"},
                 "head": {"ref": "feature", "sha": "aaaaaaaaaa"},
                 "base": {"ref": "main", "sha": "bbbbbbbbbb"},
@@ -584,6 +593,10 @@ mod tests {
             assert_eq!(
                 p.shadow_pull.as_ref().map(|p| p.body.as_str()),
                 Some("Embarked pull requests:\n#50")
+            );
+            assert_eq!(
+                p.shadow_pull.as_ref().and_then(|p| p.membership_at),
+                (action == "opened").then_some(1_767_225_607)
             );
         }
         let p = parse(

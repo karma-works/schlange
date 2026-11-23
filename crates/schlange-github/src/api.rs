@@ -188,6 +188,10 @@ pub struct Pull {
     /// When it was merged (also in list responses, which lack `merged`).
     #[serde(default)]
     pub merged_at: Option<String>,
+    /// GitHub's creation time. For a REST membership snapshot this is only a lower bound:
+    /// the draft may have been edited after it was created.
+    #[serde(default)]
+    pub created_at: String,
     /// Who merged it (single reads only).
     #[serde(default)]
     pub merged_by: Option<User>,
@@ -217,6 +221,10 @@ pub struct CheckRunJson {
     pub status: String,
     #[serde(default)]
     pub conclusion: Option<String>,
+    /// App-supplied completion time. This is ordering evidence for shadow observations, not
+    /// proof of the exact instant at which the other queue changed membership.
+    #[serde(default)]
+    pub completed_at: Option<String>,
     #[serde(default)]
     pub app: Option<AppRef>,
     /// The suite the run belongs to. GitHub Actions creates one suite per workflow run, so

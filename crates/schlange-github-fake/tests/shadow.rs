@@ -8,7 +8,7 @@
 //! - The shadow report agrees where both queues did the same (queued, landed, landing order,
 //!   batch composition, dequeue code) and names every difference.
 
-use schlange_github_fake::mergify::MERGIFY_LOGIN;
+use schlange_github_fake::mergify::{MERGIFY_APP, MERGIFY_LOGIN, MERGIFY_QUEUE_CHECK};
 use schlange_github_fake::tester::Running;
 use schlange_github_fake::{CiOn, CiRule, Tester};
 
@@ -408,6 +408,157 @@ fn generic_mergify_checks_on_unqueued_prs_are_not_queue_evidence() {
     assert_eq!(row["queue_entries"]["mergify"], 0);
     assert_eq!(row["dequeue_reasons"]["schlange"], serde_json::json!([]));
     assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_completed_run_is_reexamined_when_the_same_id_gains_a_dequeue_code() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.gh.mergify_queue(n);
+    t.advance("5m");
+    t.settle();
+    let _draft = t.gh.mergify_embark(&[n]);
+    t.settle();
+
+    let head = t.gh.pr(n).unwrap().head_sha;
+    let run = t
+        .gh
+        .runs()
+        .into_iter()
+        .find(|r| r.head_sha == head && r.app_slug == MERGIFY_APP && r.name == MERGIFY_QUEUE_CHECK)
+        .unwrap();
+    t.gh.complete_check(run.id, "failure");
+    reconcile(&t);
+    let first = report(&t);
+    let row = first["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["dequeue_reasons"]["mergify"], serde_json::json!([]));
+
+    t.stop_service();
+    t.start_service();
+    t.gh.update_check_output(run.id, "Observed PR_MANUALLY_DEQUEUED");
+    reconcile(&t);
+    let recognized = report(&t);
+    let row = recognized["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["PR_MANUALLY_DEQUEUED"])
+    );
+    let facts = Store::open(t.serve_cfg.data_dir.as_ref().unwrap())
+        .unwrap()
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap();
+    let observed = facts
+        .iter()
+        .find(|fact| fact.pr == n && fact.side == "mergify" && fact.kind == "dequeued")
+        .unwrap();
+    assert_eq!(observed.data["run_id"], run.id);
+    assert!(observed.data.get("source_at").is_none());
+
+    // The first recognized durable fact for a GitHub run ID stays authoritative.
+    t.stop_service();
+    t.start_service();
+    t.gh.update_check_output(run.id, "Observed CHECKS_TIMEOUT");
+    reconcile(&t);
+    let retained = report(&t);
+    let row = retained["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(
+        row["dequeue_reasons"]["mergify"],
+        serde_json::json!(["PR_MANUALLY_DEQUEUED"])
+    );
+    assert_no_writes(&t);
+    t.shutdown();
+}
+
+#[test]
+fn a_failed_code_free_marker_never_reuses_the_old_completion_time_after_recovery() {
+    use schlange_github::store::Store;
+
+    let mut t = arztagent_ci(Tester::new(ARZTAGENT))
+        .shadow()
+        .persistent()
+        .start();
+    let n = green_pr(&t, "backend/a.py", "a = 1\n");
+    t.pr(n).wait_queued();
+    t.gh.mergify_queue(n);
+    t.advance("5m");
+    t.settle();
+    let _draft = t.gh.mergify_embark(&[n]);
+    t.settle();
+
+    let head = t.gh.pr(n).unwrap().head_sha;
+    let run = t
+        .gh
+        .runs()
+        .into_iter()
+        .find(|r| r.head_sha == head && r.app_slug == MERGIFY_APP && r.name == MERGIFY_QUEUE_CHECK)
+        .unwrap();
+    let db = rusqlite::Connection::open(t.serve_cfg.data_dir.as_ref().unwrap().join("schlange.db"))
+        .unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_pending BEFORE INSERT ON shadow_events \
+         BEGIN SELECT RAISE(FAIL, 'pending storage failure'); END; \
+         CREATE TRIGGER reject_incomplete BEFORE INSERT ON shadow \
+         BEGIN SELECT RAISE(FAIL, 'marker storage failure'); END;",
+    )
+    .unwrap();
+
+    t.gh.complete_check(run.id, "failure");
+    reconcile(&t);
+    let failed = report(&t);
+    let row = failed["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["history_incomplete"], true, "{failed:#}");
+
+    db.execute_batch("DROP TRIGGER reject_pending; DROP TRIGGER reject_incomplete;")
+        .unwrap();
+    t.gh.update_check_output(run.id, "Observed PR_MANUALLY_DEQUEUED");
+    reconcile(&t);
+    let store = Store::open(t.serve_cfg.data_dir.as_ref().unwrap()).unwrap();
+    let observed = store
+        .shadow_facts(&t.gh.config().full_name())
+        .unwrap()
+        .into_iter()
+        .find(|fact| fact.pr == n && fact.side == "mergify" && fact.kind == "dequeued")
+        .unwrap();
+    assert!(observed.data.get("source_at").is_none());
+
+    t.stop_service();
+    t.start_service();
+    let restarted = report(&t);
+    let row = restarted["pull_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["number"] == n)
+        .unwrap();
+    assert_eq!(row["history_incomplete"], true, "{restarted:#}");
     assert_no_writes(&t);
     t.shutdown();
 }

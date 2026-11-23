@@ -61,6 +61,17 @@ compares that with what Mergify did, per pull request.
   `schlange shadow report [--json]` (exit 0 only for complete agreement; exit 1 for a
   disagreement, pending/inconclusive row or incomplete repository history) and
   `GET /repos/{owner}/{repo}/shadow/report` behind the admin token.
+  Mergify queue-entry counts are membership cycles, not draft counts: rebuilding or expanding
+  a batch does not add an entry. Creation time from a signed draft `opened` payload and
+  concluded check-run completion time order the observed membership/dequeue transitions
+  independently of REST and webhook arrival. A REST or later webhook snapshot retains
+  creation time only as a lower bound because membership may have been edited. GitHub
+  documents check completion as app-supplied, so this is an observer inference, not proof of
+  the exact transition time; missing or ambiguous ordering makes the row inconclusive. With
+  drafts but no observed dequeue, the report infers one continuous
+  membership cycle; it cannot prove that an unobserved dequeue/re-entry did not occur. The
+  sandbox verifier's independent event outcome remains fail-closed and is required for that
+  distinction.
 - `read-only-app`: built. A read-only app (metadata, contents, issues, pull requests,
   checks, actions, statuses: `read`, `permissions::SHADOW_PERMISSIONS`) is enough: `serve --shadow` asks for
   read-only installation tokens, `schlange doctor --shadow` accepts the app and warns about any
@@ -74,7 +85,7 @@ compares that with what Mergify did, per pull request.
   records once per pull request, in the database, that it
   saw it open (`seen`). A pull request Mergify merged or closed while shadow mode was not
   watching (before its start, or while it was stopped) is `inconclusive` instead of a
-  disagreement (`before_watching` in the JSON); one with nothing but `seen` has no row. The
+  disagreement (`before_watching` in the JSON). The
   text report gives only their number; `schlange shadow report --all` lists them
   (`shadow::tests::the_text_report_hides_what_closed_before_shadow_mode_watched`). Found on the first real run next to
   Arztagent: 20 pull requests merged the day before showed up as disagreements. Tests:
@@ -142,4 +153,7 @@ Preconditions:
 - Schlange cannot test its own drafts in shadow; a batch Mergify never built stays pending.
 - A prior dequeue followed by a new unmatched queue entry is `pending`; matching historical
   prefixes never turn an unfinished latest cycle into agreement.
+- Two distinct dequeue runs without an observed membership between them may hide a missed
+  cycle and are inconclusive. Legacy draft observations without source time still establish
+  one entry when no dequeue makes their ordering material.
 - Two weeks without a differing decision are the acceptance of phase 1.
