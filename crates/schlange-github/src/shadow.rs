@@ -43,7 +43,10 @@ use serde_json::json;
 
 use crate::client::Priority;
 use crate::forge::GithubForge;
-use crate::store::{SHADOW_EVENTS_PER_STREAM_MAX, SHADOW_EVENTS_REPO_MAX, ShadowFact, Store};
+use crate::store::{
+    SHADOW_DRAFT_PROBES_MAX, SHADOW_EVENTS_PER_STREAM_MAX, SHADOW_EVENTS_REPO_MAX, ShadowFact,
+    Store,
+};
 use crate::webhook::ShadowPull;
 
 /// Virtual draft numbers start here (far above any real pull request number).
@@ -51,6 +54,9 @@ pub const VIRTUAL_DRAFTS: u64 = 1_000_000_000;
 
 pub const SCHLANGE: &str = "schlange";
 pub const MERGIFY: &str = "mergify";
+const DRAFT_REFERENCE_NUMBERS_MAX: usize = 64;
+const DRAFT_BODY_LINES_MAX: usize = 512;
+const DRAFT_REFERENCE_LINES_MAX: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct ShadowConfig {
@@ -110,6 +116,7 @@ pub struct Shadow {
     event_counts: BTreeMap<(String, u64, String), usize>,
     /// Complete repository event count from the bounded durable startup snapshot.
     event_total: usize,
+    draft_probe_count: usize,
     seq: u64,
     /// Decisions answered or dropped here instead of being sent.
     pub suppressed: u64,
@@ -185,31 +192,40 @@ fn draft_members(title: &str, body: &str, own: u64) -> Vec<u64> {
     embarked(body, own)
 }
 
-fn structural_numbers(text: &str, marker: &str) -> Vec<u64> {
-    let mut out = Vec::new();
+fn structural_numbers(text: &str, marker: &str) -> (Vec<u64>, bool) {
+    let mut out = BTreeSet::new();
+    let mut truncated = false;
     let mut rest = text;
     while let Some((_, after)) = rest.split_once(marker) {
         let len = after.bytes().take_while(u8::is_ascii_digit).count();
         if len > 0
             && let Ok(number) = after[..len].parse::<u64>()
             && number > 0
-            && !out.contains(&number)
         {
-            out.push(number);
+            out.insert(number);
+            if out.len() > DRAFT_REFERENCE_NUMBERS_MAX {
+                out.pop_last();
+                truncated = true;
+                break;
+            }
         }
         rest = &after[len..];
     }
-    out
+    (out.into_iter().collect(), truncated)
 }
 
 fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
-    let lines: Vec<&str> = body.lines().collect();
-    let body_reference_lines = lines
+    let mut lines = body.lines();
+    let inspected: Vec<&str> = lines.by_ref().take(DRAFT_BODY_LINES_MAX).collect();
+    let body_lines_truncated = lines.next().is_some();
+    let mut body_reference_lines_truncated = false;
+    let mut body_reference_lines: Vec<DraftReferenceLine> = inspected
         .iter()
         .enumerate()
         .filter_map(|(line, text)| {
-            let hash_references = structural_numbers(text, "#");
-            let pull_path_references = structural_numbers(text, "/pull/");
+            let (hash_references, hash_references_truncated) = structural_numbers(text, "#");
+            let (pull_path_references, pull_path_references_truncated) =
+                structural_numbers(text, "/pull/");
             if hash_references.is_empty() && pull_path_references.is_empty() {
                 return None;
             }
@@ -222,7 +238,9 @@ fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
             Some(DraftReferenceLine {
                 line,
                 hash_references,
+                hash_references_truncated,
                 pull_path_references,
+                pull_path_references_truncated,
                 starts_with_list_marker: without_list.len() != trimmed.len(),
                 starts_with_hash_reference: without_list.starts_with('#'),
                 starts_with_markdown_link: without_list.starts_with('['),
@@ -230,12 +248,31 @@ fn draft_structure(number: u64, title: &str, body: &str) -> DraftStructure {
             })
         })
         .collect();
+    if body_reference_lines.len() > DRAFT_REFERENCE_LINES_MAX {
+        body_reference_lines.truncate(DRAFT_REFERENCE_LINES_MAX);
+        body_reference_lines_truncated = true;
+    }
+    let (title_hash_references, title_hash_references_truncated) = structural_numbers(title, "#");
+    let (title_pull_path_references, title_pull_path_references_truncated) =
+        structural_numbers(title, "/pull/");
+    let truncated = title_hash_references_truncated
+        || title_pull_path_references_truncated
+        || body_lines_truncated
+        || body_reference_lines_truncated
+        || body_reference_lines
+            .iter()
+            .any(|line| line.hash_references_truncated || line.pull_path_references_truncated);
     DraftStructure {
         number,
-        title_hash_references: structural_numbers(title, "#"),
-        title_pull_path_references: structural_numbers(title, "/pull/"),
-        body_line_count: lines.len(),
+        title_hash_references,
+        title_hash_references_truncated,
+        title_pull_path_references,
+        title_pull_path_references_truncated,
+        body_line_count: inspected.len(),
+        body_lines_truncated,
         body_reference_lines,
+        body_reference_lines_truncated,
+        truncated,
     }
 }
 
@@ -284,6 +321,10 @@ impl Shadow {
             }
         }
         let seq = facts.iter().map(|f| f.seq).max().unwrap_or(0);
+        let draft_probe_count = facts
+            .iter()
+            .filter(|fact| fact.kind == "draft_probe")
+            .count();
         Shadow {
             cfg,
             repo: repo.to_string(),
@@ -296,6 +337,7 @@ impl Shadow {
             event_keys,
             event_counts,
             event_total: events.len(),
+            draft_probe_count,
             seq,
             suppressed: 0,
         }
@@ -322,13 +364,13 @@ impl Shadow {
         at: Time,
         data: serde_json::Value,
         first: bool,
-    ) {
+    ) -> bool {
         let exists = self
             .facts
             .iter()
             .position(|f| f.side == side && f.pr == pr && f.kind == kind);
         if first && exists.is_some() {
-            return;
+            return true;
         }
         self.seq += 1;
         let f = ShadowFact {
@@ -340,13 +382,16 @@ impl Shadow {
             data,
             seq: self.seq,
         };
-        if let Some(s) = &self.store {
-            let _ = s.shadow_record(&f, first);
+        if let Some(s) = &self.store
+            && s.shadow_record(&f, first).is_err()
+        {
+            return false;
         }
         match exists {
             Some(i) => self.facts[i] = f,
             None => self.facts.push(f),
         }
+        true
     }
 
     fn has(&self, side: &str, pr: u64, kind: &str) -> bool {
@@ -851,11 +896,25 @@ impl Shadow {
         prefix_matches: bool,
         membership_parsed: bool,
         now: Time,
-    ) {
+    ) -> bool {
         if !(author_matches || prefix_matches) {
-            return;
+            return true;
         }
-        self.fact(
+        let exists = self
+            .facts
+            .iter()
+            .any(|fact| fact.kind == "draft_probe" && fact.pr == structure.number);
+        if !exists && self.draft_probe_count >= SHADOW_DRAFT_PROBES_MAX {
+            return self.fact(
+                "observer",
+                0,
+                "draft_probe_truncated",
+                now,
+                json!({ "reason": "candidate_limit" }),
+                true,
+            );
+        }
+        let persisted = self.fact(
             "observer",
             structure.number,
             "draft_probe",
@@ -868,6 +927,10 @@ impl Shadow {
             }),
             false,
         );
+        if persisted && !exists {
+            self.draft_probe_count += 1;
+        }
+        persisted
     }
 
     /// Records structured membership directly from a signed, durable pull-request webhook.
@@ -881,13 +944,15 @@ impl Shadow {
         } else {
             Vec::new()
         };
-        self.note_draft_probe(
+        if !self.note_draft_probe(
             draft_structure(p.number, &p.title, &p.body),
             author_matches,
             prefix_matches,
             !prs.is_empty(),
             now,
-        );
+        ) {
+            return false;
+        }
         if !(author_matches && prefix_matches) {
             return true;
         }
@@ -1203,7 +1268,11 @@ impl<'de> Deserialize<'de> for PrComparison {
 pub struct DraftReferenceLine {
     pub line: usize,
     pub hash_references: Vec<u64>,
+    #[serde(default)]
+    pub hash_references_truncated: bool,
     pub pull_path_references: Vec<u64>,
+    #[serde(default)]
+    pub pull_path_references_truncated: bool,
     pub starts_with_list_marker: bool,
     pub starts_with_hash_reference: bool,
     pub starts_with_markdown_link: bool,
@@ -1214,18 +1283,34 @@ pub struct DraftReferenceLine {
 pub struct DraftStructure {
     pub number: u64,
     pub title_hash_references: Vec<u64>,
+    #[serde(default)]
+    pub title_hash_references_truncated: bool,
     pub title_pull_path_references: Vec<u64>,
+    #[serde(default)]
+    pub title_pull_path_references_truncated: bool,
     pub body_line_count: usize,
+    #[serde(default)]
+    pub body_lines_truncated: bool,
     pub body_reference_lines: Vec<DraftReferenceLine>,
+    #[serde(default)]
+    pub body_reference_lines_truncated: bool,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftObserverDiagnostics {
     /// Candidate pull request numbers only; no title, body or author identity is retained.
+    #[serde(default)]
     pub matching_queue_prefix: Vec<u64>,
+    #[serde(default)]
     pub matching_configured_author: Vec<u64>,
+    #[serde(default)]
     pub structured_membership_parsed: Vec<u64>,
+    #[serde(default)]
     pub structures: Vec<DraftStructure>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1274,31 +1359,65 @@ pub fn report(repo: &str, facts: &[ShadowFact]) -> ShadowReport {
             .collect::<Vec<_>>()
     };
     let probe_numbers = |field: &str| {
-        facts
+        let mut numbers = BTreeSet::new();
+        let mut truncated = false;
+        for fact in facts
             .iter()
-            .filter(|f| f.kind == "draft_probe" && f.data[field] == true)
-            .map(|f| f.pr)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
+            .filter(|fact| fact.kind == "draft_probe" && fact.data[field] == true)
+        {
+            if !numbers.contains(&fact.pr) && numbers.len() == SHADOW_DRAFT_PROBES_MAX {
+                truncated = true;
+                continue;
+            }
+            numbers.insert(fact.pr);
+        }
+        (numbers.into_iter().collect::<Vec<_>>(), truncated)
     };
-    let mut structures: Vec<DraftStructure> = facts
+    let mut structures_by_number = BTreeMap::new();
+    let mut structures_over = false;
+    for structure in facts
         .iter()
-        .filter(|f| f.kind == "draft_probe")
-        .filter_map(|f| serde_json::from_value(f.data["structure"].clone()).ok())
+        .filter(|fact| fact.kind == "draft_probe")
+        .filter_map(|fact| {
+            serde_json::from_value::<DraftStructure>(fact.data["structure"].clone()).ok()
+        })
+    {
+        if !structures_by_number.contains_key(&structure.number)
+            && structures_by_number.len() == SHADOW_DRAFT_PROBES_MAX
+        {
+            structures_over = true;
+            continue;
+        }
+        structures_by_number.insert(structure.number, structure);
+    }
+    let structures: Vec<_> = structures_by_number
+        .values_mut()
+        .take(SHADOW_DRAFT_PROBES_MAX)
+        .map(std::mem::take)
         .collect();
-    structures.sort_by_key(|structure| structure.number);
+    let (matching_queue_prefix, prefix_over) = probe_numbers("matching_queue_prefix");
+    let (matching_configured_author, author_over) = probe_numbers("matching_configured_author");
+    let (structured_membership_parsed, parsed_over) = probe_numbers("structured_membership_parsed");
+    let diagnostics_truncated = facts
+        .iter()
+        .any(|fact| fact.kind == "draft_probe_truncated")
+        || prefix_over
+        || author_over
+        || parsed_over
+        || structures_over
+        || structures.iter().any(|structure| structure.truncated);
     let draft_observer = DraftObserverDiagnostics {
-        matching_queue_prefix: probe_numbers("matching_queue_prefix"),
-        matching_configured_author: probe_numbers("matching_configured_author"),
-        structured_membership_parsed: probe_numbers("structured_membership_parsed"),
+        matching_queue_prefix,
+        matching_configured_author,
+        structured_membership_parsed,
         structures,
+        truncated: diagnostics_truncated,
     };
     // A watched pull request with no queue event is explicit negative evidence. This is how
     // selected never-enqueued sandbox cases distinguish zero from a missing observation.
     let prs: BTreeSet<u64> = facts
         .iter()
-        .filter(|f| f.pr != 0 && f.kind != "draft_probe")
+        .filter(|f| f.pr != 0 && f.kind != "draft_probe" && f.kind != "draft_probe_truncated")
         .map(|f| f.pr)
         .collect();
     // Landing order per side: Schlange by decision order, Mergify by merge time.
@@ -1952,6 +2071,67 @@ mod tests {
     }
 
     #[test]
+    fn prior_diagnostic_report_without_structures_deserializes() {
+        let old = json!({
+            "repository": "o/r",
+            "draft_observer": {
+                "matching_queue_prefix": [80],
+                "matching_configured_author": [80],
+                "structured_membership_parsed": []
+            },
+            "agreements": 0,
+            "disagreements": 0,
+            "inconclusive": 0,
+            "pending": 0,
+            "pull_requests": []
+        });
+        let report: ShadowReport = serde_json::from_value(old).unwrap();
+        assert!(report.draft_observer.structures.is_empty());
+        assert!(!report.draft_observer.truncated);
+    }
+
+    #[test]
+    fn draft_structure_is_bounded_and_marks_truncation() {
+        let references = (1..=DRAFT_REFERENCE_NUMBERS_MAX + 1)
+            .map(|number| format!("#{number}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body = std::iter::repeat_n(references.as_str(), DRAFT_BODY_LINES_MAX + 1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let structure = draft_structure(1, &references, &body);
+        assert_eq!(
+            structure.title_hash_references.len(),
+            DRAFT_REFERENCE_NUMBERS_MAX
+        );
+        assert_eq!(structure.body_line_count, DRAFT_BODY_LINES_MAX);
+        assert_eq!(
+            structure.body_reference_lines.len(),
+            DRAFT_REFERENCE_LINES_MAX
+        );
+        assert!(structure.title_hash_references_truncated);
+        assert!(structure.body_lines_truncated);
+        assert!(structure.body_reference_lines_truncated);
+        assert!(structure.body_reference_lines[0].hash_references_truncated);
+        assert!(structure.truncated);
+    }
+
+    #[test]
+    fn candidate_limit_is_explicit_in_the_report() {
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", None);
+        for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 + 1 {
+            s.note_draft_probe(draft_structure(number, "", ""), true, false, false, number);
+        }
+        let report = report("o/r", s.facts());
+        assert_eq!(
+            report.draft_observer.structures.len(),
+            SHADOW_DRAFT_PROBES_MAX
+        );
+        assert!(report.draft_observer.truncated);
+        assert!(s.has("observer", 0, "draft_probe_truncated"));
+    }
+
+    #[test]
     fn failed_event_append_does_not_claim_the_source_key_in_memory() {
         let dir = std::env::temp_dir().join(format!(
             "schlange-shadow-store-failure-{}-{}",
@@ -1977,6 +2157,34 @@ mod tests {
         assert!(!s.has(MERGIFY, 50, "queued"));
         assert!(s.has("observer", 0, "history_incomplete"));
         assert!(!s.event_keys.contains("mergify:50:queued:draft:80"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_draft_probe_persistence_refuses_webhook_completion() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-probe-failure-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        rusqlite::Connection::open(dir.join("schlange.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE shadow")
+            .unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store));
+        let pull = ShadowPull {
+            number: 80,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: "mergify/merge-queue/0000000050".into(),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        assert!(!s.observe_pull_webhook(&pull, 1));
+        assert!(!s.has("observer", 80, "draft_probe"));
+        assert!(!s.has(MERGIFY, 50, "queued"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

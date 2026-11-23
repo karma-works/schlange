@@ -8,6 +8,112 @@ import json
 import sys
 from pathlib import Path
 
+DRAFT_CANDIDATES_MAX = 256
+DRAFT_REFERENCE_NUMBERS_MAX = 64
+DRAFT_BODY_LINES_MAX = 512
+DRAFT_REFERENCE_LINES_MAX = 64
+
+
+def _bounded_numbers(value, maximum):
+    return (isinstance(value, list) and len(value) <= maximum
+            and all(type(number) is int and number > 0 for number in value)
+            and value == sorted(set(value)))
+
+
+def _boolean(record, field):
+    value = record.get(field, False)
+    if type(value) is not bool:
+        raise ValueError('invalid structural draft observer diagnostics')
+    return value
+
+
+def _validate_draft_diagnostics(diagnostics):
+    if not isinstance(diagnostics, dict):
+        raise ValueError('invalid structural draft observer diagnostics')
+    fields = {'matching_queue_prefix', 'matching_configured_author',
+              'structured_membership_parsed', 'structures', 'truncated'}
+    if not set(diagnostics) <= fields:
+        raise ValueError('invalid structural draft observer diagnostics')
+    candidate_fields = ('matching_queue_prefix', 'matching_configured_author',
+                        'structured_membership_parsed')
+    for field in candidate_fields:
+        if not _bounded_numbers(diagnostics.get(field, []), DRAFT_CANDIDATES_MAX):
+            raise ValueError('invalid structural draft observer diagnostics')
+    candidates = set().union(*(diagnostics.get(field, []) for field in candidate_fields))
+    structures = diagnostics.get('structures', [])
+    if not isinstance(structures, list) or len(structures) > DRAFT_CANDIDATES_MAX:
+        raise ValueError('invalid structural draft observer diagnostics')
+    structure_numbers = []
+    any_nested_truncated = False
+    structure_fields = {
+        'number', 'title_hash_references', 'title_hash_references_truncated',
+        'title_pull_path_references', 'title_pull_path_references_truncated',
+        'body_line_count', 'body_lines_truncated', 'body_reference_lines',
+        'body_reference_lines_truncated', 'truncated'}
+    line_fields = {
+        'line', 'hash_references', 'hash_references_truncated',
+        'pull_path_references', 'pull_path_references_truncated',
+        'starts_with_list_marker', 'starts_with_hash_reference',
+        'starts_with_markdown_link', 'contains_html_comment_delimiter'}
+    for structure in structures:
+        if (not isinstance(structure, dict) or not set(structure) <= structure_fields
+                or not {'number', 'title_hash_references', 'title_pull_path_references',
+                        'body_line_count', 'body_reference_lines'} <= set(structure)):
+            raise ValueError('invalid structural draft observer diagnostics')
+        number = structure['number']
+        if type(number) is not int or number <= 0 or number not in candidates:
+            raise ValueError('invalid structural draft observer diagnostics')
+        structure_numbers.append(number)
+        for field in ('title_hash_references', 'title_pull_path_references'):
+            if not _bounded_numbers(structure[field], DRAFT_REFERENCE_NUMBERS_MAX):
+                raise ValueError('invalid structural draft observer diagnostics')
+        line_count = structure['body_line_count']
+        if type(line_count) is not int or not 0 <= line_count <= DRAFT_BODY_LINES_MAX:
+            raise ValueError('invalid structural draft observer diagnostics')
+        reference_lines = structure['body_reference_lines']
+        if (not isinstance(reference_lines, list)
+                or len(reference_lines) > DRAFT_REFERENCE_LINES_MAX):
+            raise ValueError('invalid structural draft observer diagnostics')
+        line_indexes = []
+        line_truncated = False
+        for line in reference_lines:
+            required = {'line', 'hash_references', 'pull_path_references',
+                        'starts_with_list_marker', 'starts_with_hash_reference',
+                        'starts_with_markdown_link', 'contains_html_comment_delimiter'}
+            if (not isinstance(line, dict) or not set(line) <= line_fields
+                    or not required <= set(line)):
+                raise ValueError('invalid structural draft observer diagnostics')
+            index = line['line']
+            if type(index) is not int or not 0 <= index < line_count:
+                raise ValueError('invalid structural draft observer diagnostics')
+            line_indexes.append(index)
+            for field in ('hash_references', 'pull_path_references'):
+                if not _bounded_numbers(line[field], DRAFT_REFERENCE_NUMBERS_MAX):
+                    raise ValueError('invalid structural draft observer diagnostics')
+            for field in ('starts_with_list_marker', 'starts_with_hash_reference',
+                          'starts_with_markdown_link', 'contains_html_comment_delimiter'):
+                _boolean(line, field)
+            line_truncated |= (_boolean(line, 'hash_references_truncated')
+                               or _boolean(line, 'pull_path_references_truncated'))
+        if line_indexes != sorted(set(line_indexes)):
+            raise ValueError('invalid structural draft observer diagnostics')
+        nested_truncated = (
+            _boolean(structure, 'title_hash_references_truncated')
+            or _boolean(structure, 'title_pull_path_references_truncated')
+            or _boolean(structure, 'body_lines_truncated')
+            or _boolean(structure, 'body_reference_lines_truncated')
+            or line_truncated)
+        if _boolean(structure, 'truncated') != nested_truncated:
+            raise ValueError('invalid structural draft observer diagnostics')
+        any_nested_truncated |= nested_truncated
+    if structure_numbers != sorted(set(structure_numbers)):
+        raise ValueError('invalid structural draft observer diagnostics')
+    truncated = _boolean(diagnostics, 'truncated')
+    if any_nested_truncated and not truncated:
+        raise ValueError('invalid structural draft observer diagnostics')
+    if truncated:
+        raise ValueError('structural draft observer diagnostics are truncated')
+
 
 def verify(report, recordings):
     if (type(report.get('history_incomplete', False)) is not bool
@@ -16,16 +122,7 @@ def verify(report, recordings):
     if report.get('repository') != 'schlange-sandbox/queue-lab':
         raise ValueError('shadow report is not for the reference sandbox')
     diagnostics = report.get('draft_observer', {})
-    diagnostic_fields = ('matching_queue_prefix', 'matching_configured_author',
-                         'structured_membership_parsed')
-    if not isinstance(diagnostics, dict):
-        raise ValueError('invalid structural draft observer diagnostics')
-    for field in diagnostic_fields:
-        values = diagnostics.get(field, [])
-        if (not isinstance(values, list)
-                or any(type(number) is not int or number <= 0 for number in values)
-                or len(set(values)) != len(values)):
-            raise ValueError('invalid structural draft observer diagnostics')
+    _validate_draft_diagnostics(diagnostics)
     diagnostic_summary = (
         f"draft observer prefix={len(diagnostics.get('matching_queue_prefix', []))}, "
         f"author={len(diagnostics.get('matching_configured_author', []))}, "
