@@ -405,9 +405,6 @@ impl Shadow {
             .facts
             .iter()
             .position(|fact| fact.side == "observer" && fact.pr == pr && fact.kind == kind);
-        if first && exists.is_some() {
-            return true;
-        }
         let fact = ShadowFact {
             repo: self.repo.clone(),
             side: "observer".into(),
@@ -2230,6 +2227,68 @@ mod tests {
         assert!(!s.observe_pull_webhook(&pull, 1));
         assert!(!s.has("observer", 80, "draft_probe"));
         assert!(!s.has(MERGIFY, 50, "queued"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn signed_capped_probe_persists_a_reconciliation_only_marker_before_acknowledging() {
+        let dir = std::env::temp_dir().join(format!(
+            "schlange-shadow-marker-recovery-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let mut s = Shadow::new(ShadowConfig::default(), "o/r", Some(store.clone()));
+        for number in 1..=SHADOW_DRAFT_PROBES_MAX as u64 {
+            assert!(s.note_draft_probe(
+                draft_structure(number, "", ""),
+                true,
+                false,
+                false,
+                number,
+                false,
+            ));
+        }
+        let connection = rusqlite::Connection::open(dir.join("schlange.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_shadow_insert BEFORE INSERT ON shadow \
+                 BEGIN SELECT RAISE(FAIL, 'test storage failure'); END;",
+            )
+            .unwrap();
+
+        assert!(s.note_draft_probe(draft_structure(257, "", ""), true, false, false, 257, false,));
+        assert!(s.has("observer", 0, "draft_probe_truncated"));
+        assert!(
+            !store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
+        let pull = ShadowPull {
+            number: 258,
+            author: "mergify[bot]".into(),
+            base: "main".into(),
+            head_ref: "mergify/merge-queue/0000000050".into(),
+            title: "queue draft (#50)".into(),
+            body: String::new(),
+        };
+        assert!(!s.observe_pull_webhook(&pull, 258));
+        assert!(
+            !store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER reject_shadow_insert")
+            .unwrap();
+        assert!(s.observe_pull_webhook(&pull, 259));
+        assert!(
+            store
+                .shadow_has("o/r", "observer", 0, "draft_probe_truncated")
+                .unwrap()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
