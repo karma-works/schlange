@@ -59,6 +59,7 @@ concurrency:
 
 jobs:
   scenarios:
+    if: ${{ inputs.scenarios != 'verify-signed-ingress' }}
     name: Scenarios ${{ inputs.repo || 'queue-lab' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -222,3 +223,97 @@ jobs:
             ${{ runner.temp }}/shadow-evidence/*.json
           retention-days: 90
           if-no-files-found: ignore
+
+  signed-ingress:
+    if: ${{ inputs.scenarios == 'verify-signed-ingress' }}
+    name: Signed ingress queue-lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate isolated probe selection
+        env:
+          REPO: ${{ inputs.repo }}
+          INSPECT: ${{ inputs.inspect_only }}
+          UPDATE: ${{ inputs.update_fixture }}
+          SHADOW: ${{ inputs.shadow_mode }}
+          SETUP: ${{ inputs.isolated_setup }}
+        run: |
+          test "$REPO" = queue-lab
+          test "$INSPECT" = false
+          test "$UPDATE" = false
+          test "$SHADOW" = false
+          test -z "$SETUP" || test "$SETUP" = none
+      - name: Credentials from the sandbox secrets
+        env:
+          SANDBOX_QUEUE_APP: ${{ secrets.SANDBOX_QUEUE_APP }}
+          SANDBOX_QUEUE_PEM: ${{ secrets.SANDBOX_QUEUE_PEM }}
+          SANDBOX_QUEUE_WEBHOOK_SECRET: ${{ secrets.SANDBOX_QUEUE_WEBHOOK_SECRET }}
+          SANDBOX_DRIVER_APP: ${{ secrets.SANDBOX_DRIVER_APP }}
+          SANDBOX_DRIVER_PEM: ${{ secrets.SANDBOX_DRIVER_PEM }}
+        run: bash sandbox/ci/write-config.sh
+      - name: Rust toolchain and cache
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Build schlange
+        run: |
+          tools/fetch-mergify-sources || echo "::notice::Mergify sources differ from the lock (see CI job mergify-drift)"
+          cargo build --release --locked -p schlange
+      - name: Test the bounded probe
+        run: |
+          python3 -I -m unittest discover -s sandbox/driver -p 'test_*.py'
+          python3 -I -m unittest discover -s sandbox/ci/tests -p 'test_*.py'
+      - name: Ensure queue-lab is idle
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+        run: python3 -I sandbox/driver/sandbox.py wait-idle --repo queue-lab
+      - name: Start loopback shadow service
+        env:
+          SANDBOX_REPO: queue-lab
+          SANDBOX_MODE: shadow
+          SCHLANGE_PORT: 8080
+          RECONCILE: 300
+        run: bash sandbox/ci/start-schlange.sh target/release/schlange
+      - name: Forward one verified signed event and prove persistent deduplication
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          SANDBOX_SMEE_URL: ${{ vars.SANDBOX_SMEE_URL }}
+          SANDBOX_REPO: queue-lab
+          SANDBOX_MODE: shadow
+          SCHLANGE_PORT: 8080
+          RECONCILE: 300
+        run: |
+          mkdir -p "$RUNNER_TEMP/signed-ingress"
+          python3 -I sandbox/ci/signed-webhook-probe.py \
+            --binary target/release/schlange \
+            --output "$RUNNER_TEMP/signed-ingress/report.json"
+      - name: Stop loopback service
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/schlange.pids" ]; then xargs -r kill < "$RUNNER_TEMP/schlange.pids" || true; fi
+      - name: Summarize structural result
+        if: always()
+        run: |
+          python3 -I - "$RUNNER_TEMP/signed-ingress/report.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          try:
+              value = json.loads(path.read_text())
+              safe = {key: value.get(key) for key in (
+                  "complete", "signature_verified", "first_delivery_accepted",
+                  "live_duplicate_suppressed", "service_restarted",
+                  "restart_duplicate_suppressed", "inbox_rows", "pending_rows",
+                  "delivery_rows")}
+          except (OSError, RecursionError, TypeError, ValueError):
+              safe = {"complete": False}
+          print("## Signed ingress probe")
+          for key, item in safe.items():
+              print(f"- {key}: `{item}`")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sandbox-signed-ingress-${{ github.run_id }}
+          path: ${{ runner.temp }}/signed-ingress/report.json
+          retention-days: 30
+          if-no-files-found: warn
