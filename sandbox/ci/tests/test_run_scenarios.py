@@ -130,6 +130,34 @@ class ScenarioRunnerTests(unittest.TestCase):
                 self.assertNotEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
                 self.assertFalse(self.marker.exists())
 
+    def test_malformed_accepted_variants_fail_before_driver(self):
+        baseline = self.root / 'sandbox' / 'baselines' / 's01.json'
+        self.write_baseline()
+        data = json.loads(baseline.read_text())
+        data['accepted_variants'] = [{
+            'name': 'race', 'why': 'reviewed', 'source_runs': [],
+            'prs': {'a': {'end': 'open', 'queued': False, 'enter_count': 0,
+                          'dequeue_codes': []}},
+            'landed': [], 'batches': [],
+        }]
+        baseline.write_text(json.dumps(data))
+        self.assertNotEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_accepted_variants_cannot_mix_with_known_deviations(self):
+        baseline = self.root / 'sandbox' / 'baselines' / 's01.json'
+        self.write_baseline()
+        data = json.loads(baseline.read_text())
+        data['accepted_variants'] = [{
+            'name': 'race', 'why': 'reviewed', 'source_runs': ['45070515103'],
+            'prs': data['prs'], 'landed': data['landed'], 'batches': data['batches'],
+        }]
+        data['known_deviations'] = [
+            {'pr': 'a', 'field': 'queued', 'observed': False, 'why': 'must not compose'}]
+        baseline.write_text(json.dumps(data))
+        self.assertNotEqual(self.run_scenario('schlange-e2e-isolated').returncode, 0)
+        self.assertFalse(self.marker.exists())
+
     def test_valid_landed_deviation_is_accepted(self):
         self.write_baseline()
         baseline = self.root / 'sandbox' / 'baselines' / 's01.json'

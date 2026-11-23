@@ -12,5 +12,24 @@
     }
   },
   "landed": [],
-  "batches": []
+  "batches": [],
+  "accepted_variants": [
+    {
+      "name": "mergeability settled before queue entry",
+      "why": "GitHub computes mergeability asynchronously; Mergify run 45070515103 observed the known conflict before entry, while the primary reference observed it only after entry",
+      "source_runs": [
+        "45070515103"
+      ],
+      "prs": {
+        "b": {
+          "end": "open",
+          "queued": false,
+          "enter_count": 0,
+          "dequeue_codes": []
+        }
+      },
+      "landed": [],
+      "batches": []
+    }
+  ]
 }
