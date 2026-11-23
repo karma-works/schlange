@@ -101,6 +101,16 @@ jobs:
           SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
           REPO: ${{ inputs.repo }}
         run: bash sandbox/ci/prepare-fixture.sh "$REPO"
+      - name: Verify S14/S15/S19 fixture bytes
+        if: ${{ inputs.inspect_only && inputs.scenarios == 'verify-fixture' && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
+        env:
+          SANDBOX_HUMAN_TOKEN: ${{ secrets.SANDBOX_HUMAN_TOKEN }}
+          REPO: ${{ inputs.repo || 'queue-lab' }}
+        run: |
+          python3 -I sandbox/driver/sandbox.py verify-fixture --repo "$REPO" \
+            --output "$RUNNER_TEMP/fixture-inspection.json" \
+            --source-repository "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
       - name: Inspect open pull requests
         if: ${{ inputs.inspect_only && (!inputs.isolated_setup || inputs.isolated_setup == 'none') }}
         env:
@@ -221,5 +231,6 @@ jobs:
             ${{ runner.temp }}/sandbox-runs/*/run.json
             ${{ runner.temp }}/sandbox-runs/*/scenario.json
             ${{ runner.temp }}/shadow-evidence/*.json
+            ${{ runner.temp }}/fixture-inspection.json
           retention-days: 90
           if-no-files-found: ignore

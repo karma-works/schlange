@@ -37,6 +37,7 @@ Flags: see fixture/ci/run.sh. "conflict": true changes shared/conflict.txt (text
 
 import argparse
 import base64
+import binascii
 import json
 import os
 import re
@@ -109,6 +110,18 @@ ALLOWED_ORG = "schlange-sandbox"
 DEFAULT_ORG = os.environ.get("SANDBOX_ORG", ALLOWED_ORG)
 ALLOWED_REPOS = ("queue-lab", "schlange-e2e", "schlange-e2e-isolated")
 ACTIVE_REPOS = ("schlange-e2e", "schlange-e2e-isolated")
+S141519_FIXTURE_PATHS = (
+    ".mergify.yml",
+    ".github/workflows/ai-review.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/collision-green.yml",
+    ".github/workflows/collision-red.yml",
+    ".github/workflows/pr-gate.yml",
+    ".github/workflows/qualified-check.yml",
+    "ci/run.sh",
+)
+FIXTURE_FILE_MAX_BYTES = 128_000
+FIXTURE_RESPONSE_MAX_BYTES = 256_000
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -252,6 +265,29 @@ class Client:
             code = f" HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else ""
             raise RuntimeError(f"{self.label}: GET activity log failed{code}") from None
 
+    def read_json(self, path, *, ok404=False, max_bytes=FIXTURE_RESPONSE_MAX_BYTES):
+        """One bounded GitHub API GET. Redirects and retries stay disabled for inspection."""
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+            raise RuntimeError(f"{self.label}: invalid read path")
+        req = urllib.request.Request(API + path, method="GET", headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token()}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "schlange-sandbox-driver",
+        })
+        try:
+            with NO_REDIRECT_OPENER.open(req, timeout=60) as resp:
+                raw = resp.read(max_bytes + 1)
+                if len(raw) > max_bytes:
+                    raise RuntimeError(f"{self.label}: read response is too large")
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and ok404:
+                return None
+            raise RuntimeError(f"{self.label}: GET read failed HTTP {e.code}") from None
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            raise RuntimeError(f"{self.label}: GET read failed") from None
+
     def paged(self, path):
         sep = "&" if "?" in path else "?"
         page, out = 1, []
@@ -299,6 +335,150 @@ def human_client():
         return tok, 10 ** 9
 
     return Client(fetch, "human")
+
+
+class _FixtureInspectError(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+
+
+def _expected_fixture_files(fixture, driver_login, human_login):
+    if (not isinstance(driver_login, str)
+            or not re.fullmatch(r"[A-Za-z0-9-]{1,100}\[bot\]", driver_login)
+            or not isinstance(human_login, str)
+            or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", human_login)):
+        raise _FixtureInspectError("identity_invalid")
+    fixture = Path(fixture).resolve()
+    expected = {}
+    for relative in S141519_FIXTURE_PATHS:
+        source = fixture / (".mergify.yml.tmpl" if relative == ".mergify.yml" else relative)
+        if (source.is_symlink() or not source.is_file()
+                or fixture not in source.resolve().parents):
+            raise _FixtureInspectError("local_invalid")
+        content = source.read_bytes()
+        if len(content) > FIXTURE_FILE_MAX_BYTES:
+            raise _FixtureInspectError("local_invalid")
+        if relative == ".mergify.yml":
+            if (content.count(b"@DRIVER_LOGIN@") == 0
+                    or content.count(b"@HUMAN_LOGIN@") == 0):
+                raise _FixtureInspectError("local_invalid")
+            content = (content.replace(b"@DRIVER_LOGIN@", driver_login.encode("ascii"))
+                       .replace(b"@HUMAN_LOGIN@", human_login.encode("ascii")))
+        expected[relative] = content
+    return expected
+
+
+def inspect_fixture(client, repo, fixture, driver_login):
+    """Compare the S14/S15/S19 fixture bytes without publishing content or identities."""
+    report = {
+        "schema": 1,
+        "repository": f"{ALLOWED_ORG}/{repo}" if repo in ALLOWED_REPOS else None,
+        "ref": "main",
+        "complete": False,
+        "all_equal": False,
+        "file_count": len(S141519_FIXTURE_PATHS),
+        "files": [],
+    }
+    if repo not in ALLOWED_REPOS:
+        report["reason"] = "selection_invalid"
+        return report
+    root = f"/repos/{ALLOWED_ORG}/{repo}"
+    try:
+        metadata = client.read_json(root)
+        if (not isinstance(metadata, dict)
+                or metadata.get("full_name") != f"{ALLOWED_ORG}/{repo}"
+                or metadata.get("default_branch") != "main"):
+            raise _FixtureInspectError("identity_invalid")
+        reference = client.read_json(f"{root}/git/ref/heads/main")
+        commit = (reference.get("object") or {}).get("sha") if isinstance(reference, dict) else None
+        if (not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                or reference.get("ref") != "refs/heads/main"
+                or (reference.get("object") or {}).get("type") != "commit"):
+            raise _FixtureInspectError("identity_invalid")
+        report["commit"] = commit
+        user = client.read_json("/user")
+        if not isinstance(user, dict):
+            raise _FixtureInspectError("identity_invalid")
+        expected = _expected_fixture_files(fixture, driver_login, user.get("login"))
+        rows = []
+        for relative, wanted in expected.items():
+            quoted = urllib.parse.quote(relative, safe="/")
+            remote = client.read_json(
+                f"{root}/contents/{quoted}?ref={commit}", ok404=True,
+                max_bytes=FIXTURE_RESPONSE_MAX_BYTES)
+            if remote is None:
+                rows.append({"path": relative, "file": False,
+                             "size_equal": False, "equal": False})
+                continue
+            if (not isinstance(remote, dict) or remote.get("type") != "file"
+                    or remote.get("path") != relative or remote.get("encoding") != "base64"
+                    or type(remote.get("size")) is not int
+                    or not 0 <= remote["size"] <= FIXTURE_FILE_MAX_BYTES
+                    or not isinstance(remote.get("content"), str)
+                    or len(remote["content"]) > FIXTURE_RESPONSE_MAX_BYTES
+                    or not isinstance(remote.get("sha"), str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", remote["sha"])):
+                raise _FixtureInspectError("response_invalid")
+            try:
+                actual = base64.b64decode("".join(remote["content"].split()), validate=True)
+            except (ValueError, binascii.Error):
+                raise _FixtureInspectError("response_invalid") from None
+            if len(actual) != remote["size"]:
+                raise _FixtureInspectError("response_invalid")
+            rows.append({"path": relative, "file": True,
+                         "size_equal": len(actual) == len(wanted), "equal": actual == wanted})
+        report["files"] = rows
+        report["complete"] = True
+        report["all_equal"] = all(row["equal"] for row in rows)
+        return report
+    except _FixtureInspectError as error:
+        report["reason"] = error.reason
+        return report
+    except (RuntimeError, OSError, UnicodeError, ValueError, TypeError, KeyError):
+        report["reason"] = "read_failed"
+        return report
+
+
+def _write_json_atomic(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def _workflow_provenance(repository, commit, run_id, run_attempt):
+    if (repository != "karma-works/schlange"
+            or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            or type(run_id) is not int or run_id <= 0
+            or type(run_attempt) is not int or run_attempt <= 0):
+        raise ValueError("invalid workflow provenance")
+    return {"repository": repository, "commit": commit,
+            "run_id": run_id, "run_attempt": run_attempt}
+
+
+def cmd_verify_fixture(a):
+    provenance = None
+    try:
+        provenance = _workflow_provenance(
+            a.source_repository, a.source_sha, int(a.run_id), int(a.run_attempt))
+        metadata = CONFIG_DIR / "apps/driver.json"
+        if (not metadata.is_file() or metadata.stat().st_size > 64_000):
+            raise ValueError("driver metadata is unavailable")
+        driver_login = json.loads(metadata.read_text()).get("bot_login")
+        report = inspect_fixture(human_client(), a.repo, REPO_ROOT / "sandbox/fixture", driver_login)
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError):
+        report = {"schema": 1, "repository": f"{ALLOWED_ORG}/{a.repo}", "ref": "main",
+                  "complete": False, "all_equal": False,
+                  "file_count": len(S141519_FIXTURE_PATHS), "files": [],
+                  "reason": "configuration_invalid"}
+    if provenance is not None:
+        report["source"] = provenance
+    _write_json_atomic(a.output, report)
+    print(json.dumps({"complete": report["complete"], "all_equal": report["all_equal"],
+                      "file_count": report["file_count"]}))
+    if not report["complete"] or not report["all_equal"]:
+        sys.exit(1)
 
 
 def mergify_client():
@@ -1627,6 +1807,13 @@ def main():
     idle.add_argument("--all-open", action="store_true", help="wait for every open pull request")
     inspect = sub.add_parser("inspect-open")
     inspect.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
+    fixture = sub.add_parser("verify-fixture")
+    fixture.add_argument("--repo", required=True, choices=ALLOWED_REPOS)
+    fixture.add_argument("--output", required=True)
+    fixture.add_argument("--source-repository", required=True)
+    fixture.add_argument("--source-sha", required=True)
+    fixture.add_argument("--run-id", required=True)
+    fixture.add_argument("--run-attempt", required=True)
     sub.add_parser("close-isolated-dependabot")
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--repo", choices=ALLOWED_REPOS)
@@ -1643,6 +1830,7 @@ def main():
     {"run": cmd_run, "record": lambda a: record(Path(a.dir)), "reset": cmd_reset,
      "wait-idle": lambda a: wait_idle(a.org, a.repo, a.timeout, all_open=a.all_open),
      "inspect-open": lambda a: print(json.dumps(open_pr_inventory(a.org, a.repo))),
+     "verify-fixture": cmd_verify_fixture,
      "close-isolated-dependabot": lambda a: close_isolated_dependabot(a.org, "schlange-e2e-isolated"),
      "outcome": lambda a: print(json.dumps(write_outcome(Path(a.dir)), indent=2, ensure_ascii=False)),
      "compare": lambda a: sys.exit(compare_outcomes(a.expected, a.actual, a.strict_batches, a.strict_observation)),

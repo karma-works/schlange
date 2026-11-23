@@ -4,6 +4,7 @@ import unittest
 import json
 import tempfile
 import urllib.error
+import base64
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,113 @@ spec.loader.exec_module(driver)
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_fixture_api_reads_refuse_redirects_and_bound_the_response(self):
+        client = driver.Client(lambda: ('secret-token', 60), 'fixture')
+        redirect = urllib.error.HTTPError('https://api.github.com/test', 302, 'redirect', {}, None)
+        with patch.object(driver.NO_REDIRECT_OPENER, 'open', side_effect=redirect), \
+             patch.object(driver.urllib.request, 'urlopen') as ordinary:
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 302'):
+                client.read_json('/repos/schlange-sandbox/queue-lab')
+        ordinary.assert_not_called()
+
+    def test_fixture_inspection_compares_only_the_s14_s15_s19_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            expected = {}
+            for relative in driver.S141519_FIXTURE_PATHS:
+                source = fixture / ('.mergify.yml.tmpl' if relative == '.mergify.yml' else relative)
+                source.parent.mkdir(parents=True, exist_ok=True)
+                content = (b'actors: @DRIVER_LOGIN@ @HUMAN_LOGIN@\n'
+                           if relative == '.mergify.yml' else f'{relative}\n'.encode())
+                source.write_bytes(content)
+                expected[relative] = (content.replace(b'@DRIVER_LOGIN@', b'driver[bot]')
+                                      .replace(b'@HUMAN_LOGIN@', b'human'))
+            client = unittest.mock.Mock()
+
+            def read(path, **kwargs):
+                if path == '/repos/schlange-sandbox/queue-lab':
+                    return {'full_name': 'schlange-sandbox/queue-lab', 'default_branch': 'main'}
+                if path == '/repos/schlange-sandbox/queue-lab/git/ref/heads/main':
+                    return {'ref': 'refs/heads/main',
+                            'object': {'type': 'commit', 'sha': 'c' * 40}}
+                if path == '/user':
+                    return {'login': 'human'}
+                prefix = '/repos/schlange-sandbox/queue-lab/contents/'
+                relative = path.removeprefix(prefix).removesuffix('?ref=' + 'c' * 40)
+                data = expected[relative]
+                return {'type': 'file', 'path': relative, 'encoding': 'base64',
+                        'size': len(data), 'content': base64.b64encode(data).decode(),
+                        'sha': 'a' * 40}
+
+            client.read_json.side_effect = read
+            report = driver.inspect_fixture(client, 'queue-lab', fixture, 'driver[bot]')
+        self.assertTrue(report['complete'])
+        self.assertTrue(report['all_equal'])
+        self.assertEqual(report['commit'], 'c' * 40)
+        self.assertEqual([item['path'] for item in report['files']],
+                         list(driver.S141519_FIXTURE_PATHS))
+        self.assertTrue(all(item == {'path': item['path'], 'file': True,
+                                     'size_equal': True, 'equal': True}
+                            for item in report['files']))
+        self.assertNotIn('human', json.dumps(report))
+        self.assertTrue(all(call.args[0].startswith(('/repos/schlange-sandbox/queue-lab', '/user'))
+                            for call in client.read_json.call_args_list))
+
+    def test_fixture_inspection_reports_mismatch_without_publishing_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for relative in driver.S141519_FIXTURE_PATHS:
+                source = fixture / ('.mergify.yml.tmpl' if relative == '.mergify.yml' else relative)
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b'expected @DRIVER_LOGIN@ @HUMAN_LOGIN@')
+            client = unittest.mock.Mock()
+            client.read_json.side_effect = [
+                {'full_name': 'schlange-sandbox/queue-lab', 'default_branch': 'main'},
+                {'ref': 'refs/heads/main', 'object': {'type': 'commit', 'sha': 'c' * 40}},
+                {'login': 'human'},
+                *[{'type': 'file', 'path': relative, 'encoding': 'base64', 'size': 5,
+                   'content': base64.b64encode(b'wrong').decode(), 'sha': 'b' * 40}
+                  for relative in driver.S141519_FIXTURE_PATHS],
+            ]
+            report = driver.inspect_fixture(client, 'queue-lab', fixture, 'driver[bot]')
+        self.assertTrue(report['complete'])
+        self.assertFalse(report['all_equal'])
+        self.assertTrue(all(not item['equal'] for item in report['files']))
+        serialized = json.dumps(report)
+        self.assertNotIn('expected', serialized)
+        self.assertNotIn('wrong', serialized)
+
+    def test_fixture_inspection_is_atomic_on_malformed_or_failed_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for relative in driver.S141519_FIXTURE_PATHS:
+                source = fixture / ('.mergify.yml.tmpl' if relative == '.mergify.yml' else relative)
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b'x @DRIVER_LOGIN@ @HUMAN_LOGIN@')
+            for failure in ({'full_name': 'other/repo', 'default_branch': 'main'},
+                            RuntimeError('transport details')):
+                client = unittest.mock.Mock()
+                client.read_json.side_effect = failure if isinstance(failure, Exception) else [failure]
+                report = driver.inspect_fixture(client, 'queue-lab', fixture, 'driver[bot]')
+                self.assertEqual(report['files'], [])
+                self.assertFalse(report['complete'])
+                self.assertFalse(report['all_equal'])
+                self.assertIn(report['reason'], ('identity_invalid', 'read_failed'))
+                self.assertNotIn('transport details', json.dumps(report))
+
+    def test_fixture_workflow_provenance_is_exact(self):
+        self.assertEqual(
+            driver._workflow_provenance('karma-works/schlange', 'a' * 40, 42, 2),
+            {'repository': 'karma-works/schlange', 'commit': 'a' * 40,
+             'run_id': 42, 'run_attempt': 2})
+        for values in (
+                ('fork/schlange', 'a' * 40, 42, 2),
+                ('karma-works/schlange', 'short', 42, 2),
+                ('karma-works/schlange', 'a' * 40, True, 2),
+                ('karma-works/schlange', 'a' * 40, 42, 0)):
+            with self.assertRaises(ValueError):
+                driver._workflow_provenance(*values)
+
     def test_reference_outcome_records_only_bounded_merger_identity(self):
         trace = {'run': {'repo': 'queue-lab', 'run_id': 's99-test'},
                  'prs': {'a': {'number': 1, 'state': 'closed', 'merged': True, 'merged_by': 'mergify[bot]'},

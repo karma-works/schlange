@@ -155,6 +155,21 @@ This removes previously merged scenario files; it is only for these disposable r
 concurrency group prevents overlapping Actions runs on the same repository, but the idle
 check and push are not atomic against a separately started local run.
 
+An `inspect_only` run performs no fixture reset and starts no scenario or queue service. The
+ordinary mode retains the bounded open-pull-request inventory. With
+`scenarios=verify-fixture`, it also reads and compares the exact `main`
+bytes of the eight fixture files used by S14, S15 and S19, including `.mergify.yml` rendered
+with the current sandbox actors. Other tracked files are deliberately ignored because normal
+scenarios merge their own test files into `main`. The public `fixture-inspection.json` artifact
+binds the target `main` commit and the workflow repository, source commit, run and attempt; its
+file results contain only paths, shape and equality booleans. A missing, malformed or different
+file fails the inspection without publishing file contents or actor identities. For example:
+
+```bash
+gh workflow run sandbox.yml --ref <candidate> -f repo=queue-lab \
+  -f inspect_only=true -f scenarios=verify-fixture
+```
+
 Webhooks: `setup.sh smee` creates a channel on smee.io. The queue app sends its webhooks
 there, and locally `npx smee-client -u <channel> -t http://127.0.0.1:8080/webhook` forwards
 them. For continuous operation the app's webhook URL points to the Schlange instance on the
